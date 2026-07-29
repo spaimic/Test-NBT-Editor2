@@ -87,7 +87,7 @@ class WorldListActivity : AppCompatActivity() {
     /** Pulls just level.dat (small file) and reads its "LevelName" tag; falls back to the folder id on any failure. */
     private fun readLevelName(basePath: String, worldDir: String): String {
         return try {
-            val localPath = File(cacheDir, "peek_level.dat").absolutePath
+            val localPath = File(getExternalFilesDir(null), "peek_level.dat").absolutePath
             ShizukuShell.pullFile("$basePath/$worldDir/level.dat", localPath)
             val dat = NbtIO.readLevelDat(File(localPath).readBytes())
             (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir

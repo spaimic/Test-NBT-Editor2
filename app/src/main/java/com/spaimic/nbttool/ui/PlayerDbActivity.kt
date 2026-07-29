@@ -46,7 +46,7 @@ class PlayerDbActivity : AppCompatActivity() {
         Thread {
             try {
                 LevelDbSession.reset()
-                val bridge = LevelDbBridge.open(worldsPath, worldDir, cacheDir)
+                val bridge = LevelDbBridge.open(worldsPath, worldDir, getExternalFilesDir(null)!!)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldsPath = worldsPath
                 LevelDbSession.worldDir = worldDir
