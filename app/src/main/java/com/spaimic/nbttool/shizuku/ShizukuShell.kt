@@ -57,7 +57,9 @@ object ShizukuShell {
 
     /** Recursively copies a whole folder (e.g. a world's LevelDB `db/` directory) out of the sandbox. */
     fun pullDir(remoteDir: String, localDir: String) {
-        val (exit, out) = run("rm -rf '$localDir' && cp -r '$remoteDir' '$localDir'")
+        val (exit, out) = run(
+            "rm -rf '$localDir' && cp -r '$remoteDir' '$localDir' && chmod -R 777 '$localDir'"
+        )
         check(exit == 0) { "Shizuku pull-dir failed: $out" }
     }
 
