@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="rikka.shizuku" />
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="NBT Tool"
+        android:theme="@style/Theme.AppCompat.DayNight"
+        android:requestLegacyExternalStorage="true">
+
+        <activity
+            android:name=".ui.WorldListActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".ui.EditorActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.PlayerDbActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.DbEntryEditorActivity"
+            android:exported="false" />
+
+        <!-- Required so Shizuku can bind into this app -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+    </application>
+</manifest>
