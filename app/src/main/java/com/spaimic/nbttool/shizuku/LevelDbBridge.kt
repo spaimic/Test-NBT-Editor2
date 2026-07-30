@@ -73,10 +73,11 @@ class LevelDbBridge private constructor(private val db: DB, val localDbDir: File
             return LevelDbBridge(db, localDbDir)
         }
 
-        /** Closes (call before this!) then pushes the edited local db/ folder back into the sandbox, backing up the original. */
-        fun pushBack(worldsPath: String, worldDir: String, localDbDir: File) {
+        /** Closes (call before this!) then pushes the edited local db/ folder back, backing it up locally first. */
+        fun pushBack(worldsPath: String, worldDir: String, localDbDir: File, localBackupRoot: File) {
             val remoteDbDir = "$worldsPath/$worldDir/db"
-            ShizukuShell.pushDir(localDbDir.absolutePath, remoteDbDir)
+            val backupDir = File(localBackupRoot, "backups/db_${worldDir}_${System.currentTimeMillis()}")
+            ShizukuShell.pushDirWithBackup(localDbDir.absolutePath, remoteDbDir, backupDir.absolutePath)
         }
     }
 }

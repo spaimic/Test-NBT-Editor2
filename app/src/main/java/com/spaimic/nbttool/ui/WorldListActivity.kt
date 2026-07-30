@@ -103,8 +103,22 @@ class WorldListActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_ITEM_CLIPBOARD, 0, "Clipboard")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_ITEM_CLIPBOARD) {
+            startActivity(Intent(this, ClipboardActivity::class.java))
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     companion object {
         private const val REQUEST_CODE_SHIZUKU = 1001
+        private const val MENU_ITEM_CLIPBOARD = 1
         var worldsBasePath: String = ShizukuShell.WORLDS_PATH_STANDARD
     }
 }

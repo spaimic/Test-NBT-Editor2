@@ -13,6 +13,11 @@ import java.io.File
  */
 object NbtClipboard {
 
+    /** Which clipboard entry "Paste" should default to — set from either the tree
+     * editor's Copy action or the dedicated Clipboard screen. Session-only (not
+     * persisted to disk); re-select after a restart if needed. */
+    var selectedName: String? = null
+
     private fun dir(context: Context): File =
         File(context.filesDir, "nbt_clipboard").apply { mkdirs() }
 

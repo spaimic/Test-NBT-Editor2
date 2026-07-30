@@ -64,14 +64,15 @@ object ShizukuShell {
     }
 
     /**
-     * Recursively copies a folder back into the sandbox, backing up whatever was
-     * there first (so a corrupted write can be recovered from `<remoteDir>.bak`).
+     * Replaces remoteDir with localDir's contents, after first backing up the
+     * CURRENT remote contents into localBackupDir (our own app storage — proven
+     * writable, unlike creating a brand-new sibling folder inside another app's
+     * sandbox, which some devices refuse even though overwriting existing files
+     * there works fine).
      */
-    fun pushDir(localDir: String, remoteDir: String) {
-        val (exit, out) = run(
-            "rm -rf '$remoteDir.bak' && cp -r '$remoteDir' '$remoteDir.bak' && " +
-                "rm -rf '$remoteDir' && cp -r '$localDir' '$remoteDir'"
-        )
+    fun pushDirWithBackup(localDir: String, remoteDir: String, localBackupDir: String) {
+        pullDir(remoteDir, localBackupDir) // reuses the already-proven pull path for the backup copy
+        val (exit, out) = run("rm -rf '$remoteDir' && cp -r '$localDir' '$remoteDir'")
         check(exit == 0) { "Shizuku push-dir failed: $out" }
     }
 

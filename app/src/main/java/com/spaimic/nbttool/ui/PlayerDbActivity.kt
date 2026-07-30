@@ -122,7 +122,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 }
                 val localDir = bridge.localDbDir
                 bridge.close()
-                LevelDbBridge.pushBack(LevelDbSession.worldsPath, LevelDbSession.worldDir, localDir)
+                LevelDbBridge.pushBack(LevelDbSession.worldsPath, LevelDbSession.worldDir, localDir, getExternalFilesDir(null)!!)
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
                 // reopen so the list/session stay usable if the user keeps editing
                 openDbAndListKeys(LevelDbSession.worldsPath, LevelDbSession.worldDir)

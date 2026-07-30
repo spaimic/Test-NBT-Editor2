@@ -92,7 +92,7 @@ class EditorActivity : AppCompatActivity() {
 
         val input = EditText(this).apply { setText(current) }
         AlertDialog.Builder(this)
-            .setTitle(row.key)
+            .setTitle(row.label)
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
                 try {
@@ -106,7 +106,7 @@ class EditorActivity : AppCompatActivity() {
                         is NbtTag.Str -> NbtTag.Str(input.text.toString())
                         else -> tag
                     }
-                    row.parent.entries[row.key] = newTag
+                    row.setValue(newTag)
                     adapter.refresh()
                 } catch (e: NumberFormatException) {
                     Toast.makeText(this, "Invalid value for ${NbtTag.typeName(tag.id)}", Toast.LENGTH_SHORT).show()
@@ -120,8 +120,11 @@ class EditorActivity : AppCompatActivity() {
         val dat = levelDat ?: return
         Thread {
             try {
-                // back up the current on-device file before overwriting it
-                ShizukuShell.run("cp '$remoteLevelDatPath' '$remoteLevelDatPath.bak' 2>/dev/null")
+                // back up the pre-edit bytes we already pulled, into our own app storage
+                val backupDir = File(getExternalFilesDir(null), "backups").apply { mkdirs() }
+                val backupFile = File(backupDir, "level_${System.currentTimeMillis()}.dat.bak")
+                File(localLevelDatPath).copyTo(backupFile, overwrite = true)
+
                 val bytes = NbtIO.writeLevelDat(dat)
                 File(localLevelDatPath).writeBytes(bytes)
                 ShizukuShell.pushFile(localLevelDatPath, remoteLevelDatPath)

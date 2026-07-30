@@ -38,6 +38,10 @@
             android:name=".ui.DbEntryEditorActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ui.ClipboardActivity"
+            android:exported="false" />
+
         <!-- Required so Shizuku can bind into this app -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

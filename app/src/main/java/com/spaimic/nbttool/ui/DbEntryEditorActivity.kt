@@ -51,7 +51,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
         }
         val input = EditText(this).apply { setText(current) }
         AlertDialog.Builder(this)
-            .setTitle(row.key)
+            .setTitle(row.label)
             .setView(input)
             .setPositiveButton("Save") { _, _ ->
                 try {
@@ -65,7 +65,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
                         is NbtTag.Str -> NbtTag.Str(input.text.toString())
                         else -> tag
                     }
-                    row.parent.entries[row.key] = newTag
+                    row.setValue(newTag)
                     onSaved()
                 } catch (e: NumberFormatException) {
                     Toast.makeText(this, "Invalid value for ${NbtTag.typeName(tag.id)}", Toast.LENGTH_SHORT).show()
