@@ -65,7 +65,7 @@ class EditorActivity : AppCompatActivity() {
                 runOnUiThread { showTree() }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "Failed to load level.dat: ${e.message}", Toast.LENGTH_LONG).show()
+                    showErrorDialog(this, "Failed to load level.dat", e)
                 }
             }
         }.start()
@@ -127,7 +127,7 @@ class EditorActivity : AppCompatActivity() {
                 ShizukuShell.pushFile(localLevelDatPath, remoteLevelDatPath)
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
             } catch (e: Exception) {
-                runOnUiThread { Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_LONG).show() }
+                runOnUiThread { showErrorDialog(this, "Save failed", e) }
             }
         }.start()
     }

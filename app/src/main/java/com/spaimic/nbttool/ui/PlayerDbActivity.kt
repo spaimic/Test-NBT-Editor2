@@ -58,7 +58,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "Failed to open world DB: ${e.message}", Toast.LENGTH_LONG).show()
+                    showErrorDialog(this, "Failed to open world DB", e)
                 }
             }
         }.start()
@@ -80,7 +80,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    Toast.makeText(this, "Couldn't parse \"$displayName\": ${e.message}", Toast.LENGTH_LONG).show()
+                    showErrorDialog(this, "Couldn't parse \"$displayName\"", e)
                 }
             }
         }.start()
@@ -101,7 +101,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 // reopen so the list/session stay usable if the user keeps editing
                 openDbAndListKeys(LevelDbSession.worldsPath, LevelDbSession.worldDir)
             } catch (e: Exception) {
-                runOnUiThread { Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_LONG).show() }
+                runOnUiThread { showErrorDialog(this, "Save failed", e) }
             }
         }.start()
     }
