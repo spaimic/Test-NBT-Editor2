@@ -55,10 +55,12 @@ public final class Filename
 
     /**
      * Return the name of the sstable with the specified number.
+     * Bedrock Edition (and modern LevelDB generally) uses ".ldb", not the older
+     * ".sst" this library was originally written against.
      */
     public static String tableFileName(long number)
     {
-        return makeFileName(number, "sst");
+        return makeFileName(number, "ldb");
     }
 
     /**
@@ -147,6 +149,10 @@ public final class Filename
         }
         else if (fileName.endsWith(".sst")) {
             long fileNumber = Long.parseLong(removeSuffix(fileName, ".sst"));
+            return new FileInfo(FileType.TABLE, fileNumber);
+        }
+        else if (fileName.endsWith(".ldb")) {
+            long fileNumber = Long.parseLong(removeSuffix(fileName, ".ldb"));
             return new FileInfo(FileType.TABLE, fileNumber);
         }
         else if (fileName.endsWith(".dbtmp")) {
