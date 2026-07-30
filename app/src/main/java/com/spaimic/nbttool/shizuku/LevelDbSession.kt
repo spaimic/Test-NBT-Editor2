@@ -20,6 +20,7 @@ object LevelDbSession {
     val loadedEntries = LinkedHashMap<String, NbtTag.Compound>()
 
     fun reset() {
+        try { bridge?.close() } catch (_: Exception) { /* already closed or never fully opened */ }
         bridge = null
         keyBytesByName.clear()
         loadedEntries.clear()

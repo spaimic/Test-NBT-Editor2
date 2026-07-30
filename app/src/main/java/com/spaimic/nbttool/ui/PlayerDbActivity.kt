@@ -9,15 +9,20 @@ import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 
 /**
- * Browses the world's LevelDB `db/` folder — player, map, and village keys.
- * Opening pulls the whole folder via Shizuku (LevelDB needs random file access,
- * not a single byte stream); "Save" re-serializes any entries you opened/edited
- * and pushes the folder back, after backing up the original.
+ * Browses the world's LevelDB `db/` folder. The db/ folder actually holds ALL
+ * world data — not just player/map/village records but a key per explored chunk
+ * of terrain, which is usually the vast majority of entries. By default this
+ * screen filters down to what's normally worth hand-editing: the local player,
+ * remote/offline player records, and saved structures — with a toggle to show
+ * everything (maps, villages, raw chunk data) if you actually need it.
  */
 class PlayerDbActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
-    private var displayNames: List<String> = emptyList()
+    private lateinit var filterToggle: CheckBox
+    private var allDisplayNames: List<String> = emptyList()
+    private var shownDisplayNames: List<String> = emptyList()
+    private var isLoading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -26,6 +31,11 @@ class PlayerDbActivity : AppCompatActivity() {
         title = "Player / Map / Village data"
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        filterToggle = CheckBox(this).apply {
+            text = "Show everything (maps, villages, raw chunk data)"
+            isChecked = false
+            setOnCheckedChangeListener { _, _ -> applyFilter() }
+        }
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup_MATCH, 0, 1f)
         }
@@ -33,19 +43,33 @@ class PlayerDbActivity : AppCompatActivity() {
             text = "Save all changes to world"
             setOnClickListener { saveAll() }
         }
+        root.addView(filterToggle)
         root.addView(listView)
         root.addView(saveButton)
         setContentView(root)
 
-        listView.setOnItemClickListener { _, _, position, _ -> openEntry(displayNames[position]) }
+        listView.setOnItemClickListener { _, _, position, _ -> openEntry(shownDisplayNames[position]) }
 
         openDbAndListKeys(worldsPath, worldDir)
     }
 
+    /** ~local_player, player_*, and saved structures — the things worth hand-editing most often. */
+    private fun isInterestingKey(name: String): Boolean =
+        name == "~local_player" ||
+            name.startsWith("player_") ||
+            name.startsWith("structuretemplate_")
+
+    private fun applyFilter() {
+        shownDisplayNames = if (filterToggle.isChecked) allDisplayNames else allDisplayNames.filter { isInterestingKey(it) }
+        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, shownDisplayNames)
+    }
+
     private fun openDbAndListKeys(worldsPath: String, worldDir: String) {
+        if (isLoading) return // avoid opening the same DB twice concurrently
+        isLoading = true
         Thread {
             try {
-                LevelDbSession.reset()
+                LevelDbSession.reset() // closes any previously-open bridge first
                 val bridge = LevelDbBridge.open(worldsPath, worldDir, getExternalFilesDir(null)!!)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldsPath = worldsPath
@@ -53,10 +77,12 @@ class PlayerDbActivity : AppCompatActivity() {
                 val keys = bridge.listKeys()
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
                 runOnUiThread {
-                    displayNames = keys.map { it.displayName }
-                    listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, displayNames)
+                    allDisplayNames = keys.map { it.displayName }
+                    applyFilter()
+                    isLoading = false
                 }
             } catch (e: Exception) {
+                isLoading = false
                 runOnUiThread {
                     showErrorDialog(this, "Failed to open world DB", e)
                 }
