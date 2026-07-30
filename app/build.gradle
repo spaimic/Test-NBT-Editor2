@@ -31,6 +31,9 @@ android {
 }
 
 configurations.all {
+    // guava-21.0 (pulled in transitively by leveldb) already contains a real
+    // ListenableFuture class; the separate "listenablefuture" placeholder
+    // artifact some other dependency wants collides with it. Drop the placeholder.
     exclude group: 'com.google.guava', module: 'listenablefuture'
 }
 
@@ -45,6 +48,9 @@ dependencies {
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'
 
-    // Pure-Java LevelDB — reads/writes the world's db/ folder (player, map, village data)
-    implementation 'org.iq80.leveldb:leveldb:0.12'
+    // NOTE: LevelDB itself is NOT pulled from Maven — the org.iq80.leveldb source is
+    // vendored directly under app/src/main/java/org/iq80/leveldb, patched to decompress
+    // Bedrock Edition's zlib-compressed blocks (the stock library only supports Snappy).
+    // It still needs Guava for the same reason the original artifact did.
+    implementation 'com.google.guava:guava:32.1.3-android'
 }

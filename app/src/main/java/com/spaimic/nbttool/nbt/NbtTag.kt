@@ -7,6 +7,7 @@ package com.spaimic.nbttool.nbt
  * the 2-byte string-length prefix) is little-endian instead of big-endian.
  */
 sealed class NbtTag(val id: kotlin.Int) {
+
     object End : NbtTag(0)
     data class Byte(val value: kotlin.Byte) : NbtTag(1)
     data class Short(val value: kotlin.Short) : NbtTag(2)

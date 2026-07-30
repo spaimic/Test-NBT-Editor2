@@ -1,5 +1,6 @@
 package com.spaimic.nbttool.shizuku
 
+import org.iq80.leveldb.CompressionType
 import org.iq80.leveldb.DB
 import org.iq80.leveldb.Options
 import org.iq80.leveldb.impl.Iq80DBFactory
@@ -54,10 +55,20 @@ class LevelDbBridge private constructor(private val db: DB, val localDbDir: File
     companion object {
         /** Pulls `<worldsPath>/<worldDir>/db` to app-private storage and opens it. */
         fun open(worldsPath: String, worldDir: String, localStagingRoot: File): LevelDbBridge {
+            // Iq80DBFactory.USE_MMAP is a `static final` decided from this system property at
+            // class-load time; force it off so reads go through FileChannelTable, the only one
+            // of the two Table implementations we patched with zlib support.
+            System.setProperty("leveldb.mmap", "false")
+
             val remoteDbDir = "$worldsPath/$worldDir/db"
             val localDbDir = File(localStagingRoot, "db_$worldDir")
             ShizukuShell.pullDir(remoteDbDir, localDbDir.absolutePath)
-            val options = Options().apply { createIfMissing(false) }
+            val options = Options().apply {
+                createIfMissing(false)
+                // Bedrock's own C++ engine expects NONE or zlib — never write Snappy-compressed
+                // tables back, or the actual game may fail to read data we wrote.
+                compressionType(CompressionType.NONE)
+            }
             val db = Iq80DBFactory.factory.open(localDbDir, options)
             return LevelDbBridge(db, localDbDir)
         }
