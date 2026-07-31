@@ -42,6 +42,17 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
 
     fun delete(rawKey: ByteArray) = db.delete(rawKey)
 
+    /** Full raw scan of every key/value pair — used by the chunk map renderer to read subchunk data. */
+    fun forEachRawEntry(action: (key: ByteArray, value: ByteArray) -> Unit) {
+        db.iterator().use {
+            it.seekToFirst()
+            while (it.hasNext()) {
+                val entry = it.next()
+                action(entry.key, entry.value)
+            }
+        }
+    }
+
     fun close() = db.close()
 
     private fun decodeKeyName(key: ByteArray): String {

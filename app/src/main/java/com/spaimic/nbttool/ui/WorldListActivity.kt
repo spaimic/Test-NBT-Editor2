@@ -60,8 +60,8 @@ class WorldListActivity : AppCompatActivity() {
     }
 
     private fun openWorld(worldDir: File) {
-        val intent = Intent(this, EditorActivity::class.java)
-        intent.putExtra(EditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
+        val intent = Intent(this, MapViewerActivity::class.java)
+        intent.putExtra(MapViewerActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
         startActivity(intent)
     }
 

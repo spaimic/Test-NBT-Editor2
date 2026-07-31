@@ -88,6 +88,17 @@ object NbtIO {
         return readTagPayload(din, typeId)
     }
 
+    /** Reads one (unnamed) NBT compound directly from a shared stream cursor — used
+     * when compounds are packed back-to-back inside a larger structure (e.g. a
+     * subchunk's block palette), not as a standalone byte array. */
+    fun readCompoundFromStream(input: DataInputStream): NbtTag.Compound {
+        val din = LEDataInput(input)
+        val tagId = din.readUByte()
+        require(tagId == 10) { "Expected a Compound tag while reading a palette entry (got ${NbtTag.typeName(tagId)})" }
+        din.readString()
+        return readCompoundBody(din)
+    }
+
     // ---- tag payload (de)serialization, shared by lists/compounds/root ----
 
     private fun readTagPayload(din: LEDataInput, typeId: Int): NbtTag = when (typeId) {

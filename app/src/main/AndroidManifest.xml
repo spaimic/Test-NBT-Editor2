@@ -46,6 +46,10 @@
             android:name=".ui.ImportFromMinecraftActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ui.MapViewerActivity"
+            android:exported="false" />
+
         <!-- Required so Shizuku can bind into this app -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
