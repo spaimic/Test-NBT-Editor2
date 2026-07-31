@@ -79,6 +79,15 @@ object ShizukuShell {
         check(exit == 0) { "Shizuku push-dir failed: $out" }
     }
 
+    // Diagnostic only: shows what user Shizuku's shell runs as, and the real
+    // ownership/permissions on a remote path, to debug write-permission failures.
+    fun diagnose(remotePath: String): String {
+        val (_, whoami) = run("id")
+        val (_, listing) = run("ls -la '$remotePath' 2>&1 | head -20")
+        val (_, parentListing) = run("ls -la '$remotePath/..' 2>&1 | head -5")
+        return "whoami: $whoami\nls -la (target):\n$listing\nls -la (parent):\n$parentListing"
+    }
+
     private fun newProcess(cmd: Array<String>, env: Array<String>?, dir: String?): Process {
         val method = Shizuku::class.java.getDeclaredMethod(
             "newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java

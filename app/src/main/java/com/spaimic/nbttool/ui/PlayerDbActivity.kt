@@ -149,6 +149,29 @@ class PlayerDbActivity : AppCompatActivity() {
         }
     }
 
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, 1, 0, "Diagnose write permissions")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == 1) {
+            Thread {
+                val remoteDbDir = "${LevelDbSession.worldsPath}/${LevelDbSession.worldDir}/db"
+                val report = com.spaimic.nbttool.shizuku.ShizukuShell.diagnose(remoteDbDir)
+                runOnUiThread {
+                    android.app.AlertDialog.Builder(this)
+                        .setTitle("Diagnostics")
+                        .setMessage(report)
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }.start()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     companion object {
         const val EXTRA_WORLDS_PATH = "worlds_path"
         const val EXTRA_WORLD_DIR = "world_dir"
