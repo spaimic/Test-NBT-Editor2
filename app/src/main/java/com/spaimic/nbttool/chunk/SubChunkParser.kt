@@ -4,6 +4,7 @@ import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
+import java.io.IOException
 
 /**
  * Decodes ONE subchunk's block storage — the paletted format used by every
@@ -54,6 +55,11 @@ object SubChunkParser {
     private fun decodeLayer(stream: DataInputStream): Array<Array<Array<String>>> {
         val flag = stream.readUnsignedByte()
         val bitsPerBlock = flag ushr 1
+        // A real persistent subchunk never has more than a few bits per block (values
+        // above ~16 mean we're not actually looking at a subchunk — likely a chunk key
+        // that was misidentified as one — so bail out cleanly rather than divide by
+        // zero or try to allocate an implausibly large array below.
+        if (bitsPerBlock > 32) throw IOException("Implausible bitsPerBlock=$bitsPerBlock — not a real subchunk")
         val indices = IntArray(4096)
 
         if (bitsPerBlock > 0) {
@@ -76,6 +82,12 @@ object SubChunkParser {
         // bitsPerBlock == 0 means every index stays 0 — the whole layer is palette[0]
 
         val paletteSize = readIntLE(stream)
+        // A real palette is at most a few hundred entries — anything wildly bigger means
+        // we've drifted out of sync with the actual data (or this was never a subchunk to
+        // begin with). Reject it instead of asking ArrayList to allocate gigabytes.
+        if (paletteSize < 0 || paletteSize > 65536) {
+            throw IOException("Implausible palette size $paletteSize — not a real subchunk")
+        }
         val palette = ArrayList<String>(paletteSize)
         repeat(paletteSize) {
             val compound = NbtIO.readCompoundFromStream(stream)
