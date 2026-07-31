@@ -74,8 +74,11 @@ class MapViewerActivity : AppCompatActivity() {
                 LevelDbSession.worldDir = worldDir
                 val keys = bridge.listKeys()
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
-                val chunkData = ChunkScanner.scanOverworld(bridge)
-                runOnUiThread { mapView.chunkData = chunkData }
+                val scanResult = ChunkScanner.scanOverworld(bridge)
+                runOnUiThread {
+                    mapView.chunkData = scanResult.grid
+                    reportScanStats(scanResult.stats)
+                }
             } catch (e: OutOfMemoryError) {
                 runOnUiThread {
                     showErrorDialog(this, "Ran out of memory scanning this world",
@@ -85,6 +88,24 @@ class MapViewerActivity : AppCompatActivity() {
                 runOnUiThread { showErrorDialog(this, "Failed to load world map", e) }
             }
         }.start()
+    }
+
+    private fun reportScanStats(stats: com.spaimic.nbttool.chunk.ScanStats) {
+        val unknownSample = stats.unknownBlockNames.take(15).joinToString("\n") { "  $it" }
+        val unknownNote = if (stats.unknownBlockNames.isEmpty()) "" else
+            "\n\nBlock names not yet in the color table (${stats.unknownBlockNames.size} distinct):\n$unknownSample" +
+                if (stats.unknownBlockNames.size > 15) "\n  …and ${stats.unknownBlockNames.size - 15} more" else ""
+        val message = "Loaded chunks: ${stats.totalLoadedChunks}" +
+            (if (stats.outliersDropped > 0) " (${stats.outliersDropped} dropped as likely false-positive outliers)" else "") +
+            "\nRendered with real terrain colors: ${stats.parsedOk}" +
+            "\nNo subchunk data found: ${stats.noSubchunkFound}" +
+            "\nSubchunk present but failed to parse: ${stats.subchunkParseFailed}" +
+            unknownNote
+        AlertDialog.Builder(this)
+            .setTitle("Map scan results")
+            .setMessage(message)
+            .setPositiveButton("OK", null)
+            .show()
     }
 
     private fun showMenu() {
@@ -193,8 +214,8 @@ class MapViewerActivity : AppCompatActivity() {
                 LevelDbSession.bridge = bridge
                 val keys = bridge.listKeys()
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
-                val chunkData = ChunkScanner.scanOverworld(bridge)
-                runOnUiThread { mapView.chunkData = chunkData }
+                val scanResult = ChunkScanner.scanOverworld(bridge)
+                runOnUiThread { mapView.chunkData = scanResult.grid }
             } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to reopen world DB", e) }
             }

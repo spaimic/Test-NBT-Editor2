@@ -79,4 +79,6 @@ object BlockColors {
     val fallbackUnparsed: Int = Color.rgb(90, 90, 90)   // chunk exists but its subchunk format wasn't decodable
 
     fun colorFor(blockName: String): Int = table[blockName] ?: fallbackSolid
+
+    fun isKnown(blockName: String): Boolean = blockName in table
 }
