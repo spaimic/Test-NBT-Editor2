@@ -7,14 +7,16 @@ import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
+import com.spaimic.nbttool.worlds.LocalWorldStore
+import java.io.File
 
 /**
- * Browses the world's LevelDB `db/` folder. The db/ folder actually holds ALL
- * world data — not just player/map/village records but a key per explored chunk
- * of terrain, which is usually the vast majority of entries. By default this
- * screen filters down to what's normally worth hand-editing: the local player,
- * remote/offline player records, and saved structures — with a toggle to show
- * everything (maps, villages, raw chunk data) if you actually need it.
+ * Browses a local world's LevelDB `db/` folder — player, map, structure, etc.
+ * data. Since the world already lives in this app's own sandbox, writes go
+ * straight to the real file; no Shizuku, no push-back step. The db/ folder
+ * actually holds ALL world data — a key per explored chunk of terrain being
+ * the usual bulk of it — so this defaults to showing just what's normally
+ * worth hand-editing: the local player, other player records, and structures.
  */
 class PlayerDbActivity : AppCompatActivity() {
 
@@ -26,8 +28,7 @@ class PlayerDbActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val worldsPath = intent.getStringExtra(EXTRA_WORLDS_PATH) ?: return finish()
-        val worldDir = intent.getStringExtra(EXTRA_WORLD_DIR) ?: return finish()
+        val worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
         title = "Player / Map / Village data"
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -37,10 +38,10 @@ class PlayerDbActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, _ -> applyFilter() }
         }
         listView = ListView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup_MATCH, 0, 1f)
+            layoutParams = LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
         val saveButton = Button(this).apply {
-            text = "Save all changes to world"
+            text = "Save"
             setOnClickListener { saveAll() }
         }
         root.addView(filterToggle)
@@ -50,10 +51,9 @@ class PlayerDbActivity : AppCompatActivity() {
 
         listView.setOnItemClickListener { _, _, position, _ -> openEntry(shownDisplayNames[position]) }
 
-        openDbAndListKeys(worldsPath, worldDir)
+        openDbAndListKeys(worldDir)
     }
 
-    /** ~local_player, player_*, and saved structures — the things worth hand-editing most often. */
     private fun isInterestingKey(name: String): Boolean =
         name == "~local_player" ||
             name.startsWith("player_") ||
@@ -64,23 +64,21 @@ class PlayerDbActivity : AppCompatActivity() {
         listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, shownDisplayNames)
     }
 
-    private fun openDbAndListKeys(worldsPath: String, worldDir: String, preserveEdits: Boolean = false) {
-        if (isLoading) return // avoid opening the same DB twice concurrently
+    private fun openDbAndListKeys(worldDir: File, preserveEdits: Boolean = false) {
+        if (isLoading) return
         isLoading = true
         Thread {
             try {
                 if (preserveEdits) {
-                    // a save attempt just closed (or half-closed) the previous handle — replace it
-                    // with a fresh one, but keep loadedEntries: those are your in-memory edits,
-                    // independent of whether the old DB handle is still alive.
                     try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
                     LevelDbSession.keyBytesByName.clear()
                 } else {
                     LevelDbSession.reset()
+                    // one backup per fresh editing session, before anything gets touched
+                    LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
                 }
-                val bridge = LevelDbBridge.open(worldsPath, worldDir, getExternalFilesDir(null)!!)
+                val bridge = LevelDbBridge.open(worldDir)
                 LevelDbSession.bridge = bridge
-                LevelDbSession.worldsPath = worldsPath
                 LevelDbSession.worldDir = worldDir
                 val keys = bridge.listKeys()
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
@@ -91,9 +89,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 isLoading = false
-                runOnUiThread {
-                    showErrorDialog(this, "Failed to open world DB", e)
-                }
+                runOnUiThread { showErrorDialog(this, "Failed to open world DB", e) }
             }
         }.start()
     }
@@ -113,31 +109,26 @@ class PlayerDbActivity : AppCompatActivity() {
                     startActivity(i)
                 }
             } catch (e: Exception) {
-                runOnUiThread {
-                    showErrorDialog(this, "Couldn't parse \"$displayName\"", e)
-                }
+                runOnUiThread { showErrorDialog(this, "Couldn't parse \"$displayName\"", e) }
             }
         }.start()
     }
 
     private fun saveAll() {
         val bridge = LevelDbSession.bridge ?: return
+        val worldDir = LevelDbSession.worldDir ?: return
         Thread {
             try {
                 for ((name, compound) in LevelDbSession.loadedEntries) {
                     val rawKey = LevelDbSession.keyBytesByName[name] ?: continue
                     bridge.write(rawKey, NbtIO.writeRootCompoundNoHeader(compound))
                 }
-                val localDir = bridge.localDbDir
                 bridge.close()
-                LevelDbBridge.pushBack(LevelDbSession.worldsPath, LevelDbSession.worldDir, localDir, getExternalFilesDir(null)!!)
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
             } catch (e: Exception) {
                 runOnUiThread { showErrorDialog(this, "Save failed (your edits are still kept — safe to retry)", e) }
             } finally {
-                // whether that succeeded or failed, the handle used above may already be closed —
-                // always get a fresh one so a retry never reuses a dead bridge (keeps your edits)
-                openDbAndListKeys(LevelDbSession.worldsPath, LevelDbSession.worldDir, preserveEdits = true)
+                openDbAndListKeys(worldDir, preserveEdits = true)
             }
         }.start()
     }
@@ -149,32 +140,7 @@ class PlayerDbActivity : AppCompatActivity() {
         }
     }
 
-    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
-        menu.add(0, 1, 0, "Diagnose write permissions")
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
-        if (item.itemId == 1) {
-            Thread {
-                val remoteDbDir = "${LevelDbSession.worldsPath}/${LevelDbSession.worldDir}/db"
-                val report = com.spaimic.nbttool.shizuku.ShizukuShell.diagnose(remoteDbDir)
-                runOnUiThread {
-                    android.app.AlertDialog.Builder(this)
-                        .setTitle("Diagnostics")
-                        .setMessage(report)
-                        .setPositiveButton("OK", null)
-                        .show()
-                }
-            }.start()
-            return true
-        }
-        return super.onOptionsItemSelected(item)
-    }
-
     companion object {
-        const val EXTRA_WORLDS_PATH = "worlds_path"
-        const val EXTRA_WORLD_DIR = "world_dir"
-        private const val ViewGroup_MATCH = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+        const val EXTRA_WORLD_PATH = "world_path"
     }
 }

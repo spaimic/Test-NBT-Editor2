@@ -42,6 +42,10 @@
             android:name=".ui.ClipboardActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ui.ImportFromMinecraftActivity"
+            android:exported="false" />
+
         <!-- Required so Shizuku can bind into this app -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
@@ -50,5 +54,16 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- Hands exported .mcworld files to Minecraft (or a chooser) without needing a public path -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

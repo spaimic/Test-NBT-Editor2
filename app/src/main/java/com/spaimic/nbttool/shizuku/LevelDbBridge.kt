@@ -7,11 +7,11 @@ import org.iq80.leveldb.impl.Iq80DBFactory
 import java.io.File
 
 /**
- * Bedrock stores player, map, and village data as key/value pairs in the world's
- * `db/` LevelDB folder (separate from level.dat, which only holds top-level world
- * settings). LevelDB needs random access to a whole set of files (.ldb, MANIFEST,
- * CURRENT, LOCK, LOG) — not just one file — so we pull/push the entire folder via
- * Shizuku and open it locally with a pure-Java LevelDB implementation.
+ * Opens a LOCAL world's `db/` folder directly — since imported worlds live in
+ * this app's own sandbox now, this is plain file access, no Shizuku involved.
+ * Still uses the vendored, zlib-patched LevelDB (see table/FileChannelTable.java)
+ * since Bedrock's compression format is the same regardless of where the files
+ * physically live.
  *
  * Known Bedrock key conventions:
  *   ~local_player          — the local player's data
@@ -20,13 +20,13 @@ import java.io.File
  *   map_<id>               — a saved map item
  *   village_<uuid>_*       — village records (several sub-keys per village)
  */
-class LevelDbBridge private constructor(private val db: DB, val localDbDir: File) {
+class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
 
     data class KeyEntry(val displayName: String, val rawKey: ByteArray)
 
     fun listKeys(): List<KeyEntry> {
         val out = ArrayList<KeyEntry>()
-        db.iterator().use { it ->
+        db.iterator().use {
             it.seekToFirst()
             while (it.hasNext()) {
                 val entry = it.next()
@@ -45,42 +45,35 @@ class LevelDbBridge private constructor(private val db: DB, val localDbDir: File
     fun close() = db.close()
 
     private fun decodeKeyName(key: ByteArray): String {
-        // Most player/map/village keys are plain ASCII; anything with unprintable
-        // bytes (chunk data, etc.) falls back to a hex dump so it's still visible.
         val isPrintable = key.all { (it.toInt() and 0xFF) in 0x20..0x7E }
         return if (isPrintable) String(key, Charsets.US_ASCII)
                else key.joinToString("") { "%02x".format(it.toInt() and 0xFF) }
     }
 
     companion object {
-        /** Pulls `<worldsPath>/<worldDir>/db` to app-private storage and opens it. */
-        fun open(worldsPath: String, worldDir: String, localStagingRoot: File): LevelDbBridge {
+        /** Opens `<worldDir>/db` in place. */
+        fun open(worldDir: File): LevelDbBridge {
             // Iq80DBFactory.USE_MMAP is a `static final` decided from this system property at
             // class-load time; force it off so reads go through FileChannelTable, the only one
-            // of the two Table implementations we patched with zlib support.
+            // of the two Table implementations patched with zlib support.
             System.setProperty("leveldb.mmap", "false")
 
-            val remoteDbDir = "$worldsPath/$worldDir/db"
-            val localDbDir = File(localStagingRoot, "db_$worldDir")
-            ShizukuShell.pullDir(remoteDbDir, localDbDir.absolutePath)
+            val dbDir = File(worldDir, "db")
             val options = Options().apply {
                 createIfMissing(false)
                 // Bedrock's own C++ engine expects NONE or zlib — never write Snappy-compressed
-                // tables back, or the actual game may fail to read data we wrote.
+                // tables back, or Minecraft itself may fail to read data we wrote.
                 compressionType(CompressionType.NONE)
             }
-            val db = Iq80DBFactory.factory.open(localDbDir, options)
-            return LevelDbBridge(db, localDbDir)
+            val db = Iq80DBFactory.factory.open(dbDir, options)
+            return LevelDbBridge(db, dbDir)
         }
 
-        /** Closes (call before this!) then pushes the edited local db/ folder back, backing it up locally first. */
-        fun pushBack(worldsPath: String, worldDir: String, localDbDir: File, localBackupRoot: File) {
-            val remoteDbDir = "$worldsPath/$worldDir/db"
-            val backupDir = File(localBackupRoot, "backups/db_${worldDir}_${System.currentTimeMillis()}")
-            // create the parent ("backups/") via our own app's file API first — Shizuku's shell
-            // `cp` won't create missing intermediate directories on its own
-            backupDir.parentFile?.mkdirs()
-            ShizukuShell.pushDirWithBackup(localDbDir.absolutePath, remoteDbDir, backupDir.absolutePath)
+        /** Copies `db/` to a local backup folder before you start editing — plain file copy, no Shizuku. */
+        fun backup(worldDir: File, backupsRoot: File): File {
+            val dest = File(backupsRoot, "db_${worldDir.name}_${System.currentTimeMillis()}")
+            File(worldDir, "db").copyRecursively(dest, overwrite = true)
+            return dest
         }
     }
 }

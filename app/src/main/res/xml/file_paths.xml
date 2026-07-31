@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Only the exports/ folder is ever shared out via FileProvider — where
+         .mcworld files land right before we hand them to Minecraft. -->
+    <external-files-path name="exports" path="exports/" />
+</paths>

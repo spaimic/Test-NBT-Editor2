@@ -1,106 +1,170 @@
 package com.spaimic.nbttool.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.widget.ArrayAdapter
 import android.widget.ListView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import rikka.shizuku.Shizuku
-import com.spaimic.nbttool.nbt.NbtIO
-import com.spaimic.nbttool.nbt.NbtTag
-import com.spaimic.nbttool.shizuku.ShizukuShell
+import androidx.core.content.FileProvider
+import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
 
+/**
+ * Shows worlds imported into this app's own sandbox (not Minecraft's — see
+ * LocalWorldStore for why). Tap a world to edit it; long-press for
+ * "Open in Minecraft" (exports back to .mcworld and hands it to Minecraft) or
+ * Delete. The + button imports a world either straight from Minecraft (via
+ * Shizuku, read-only) or from a picked .mcworld/.mctemplate file.
+ */
 class WorldListActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
-
-    /** folder name (real, on-disk id) -> display name (LevelName from level.dat, falls back to the folder name) */
-    private var worldDirs: List<String> = emptyList()
-    private var displayNames: List<String> = emptyList()
-
-    private val permissionListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
-        if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            refreshWorldList()
-        } else {
-            Toast.makeText(this, "Shizuku permission denied — can't reach Minecraft's data folder", Toast.LENGTH_LONG).show()
-        }
-    }
+    private var worldDirs: List<File> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        listView = ListView(this)
-        setContentView(listView)
-        title = "Minecraft Worlds"
+        title = "My Worlds"
 
-        listView.setOnItemClickListener { _, _, position, _ ->
-            openWorld(worldDirs[position])
+        val root = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
+        listView = ListView(this).apply {
+            layoutParams = android.widget.LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
         }
+        val importButton = android.widget.Button(this).apply {
+            text = "Import a world"
+            setOnClickListener { showImportMenu() }
+        }
+        root.addView(listView)
+        root.addView(importButton)
+        setContentView(root)
 
-        Shizuku.addRequestPermissionResultListener(permissionListener)
-        ensureShizukuAndScan()
+        listView.setOnItemClickListener { _, _, position, _ -> openWorld(worldDirs[position]) }
+        listView.setOnItemLongClickListener { _, _, position, _ -> showWorldMenu(worldDirs[position]); true }
     }
 
-    override fun onDestroy() {
-        Shizuku.removeRequestPermissionResultListener(permissionListener)
-        super.onDestroy()
-    }
-
-    private fun ensureShizukuAndScan() {
-        if (!Shizuku.pingBinder()) {
-            Toast.makeText(this, "Shizuku isn't running. Install/start Shizuku first.", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            refreshWorldList()
-        } else {
-            Shizuku.requestPermission(REQUEST_CODE_SHIZUKU)
-        }
+    override fun onResume() {
+        super.onResume()
+        refreshWorldList()
     }
 
     private fun refreshWorldList() {
-        Thread {
-            var dirs = ShizukuShell.listWorldDirs(ShizukuShell.WORLDS_PATH_STANDARD)
-            var basePath = ShizukuShell.WORLDS_PATH_STANDARD
-            if (dirs.isEmpty()) {
-                dirs = ShizukuShell.listWorldDirs(ShizukuShell.WORLDS_PATH_LEGACY)
-                basePath = ShizukuShell.WORLDS_PATH_LEGACY
-            }
-            val withLevelDat = dirs.filter { ShizukuShell.hasLevelDat(it, basePath) }
+        worldDirs = LocalWorldStore.listLocalWorlds(this)
+        val labels = worldDirs.map { LocalWorldStore.levelName(it) }
+        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+    }
 
-            // Pull each world's level.dat just to read its LevelName for a human-readable list.
-            val names = withLevelDat.map { dir -> dir to readLevelName(basePath, dir) }
+    private fun openWorld(worldDir: File) {
+        val intent = Intent(this, EditorActivity::class.java)
+        intent.putExtra(EditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
+        startActivity(intent)
+    }
 
-            runOnUiThread {
-                worldDirs = names.map { it.first }
-                displayNames = names.map { it.second }
-                worldsBasePath = basePath
-                if (worldDirs.isEmpty()) {
-                    Toast.makeText(this, "No worlds with level.dat found under $basePath", Toast.LENGTH_LONG).show()
+    private fun showWorldMenu(worldDir: File) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(LocalWorldStore.levelName(worldDir))
+            .setItems(arrayOf("Open in Minecraft", "Delete")) { _, which ->
+                when (which) {
+                    0 -> openInMinecraft(worldDir)
+                    1 -> confirmDelete(worldDir)
                 }
-                listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, displayNames)
+            }
+            .show()
+    }
+
+    private fun confirmDelete(worldDir: File) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Delete this local copy?")
+            .setMessage("This only deletes the copy inside this app — it does not touch anything in Minecraft.")
+            .setPositiveButton("Delete") { _, _ ->
+                LocalWorldStore.deleteLocalWorld(worldDir)
+                refreshWorldList()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openInMinecraft(worldDir: File) {
+        Thread {
+            try {
+                val mcworldFile = LocalWorldStore.exportToMcworld(this, worldDir)
+                val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", mcworldFile)
+                runOnUiThread {
+                    val intent = Intent(Intent.ACTION_VIEW).apply {
+                        setDataAndType(uri, "application/mcworld")
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    try {
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        // no app registered for that exact MIME type — let the user pick from a
+                        // generic chooser instead (Minecraft still shows up for .mcworld files)
+                        val chooser = Intent(Intent.ACTION_VIEW).apply {
+                            setDataAndType(uri, "*/*")
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(Intent.createChooser(chooser, "Open with…"))
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Couldn't export to .mcworld", e) }
             }
         }.start()
     }
 
-    /** Pulls just level.dat (small file) and reads its "LevelName" tag; falls back to the folder id on any failure. */
-    private fun readLevelName(basePath: String, worldDir: String): String {
-        return try {
-            val localPath = File(getExternalFilesDir(null), "peek_level.dat").absolutePath
-            ShizukuShell.pullFile("$basePath/$worldDir/level.dat", localPath)
-            val dat = NbtIO.readLevelDat(File(localPath).readBytes())
-            (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir
-        } catch (e: Exception) {
-            worldDir
+    private fun showImportMenu() {
+        android.app.AlertDialog.Builder(this)
+            .setItems(arrayOf("Copy from Minecraft", "Import .mcworld / .mctemplate file")) { _, which ->
+                when (which) {
+                    0 -> startActivity(Intent(this, ImportFromMinecraftActivity::class.java))
+                    1 -> pickFileToImport()
+                }
+            }
+            .show()
+    }
+
+    private fun pickFileToImport() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(intent, REQUEST_CODE_PICK_FILE)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_PICK_FILE && resultCode == RESULT_OK) {
+            val uri: Uri = data?.data ?: return
+            promptImportName(uri)
         }
     }
 
-    private fun openWorld(worldDir: String) {
-        val intent = Intent(this, EditorActivity::class.java)
-        intent.putExtra(EditorActivity.EXTRA_WORLDS_PATH, worldsBasePath)
-        intent.putExtra(EditorActivity.EXTRA_WORLD_DIR, worldDir)
-        startActivity(intent)
+    private fun promptImportName(uri: Uri) {
+        val guessed = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "world"
+        val input = android.widget.EditText(this).apply { setText(guessed) }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Name this imported world")
+            .setView(input)
+            .setPositiveButton("Import") { _, _ ->
+                val localName = LocalWorldStore.uniqueLocalName(this, input.text.toString())
+                Thread {
+                    try {
+                        LocalWorldStore.importFromZip(this, uri, localName)
+                        runOnUiThread {
+                            Toast.makeText(this, "Imported \"$localName\"", Toast.LENGTH_SHORT).show()
+                            refreshWorldList()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { showErrorDialog(this, "Import failed", e) }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
@@ -117,8 +181,7 @@ class WorldListActivity : AppCompatActivity() {
     }
 
     companion object {
-        private const val REQUEST_CODE_SHIZUKU = 1001
+        private const val REQUEST_CODE_PICK_FILE = 2001
         private const val MENU_ITEM_CLIPBOARD = 1
-        var worldsBasePath: String = ShizukuShell.WORLDS_PATH_STANDARD
     }
 }
