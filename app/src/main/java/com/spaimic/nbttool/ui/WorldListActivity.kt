@@ -52,8 +52,11 @@ class WorldListActivity : AppCompatActivity() {
 
     private fun refreshWorldList() {
         worldDirs = LocalWorldStore.listLocalWorlds(this)
-        val labels = worldDirs.map { LocalWorldStore.levelName(it) }
-        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        val rows = worldDirs.map { dir ->
+            val info = LocalWorldStore.worldInfo(dir)
+            WorldRow(info.name, info.dateLine, info.timeLine)
+        }
+        listView.adapter = WorldRowAdapter(this, rows)
     }
 
     private fun openWorld(worldDir: File) {

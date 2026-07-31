@@ -48,6 +48,31 @@ object LocalWorldStore {
         worldDir.name
     }
 
+    data class WorldInfo(val name: String, val dateLine: String, val timeLine: String)
+
+    /** name + LastPlayed formatted as separate date/time lines (both from one level.dat parse). */
+    fun worldInfo(worldDir: File): WorldInfo = try {
+        val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
+        val name = (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir.name
+        val (date, time) = lastPlayedDateTime(dat)
+        WorldInfo(name, date, time)
+    } catch (e: Exception) {
+        WorldInfo(worldDir.name, "", "")
+    }
+
+    /** Formats the level.dat "LastPlayed" tag (epoch seconds) as separate date/time strings. */
+    fun lastPlayedDateTime(dat: NbtIO.LevelDat): Pair<String, String> {
+        val seconds = when (val tag = dat.root.entries["LastPlayed"]) {
+            is NbtTag.Long -> tag.value
+            is NbtTag.Int -> tag.value.toLong()
+            else -> return "" to ""
+        }
+        val date = java.util.Date(seconds * 1000)
+        val dateFmt = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
+        val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+        return dateFmt.format(date) to timeFmt.format(date)
+    }
+
     /** Picks a local folder name that doesn't collide with an existing import. */
     fun uniqueLocalName(context: Context, desired: String): String {
         val safe = desired.trim().ifBlank { "world" }.replace(Regex("[^A-Za-z0-9 _-]"), "_")

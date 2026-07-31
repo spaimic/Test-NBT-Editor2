@@ -22,7 +22,7 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
     private var worldDirs: List<String> = emptyList()
-    private var displayNames: List<String> = emptyList()
+    private var rows: List<WorldRow> = emptyList()
     private var worldsBasePath: String = ShizukuShell.WORLDS_PATH_STANDARD
 
     private val permissionListener = Shizuku.OnRequestPermissionResultListener { _, grantResult ->
@@ -39,7 +39,7 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
         listView = ListView(this)
         setContentView(listView)
 
-        listView.setOnItemClickListener { _, _, position, _ -> promptImport(worldDirs[position], displayNames[position]) }
+        listView.setOnItemClickListener { _, _, position, _ -> promptImport(worldDirs[position], rows[position].name) }
 
         Shizuku.addRequestPermissionResultListener(permissionListener)
         ensureShizukuAndScan()
@@ -71,26 +71,28 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
                 basePath = ShizukuShell.WORLDS_PATH_LEGACY
             }
             val withLevelDat = dirs.filter { ShizukuShell.hasLevelDat(it, basePath) }
-            val names = withLevelDat.map { dir -> dir to readLevelName(basePath, dir) }
+            val fetched = withLevelDat.map { dir -> dir to readWorldRow(basePath, dir) }
             runOnUiThread {
-                worldDirs = names.map { it.first }
-                displayNames = names.map { it.second }
+                worldDirs = fetched.map { it.first }
+                rows = fetched.map { it.second }
                 worldsBasePath = basePath
                 if (worldDirs.isEmpty()) {
                     Toast.makeText(this, "No worlds with level.dat found under $basePath", Toast.LENGTH_LONG).show()
                 }
-                listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, displayNames)
+                listView.adapter = WorldRowAdapter(this, rows)
             }
         }.start()
     }
 
-    private fun readLevelName(basePath: String, worldDir: String): String = try {
+    private fun readWorldRow(basePath: String, worldDir: String): WorldRow = try {
         val localPath = File(getExternalFilesDir(null), "peek_level.dat").absolutePath
         ShizukuShell.pullFile("$basePath/$worldDir/level.dat", localPath)
         val dat = NbtIO.readLevelDat(File(localPath).readBytes())
-        (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir
+        val name = (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir
+        val (date, time) = LocalWorldStore.lastPlayedDateTime(dat)
+        WorldRow(name, date, time)
     } catch (e: Exception) {
-        worldDir
+        WorldRow(worldDir, "", "")
     }
 
     private fun promptImport(remoteWorldDir: String, suggestedName: String) {
