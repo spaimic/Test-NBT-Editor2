@@ -22,7 +22,10 @@ object ChunkScanner {
      * explored world.
      */
     fun scanOverworld(bridge: LevelDbBridge): Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> {
-        val subchunksByChunk = HashMap<Pair<Int, Int>, HashMap<Int, ByteArray>>()
+        // chunk position -> (highest subChunkY seen so far, its raw bytes) — we only ever
+        // need the topmost subchunk per chunk, so there's no reason to hold every Y-level
+        // in memory at once (that's what was blowing through the heap on larger worlds).
+        val bestSubchunkByChunk = HashMap<Pair<Int, Int>, Pair<Int, ByteArray>>()
         val loadedChunks = HashSet<Pair<Int, Int>>()
 
         bridge.forEachRawEntry { key, value ->
@@ -31,18 +34,21 @@ object ChunkScanner {
                 val pos = info.chunkX to info.chunkZ
                 loadedChunks.add(pos)
                 if (info.tag == ChunkKeys.TAG_SUBCHUNK_PREFIX && info.subChunkY != null) {
-                    subchunksByChunk.getOrPut(pos) { HashMap() }[info.subChunkY] = value
+                    val current = bestSubchunkByChunk[pos]
+                    if (current == null || info.subChunkY > current.first) {
+                        bestSubchunkByChunk[pos] = info.subChunkY to value
+                    }
                 }
             }
         }
 
         val result = HashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
         for (pos in loadedChunks) {
-            val subs = subchunksByChunk[pos]
+            val best = bestSubchunkByChunk[pos]
             val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
-            if (subs != null && subs.isNotEmpty()) {
-                val topY = subs.keys.max()
-                val blocks = SubChunkParser.parse(subs.getValue(topY))
+            if (best != null) {
+                val (topY, bytes) = best
+                val blocks = SubChunkParser.parse(bytes)
                 if (blocks != null) {
                     for (x in 0 until 16) {
                         for (z in 0 until 16) {

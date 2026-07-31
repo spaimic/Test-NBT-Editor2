@@ -12,6 +12,7 @@
     </queries>
 
     <application
+        android:name=".NbtToolApp"
         android:allowBackup="true"
         android:label="NBT Tool"
         android:theme="@style/Theme.AppCompat.DayNight"

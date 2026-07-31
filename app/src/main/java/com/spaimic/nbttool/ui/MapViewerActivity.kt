@@ -76,7 +76,12 @@ class MapViewerActivity : AppCompatActivity() {
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
                 val chunkData = ChunkScanner.scanOverworld(bridge)
                 runOnUiThread { mapView.chunkData = chunkData }
-            } catch (e: Exception) {
+            } catch (e: OutOfMemoryError) {
+                runOnUiThread {
+                    showErrorDialog(this, "Ran out of memory scanning this world",
+                        Exception("The map view couldn't hold this world's chunk data in memory. Very large/heavily-explored worlds may be too big for this first version of the map viewer — the rest of the app (level.dat, player data, structures) still works fine via the ☰ menu options.", e))
+                }
+            } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to load world map", e) }
             }
         }.start()
@@ -169,7 +174,7 @@ class MapViewerActivity : AppCompatActivity() {
                 }
                 bridge.close()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Save failed (your edits are still kept — safe to retry)", e) }
             } finally {
                 // the handle used above may now be closed — get a fresh one, keeping edits,
@@ -190,7 +195,7 @@ class MapViewerActivity : AppCompatActivity() {
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
                 val chunkData = ChunkScanner.scanOverworld(bridge)
                 runOnUiThread { mapView.chunkData = chunkData }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to reopen world DB", e) }
             }
         }.start()
