@@ -52,35 +52,31 @@ class NbtTreeAdapter(
     private fun rebuild() {
         val out = ArrayList<Pair<String, NbtRow>>()
 
-        fun walkCompound(compound: NbtTag.Compound, path: String, depth: Int) {
-            for ((key, tag) in compound.entries) {
-                val childPath = "$path/$key"
-                out.add(childPath to NbtRow(key, tag, depth, NbtContainer.InCompound(compound, key)))
-                if (childPath in expanded) {
-                    when (tag) {
-                        is NbtTag.Compound -> walkCompound(tag, childPath, depth + 1)
-                        is NbtTag.ListTag -> walkList(tag, childPath, depth + 1)
-                        else -> {}
+        fun walk(container: NbtTag, path: String, depth: Int) {
+            when (container) {
+                is NbtTag.Compound -> {
+                    for ((key, tag) in container.entries) {
+                        val childPath = "$path/$key"
+                        out.add(childPath to NbtRow(key, tag, depth, NbtContainer.InCompound(container, key)))
+                        if (childPath in expanded && (tag is NbtTag.Compound || tag is NbtTag.ListTag)) {
+                            walk(tag, childPath, depth + 1)
+                        }
                     }
                 }
+                is NbtTag.ListTag -> {
+                    for ((index, tag) in container.items.withIndex()) {
+                        val childPath = "$path[$index]"
+                        out.add(childPath to NbtRow("[$index]", tag, depth, NbtContainer.InList(container, index)))
+                        if (childPath in expanded && (tag is NbtTag.Compound || tag is NbtTag.ListTag)) {
+                            walk(tag, childPath, depth + 1)
+                        }
+                    }
+                }
+                else -> {}
             }
         }
 
-        fun walkList(list: NbtTag.ListTag, path: String, depth: Int) {
-            for ((index, tag) in list.items.withIndex()) {
-                val childPath = "$path[$index]"
-                out.add(childPath to NbtRow("[$index]", tag, depth, NbtContainer.InList(list, index)))
-                if (childPath in expanded) {
-                    when (tag) {
-                        is NbtTag.Compound -> walkCompound(tag, childPath, depth + 1)
-                        is NbtTag.ListTag -> walkList(tag, childPath, depth + 1)
-                        else -> {}
-                    }
-                }
-            }
-        }
-
-        walkCompound(root, "", 0)
+        walk(root, "", 0)
         rows = out
     }
 
