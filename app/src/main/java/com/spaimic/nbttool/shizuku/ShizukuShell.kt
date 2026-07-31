@@ -64,15 +64,22 @@ object ShizukuShell {
     }
 
     /**
-     * Replaces remoteDir with localDir's contents, after first backing up the
+     * Replaces remoteDir's contents with localDir's, after first backing up the
      * CURRENT remote contents into localBackupDir (our own app storage — proven
      * writable, unlike creating a brand-new sibling folder inside another app's
      * sandbox, which some devices refuse even though overwriting existing files
      * there works fine).
+     *
+     * Deliberately does NOT `rm -rf` the remote folder first: some devices refuse
+     * to delete LevelDB's CURRENT/MANIFEST/*.log files even via Shizuku (likely
+     * because the world isn't fully released — e.g. Minecraft backgrounded but not
+     * fully closed), while overwriting those same files in place works fine. Any
+     * stale files LevelDB compacted away locally are harmless left behind — it
+     * only ever reads what CURRENT/MANIFEST still reference.
      */
     fun pushDirWithBackup(localDir: String, remoteDir: String, localBackupDir: String) {
         pullDir(remoteDir, localBackupDir) // reuses the already-proven pull path for the backup copy
-        val (exit, out) = run("rm -rf '$remoteDir' && cp -r '$localDir' '$remoteDir'")
+        val (exit, out) = run("cp -r '$localDir/.' '$remoteDir/'")
         check(exit == 0) { "Shizuku push-dir failed: $out" }
     }
 
