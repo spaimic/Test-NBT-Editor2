@@ -64,12 +64,20 @@ class PlayerDbActivity : AppCompatActivity() {
         listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, shownDisplayNames)
     }
 
-    private fun openDbAndListKeys(worldsPath: String, worldDir: String) {
+    private fun openDbAndListKeys(worldsPath: String, worldDir: String, preserveEdits: Boolean = false) {
         if (isLoading) return // avoid opening the same DB twice concurrently
         isLoading = true
         Thread {
             try {
-                LevelDbSession.reset() // closes any previously-open bridge first
+                if (preserveEdits) {
+                    // a save attempt just closed (or half-closed) the previous handle — replace it
+                    // with a fresh one, but keep loadedEntries: those are your in-memory edits,
+                    // independent of whether the old DB handle is still alive.
+                    try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
+                    LevelDbSession.keyBytesByName.clear()
+                } else {
+                    LevelDbSession.reset()
+                }
                 val bridge = LevelDbBridge.open(worldsPath, worldDir, getExternalFilesDir(null)!!)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldsPath = worldsPath
@@ -124,10 +132,12 @@ class PlayerDbActivity : AppCompatActivity() {
                 bridge.close()
                 LevelDbBridge.pushBack(LevelDbSession.worldsPath, LevelDbSession.worldDir, localDir, getExternalFilesDir(null)!!)
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
-                // reopen so the list/session stay usable if the user keeps editing
-                openDbAndListKeys(LevelDbSession.worldsPath, LevelDbSession.worldDir)
             } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Save failed", e) }
+                runOnUiThread { showErrorDialog(this, "Save failed (your edits are still kept — safe to retry)", e) }
+            } finally {
+                // whether that succeeded or failed, the handle used above may already be closed —
+                // always get a fresh one so a retry never reuses a dead bridge (keeps your edits)
+                openDbAndListKeys(LevelDbSession.worldsPath, LevelDbSession.worldDir, preserveEdits = true)
             }
         }.start()
     }

@@ -77,6 +77,9 @@ class LevelDbBridge private constructor(private val db: DB, val localDbDir: File
         fun pushBack(worldsPath: String, worldDir: String, localDbDir: File, localBackupRoot: File) {
             val remoteDbDir = "$worldsPath/$worldDir/db"
             val backupDir = File(localBackupRoot, "backups/db_${worldDir}_${System.currentTimeMillis()}")
+            // create the parent ("backups/") via our own app's file API first — Shizuku's shell
+            // `cp` won't create missing intermediate directories on its own
+            backupDir.parentFile?.mkdirs()
             ShizukuShell.pushDirWithBackup(localDbDir.absolutePath, remoteDbDir, backupDir.absolutePath)
         }
     }
