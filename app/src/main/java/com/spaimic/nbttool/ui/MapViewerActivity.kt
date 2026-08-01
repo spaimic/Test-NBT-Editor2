@@ -60,7 +60,10 @@ class MapViewerActivity : AppCompatActivity() {
         )
         setContentView(root)
 
-        mapView.onTap = { x, y, z -> coordText.text = "X: $x\nY: $y\nZ: $z" }
+        mapView.onTap = { x, y, z ->
+            coordText.text = "X: $x\nY: $y\nZ: $z"
+            showChunkDialog(x, z)
+        }
 
         loadAndScan()
     }
@@ -128,6 +131,20 @@ class MapViewerActivity : AppCompatActivity() {
             .setTitle("Map scan results")
             .setMessage(message)
             .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun showChunkDialog(worldX: Int, worldZ: Int) {
+        val chunkX = Math.floorDiv(worldX, 16)
+        val chunkZ = Math.floorDiv(worldZ, 16)
+        AlertDialog.Builder(this)
+            .setTitle("Chunk ($chunkX, $chunkZ)")
+            .setItems(arrayOf("Show Entities")) { _, _ ->
+                val i = Intent(this, EntityListActivity::class.java)
+                i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
+                i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
+                startActivity(i)
+            }
             .show()
     }
 

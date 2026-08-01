@@ -2,13 +2,16 @@ package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
 import android.content.Context
+import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.spaimic.nbttool.clipboard.NbtClipboard
+import com.spaimic.nbttool.nbt.NbtIcons
 import com.spaimic.nbttool.nbt.NbtTag
 
 /** Where a row's tag actually lives — a named slot in a compound, or an indexed slot in a list. */
@@ -85,24 +88,34 @@ class NbtTreeAdapter(
         notifyDataSetChanged()
     }
 
-    inner class VH(val text: TextView) : RecyclerView.ViewHolder(text)
+    inner class VH(val row: LinearLayout, val icon: ImageView, val text: TextView) : RecyclerView.ViewHolder(row)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
-        val tv = TextView(parent.context).apply {
-            setPadding(24, 20, 24, 20)
+        val icon = ImageView(parent.context).apply {
+            layoutParams = LinearLayout.LayoutParams(56, 56).apply { rightMargin = 16 }
+        }
+        val text = TextView(parent.context).apply {
             textSize = 15f
         }
-        return VH(tv)
+        val row = LinearLayout(parent.context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            setPadding(24, 20, 24, 20)
+            addView(icon)
+            addView(text)
+        }
+        return VH(row, icon, text)
     }
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val (path, row) = rows[position]
         val indent = "  ".repeat(row.depth)
         val summary = summaryOf(row.tag)
+        holder.icon.setImageResource(NbtIcons.iconFor(row.tag))
         holder.text.text = "$indent${row.label}: ${NbtTag.typeName(row.tag.id)} = $summary"
 
         val isContainer = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag
-        holder.text.setOnClickListener {
+        holder.row.setOnClickListener {
             if (isContainer) {
                 if (path in expanded) expanded.remove(path) else expanded.add(path)
                 refresh()
@@ -110,7 +123,7 @@ class NbtTreeAdapter(
                 onLeafTapped(row)
             }
         }
-        holder.text.setOnLongClickListener {
+        holder.row.setOnLongClickListener {
             showRowMenu(row)
             true
         }

@@ -51,6 +51,10 @@
             android:name=".ui.MapViewerActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".ui.EntityListActivity"
+            android:exported="false" />
+
         <!-- Required so Shizuku can bind into this app -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"

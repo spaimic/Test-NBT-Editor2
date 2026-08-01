@@ -1,11 +1,15 @@
 package com.spaimic.nbttool.ui
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
+import com.spaimic.nbttool.R
 import com.spaimic.nbttool.chunk.BlockColors
 import com.spaimic.nbttool.chunk.ColumnInfo
 import kotlin.math.abs
@@ -43,6 +47,7 @@ class MapView(context: Context) : View(context) {
 
     private val gridPaint = Paint().apply { color = Color.rgb(25, 25, 25); strokeWidth = 2f; style = Paint.Style.STROKE }
     private val unloadedPaint = Paint().apply { color = BlockColors.fallbackUnloaded }
+    private val steveBitmap: Bitmap by lazy { BitmapFactory.decodeResource(resources, R.drawable.steve) }
     private val blockPaint = Paint()
 
     override fun onDraw(canvas: Canvas) {
@@ -94,6 +99,17 @@ class MapView(context: Context) : View(context) {
                 }
                 canvas.drawRect(screenX, screenY, screenX + 16 * blockPx, screenY + 16 * blockPx, gridPaint)
             }
+        }
+
+        preferredCenterBlock?.let { (px, pz) ->
+            val screenPx = offsetX + (Math.floorDiv(px, 16) - minCx) * 16 * blockPx + Math.floorMod(px, 16) * blockPx
+            val screenPz = offsetY + (Math.floorDiv(pz, 16) - minCz) * 16 * blockPx + Math.floorMod(pz, 16) * blockPx
+            val markerSize = 48
+            val dest = Rect(
+                (screenPx - markerSize / 2).toInt(), (screenPz - markerSize).toInt(),
+                (screenPx + markerSize / 2).toInt(), screenPz.toInt()
+            )
+            canvas.drawBitmap(steveBitmap, null, dest, null)
         }
     }
 
