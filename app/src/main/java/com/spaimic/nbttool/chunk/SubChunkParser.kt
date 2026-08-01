@@ -34,14 +34,10 @@ object SubChunkParser {
             if (version != 8 && version != 9) {
                 return fail("unsupported subchunk version=$version")
             }
-            if (version == 9) {
-                // NOTE: earlier versions of this parser assumed version 9 has an extra
-                // "embedded Y index" byte here before layerCount. Real hex dumps from an
-                // actual world showed that's wrong — there's no such byte — so this is
-                // intentionally a no-op now, left as a marker in case a future version
-                // really does need something skipped here.
-            }
             val layerCount = stream.readUnsignedByte()
+            // Confirmed against real hex dumps: version 9's extra "subchunk index" byte comes
+            // AFTER the storage count, not right after the version byte.
+            if (version == 9) stream.readByte()
             if (layerCount < 1) {
                 return fail("layerCount=$layerCount (version=$version)")
             }
