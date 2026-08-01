@@ -20,7 +20,7 @@ import com.spaimic.nbttool.shizuku.LevelDbSession
  */
 class EntityListActivity : AppCompatActivity() {
 
-    private data class EntityRow(val displayName: String, val iconRes: Int)
+    private data class EntityRow(val label: String, val sessionKey: String, val iconRes: Int)
 
     private lateinit var listView: ListView
     private var rows: List<EntityRow> = emptyList()
@@ -35,7 +35,7 @@ class EntityListActivity : AppCompatActivity() {
         setContentView(listView)
         listView.setOnItemClickListener { _, _, position, _ ->
             val i = Intent(this, DbEntryEditorActivity::class.java)
-            i.putExtra(DbEntryEditorActivity.EXTRA_DISPLAY_NAME, rows[position].displayName)
+            i.putExtra(DbEntryEditorActivity.EXTRA_DISPLAY_NAME, rows[position].sessionKey)
             startActivity(i)
         }
 
@@ -68,7 +68,7 @@ class EntityListActivity : AppCompatActivity() {
                     LevelDbSession.loadedEntries[displayName] = compound
                     val niceName = identifier.substringAfter(':').replace('_', ' ')
                         .replaceFirstChar { it.uppercase() }
-                    built.add(EntityRow("$niceName ($idHex)", EntityIcons.iconFor(identifier)))
+                    built.add(EntityRow("$niceName ($idHex)", displayName, EntityIcons.iconFor(identifier)))
                 }
                 runOnUiThread {
                     if (built.isEmpty()) {
@@ -105,7 +105,7 @@ class EntityListActivity : AppCompatActivity() {
                 layoutParams = LinearLayout.LayoutParams(72, 72).apply { rightMargin = 24 }
             }
             val text = TextView(context).apply {
-                text = row.displayName
+                text = row.label
                 textSize = 16f
             }
             return LinearLayout(context).apply {
