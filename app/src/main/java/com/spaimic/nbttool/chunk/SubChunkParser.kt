@@ -7,59 +7,45 @@ import java.io.DataInputStream
 import java.io.IOException
 
 /**
- * Decodes ONE subchunk's block storage — the paletted format used by every
- * Bedrock world saved since roughly 1.2 ("subchunk format version 8/9"). Older
- * pre-1.0 worlds used a different flat format and are NOT handled here; such a
- * subchunk simply fails to parse (returns null) and the caller treats that
- * chunk as loaded-but-unknown rather than crashing.
- *
- * Layout of one subchunk value:
- *   byte version            (8 or 9)
- *   [byte subChunkIndexY]   (only present if version == 9 — we already know this
- *                            from the LevelDB key itself, so it's just skipped)
- *   byte storageLayerCount  (normally 1; 2 when a waterlogged block occupies
- *                            the same voxel — layers beyond 0 are skipped, not
- *                            needed for a surface-color map)
- *   for each layer:
- *     byte flag             (bitsPerBlock = flag ushr 1)
- *     if bitsPerBlock == 0: the whole layer is one block, no packed array at all
- *     else: packed indices — 4096 blocks, bitsPerBlock each, into 32-bit LE words
- *     int32 LE paletteSize
- *     paletteSize × NBT compound {name: string, states: compound, version: int}
- *       (this is a normal little-endian NBT compound, same shape our NbtIO
- *       already reads elsewhere — see NbtIO.readCompoundFromStream)
+ * Decodes ONE subchunk's block storage — the paletted format used by Bedrock
+ * worlds since roughly 1.2 ("subchunk format version 8/9"). This is
+ * reverse-engineered, community-documented, unverified-by-me format, and the
+ * exact version byte(s) real modern worlds use may have moved on since — see
+ * [ParseResult.Failure] which reports WHY a subchunk failed (including the
+ * actual version byte seen) rather than just returning null, specifically so
+ * that can be diagnosed with real data instead of guesswork.
  */
 object SubChunkParser {
 
-    /** blocks[x][z][y] = block name (e.g. "minecraft:grass"). Null if this subchunk's format isn't recognized. */
-    fun parse(value: ByteArray): Array<Array<Array<String>>>? = try {
-        val stream = DataInputStream(ByteArrayInputStream(value))
-        val version = stream.readUnsignedByte()
-        if (version != 8 && version != 9) {
-            null // legacy/unsupported subchunk format
-        } else {
+    sealed class ParseResult {
+        data class Success(val blocks: Array<Array<Array<String>>>) : ParseResult()
+        data class Failure(val reason: String) : ParseResult()
+    }
+
+    fun parse(value: ByteArray): ParseResult {
+        return try {
+            val stream = DataInputStream(ByteArrayInputStream(value))
+            val version = stream.readUnsignedByte()
+            if (version != 8 && version != 9) {
+                return ParseResult.Failure("unsupported subchunk version=$version (size=${value.size} bytes)")
+            }
             if (version == 9) stream.readByte() // embedded Y index — already known from the key, unused here
             val layerCount = stream.readUnsignedByte()
             if (layerCount < 1) {
-                null
-            } else {
-                val layer0 = decodeLayer(stream)
-                for (i in 1 until layerCount) decodeLayer(stream) // skip extra layers (e.g. waterlogging)
-                layer0
+                return ParseResult.Failure("layerCount=$layerCount")
             }
+            val layer0 = decodeLayer(stream)
+            for (i in 1 until layerCount) decodeLayer(stream) // skip extra layers (e.g. waterlogging)
+            ParseResult.Success(layer0)
+        } catch (e: Exception) {
+            ParseResult.Failure("${e.javaClass.simpleName}: ${e.message}")
         }
-    } catch (e: Exception) {
-        null
     }
 
     private fun decodeLayer(stream: DataInputStream): Array<Array<Array<String>>> {
         val flag = stream.readUnsignedByte()
         val bitsPerBlock = flag ushr 1
-        // A real persistent subchunk never has more than a few bits per block (values
-        // above ~16 mean we're not actually looking at a subchunk — likely a chunk key
-        // that was misidentified as one — so bail out cleanly rather than divide by
-        // zero or try to allocate an implausibly large array below.
-        if (bitsPerBlock > 32) throw IOException("Implausible bitsPerBlock=$bitsPerBlock — not a real subchunk")
+        if (bitsPerBlock > 32) throw IOException("implausible bitsPerBlock=$bitsPerBlock (flag=$flag)")
         val indices = IntArray(4096)
 
         if (bitsPerBlock > 0) {
@@ -82,11 +68,8 @@ object SubChunkParser {
         // bitsPerBlock == 0 means every index stays 0 — the whole layer is palette[0]
 
         val paletteSize = readIntLE(stream)
-        // A real palette is at most a few hundred entries — anything wildly bigger means
-        // we've drifted out of sync with the actual data (or this was never a subchunk to
-        // begin with). Reject it instead of asking ArrayList to allocate gigabytes.
         if (paletteSize < 0 || paletteSize > 65536) {
-            throw IOException("Implausible palette size $paletteSize — not a real subchunk")
+            throw IOException("implausible paletteSize=$paletteSize (bitsPerBlock=$bitsPerBlock)")
         }
         val palette = ArrayList<String>(paletteSize)
         repeat(paletteSize) {

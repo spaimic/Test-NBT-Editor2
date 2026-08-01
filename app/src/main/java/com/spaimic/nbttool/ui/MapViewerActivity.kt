@@ -95,11 +95,14 @@ class MapViewerActivity : AppCompatActivity() {
         val unknownNote = if (stats.unknownBlockNames.isEmpty()) "" else
             "\n\nBlock names not yet in the color table (${stats.unknownBlockNames.size} distinct):\n$unknownSample" +
                 if (stats.unknownBlockNames.size > 15) "\n  …and ${stats.unknownBlockNames.size - 15} more" else ""
+        val reasonsNote = if (stats.failureReasonCounts.isEmpty()) "" else
+            "\n\nWhy parsing failed:\n" + stats.failureReasonCounts.joinToString("\n") { (reason, count) -> "  ×$count: $reason" }
         val message = "Loaded chunks: ${stats.totalLoadedChunks}" +
             (if (stats.outliersDropped > 0) " (${stats.outliersDropped} dropped as likely false-positive outliers)" else "") +
             "\nRendered with real terrain colors: ${stats.parsedOk}" +
             "\nNo subchunk data found: ${stats.noSubchunkFound}" +
             "\nSubchunk present but failed to parse: ${stats.subchunkParseFailed}" +
+            reasonsNote +
             unknownNote
         AlertDialog.Builder(this)
             .setTitle("Map scan results")

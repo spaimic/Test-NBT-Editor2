@@ -14,34 +14,15 @@ data class ScanStats(
     val noSubchunkFound: Int,
     val subchunkParseFailed: Int,
     val parsedOk: Int,
-    val unknownBlockNames: Set<String>
+    val unknownBlockNames: Set<String>,
+    /** failure reason (from SubChunkParser) -> how many subchunks hit it, most common first */
+    val failureReasonCounts: List<Pair<String, Int>>
 )
 
 data class ScanResult(val grid: Map<Pair<Int, Int>, Array<Array<ColumnInfo>>>, val stats: ScanStats)
 
 object ChunkScanner {
 
-    /**
-     * Scans every key in the world's DB once, groups subchunk entries by chunk
-     * position, and for each loaded chunk decodes only its highest present
-     * subchunk (the usual location of the surface) into a 16x16 grid of column
-     * colors. A chunk that exists but whose subchunk format we can't parse
-     * (unsupported/legacy) still counts as "loaded" — just shown with a neutral
-     * color instead of crashing the whole map.
-     *
-     * Only decodes the single topmost subchunk per column — a floating
-     * structure sitting exactly on a subchunk boundary with nothing below it
-     * in that same subchunk could show as the wrong block. Full multi-subchunk
-     * scanning would be more accurate but far slower on a phone for a large
-     * explored world.
-     *
-     * Chunk-key detection is a heuristic (byte length + a plausible tag byte),
-     * not a guaranteed-correct parse — an unrelated key can occasionally match
-     * it and produce a chunk position wildly far from the real explored area.
-     * Those outliers are filtered out (by distance from the median position)
-     * before rendering, so one bad match doesn't blow out the whole map's
-     * bounding box / auto-center point.
-     */
     fun scanOverworld(bridge: LevelDbBridge): ScanResult {
         val bestSubchunkByChunk = HashMap<Pair<Int, Int>, Pair<Int, ByteArray>>()
         val loadedChunks = HashSet<Pair<Int, Int>>()
@@ -64,9 +45,9 @@ object ChunkScanner {
         val outliersDropped = loadedChunks.size - filtered.size
 
         var noSubchunkFound = 0
-        var subchunkParseFailed = 0
         var parsedOk = 0
         val unknownBlockNames = HashSet<String>()
+        val failureReasonCounts = HashMap<String, Int>()
 
         val result = HashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
         for (pos in filtered) {
@@ -76,26 +57,29 @@ object ChunkScanner {
                 noSubchunkFound++
             } else {
                 val (topY, bytes) = best
-                val blocks = SubChunkParser.parse(bytes)
-                if (blocks == null) {
-                    subchunkParseFailed++
-                } else {
-                    parsedOk++
-                    for (x in 0 until 16) {
-                        for (z in 0 until 16) {
-                            var foundY = -1
-                            var foundName = "minecraft:air"
-                            for (y in 15 downTo 0) {
-                                val name = blocks[x][z][y]
-                                if (name != "minecraft:air") {
-                                    foundY = y; foundName = name; break
+                when (val parseResult = SubChunkParser.parse(bytes)) {
+                    is SubChunkParser.ParseResult.Failure -> {
+                        failureReasonCounts[parseResult.reason] = (failureReasonCounts[parseResult.reason] ?: 0) + 1
+                    }
+                    is SubChunkParser.ParseResult.Success -> {
+                        parsedOk++
+                        val blocks = parseResult.blocks
+                        for (x in 0 until 16) {
+                            for (z in 0 until 16) {
+                                var foundY = -1
+                                var foundName = "minecraft:air"
+                                for (y in 15 downTo 0) {
+                                    val name = blocks[x][z][y]
+                                    if (name != "minecraft:air") {
+                                        foundY = y; foundName = name; break
+                                    }
                                 }
+                                val worldY = topY * 16 + if (foundY >= 0) foundY else 0
+                                if (foundName != "minecraft:air" && !BlockColors.isKnown(foundName)) {
+                                    unknownBlockNames.add(foundName)
+                                }
+                                grid[x][z] = ColumnInfo(BlockColors.colorFor(foundName), worldY)
                             }
-                            val worldY = topY * 16 + if (foundY >= 0) foundY else 0
-                            if (foundName != "minecraft:air" && !BlockColors.isKnown(foundName)) {
-                                unknownBlockNames.add(foundName)
-                            }
-                            grid[x][z] = ColumnInfo(BlockColors.colorFor(foundName), worldY)
                         }
                     }
                 }
@@ -103,7 +87,9 @@ object ChunkScanner {
             result[pos] = grid
         }
 
-        val stats = ScanStats(loadedChunks.size, outliersDropped, noSubchunkFound, subchunkParseFailed, parsedOk, unknownBlockNames)
+        val subchunkParseFailed = failureReasonCounts.values.sum()
+        val topReasons = failureReasonCounts.entries.sortedByDescending { it.value }.take(8).map { it.key to it.value }
+        val stats = ScanStats(loadedChunks.size, outliersDropped, noSubchunkFound, subchunkParseFailed, parsedOk, unknownBlockNames, topReasons)
         return ScanResult(result, stats)
     }
 
@@ -115,7 +101,7 @@ object ChunkScanner {
         val zs = positions.map { it.second }.sorted()
         val medianX = xs[xs.size / 2]
         val medianZ = zs[zs.size / 2]
-        val maxChunkDistance = 2000 // ~32,000 blocks from the median — generous, but bounds the damage
+        val maxChunkDistance = 2000
         return positions.filter { (x, z) -> abs(x - medianX) <= maxChunkDistance && abs(z - medianZ) <= maxChunkDistance }.toSet()
     }
 }
