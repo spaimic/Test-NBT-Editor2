@@ -9,6 +9,7 @@ import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.chunk.ChunkScanner
 import com.spaimic.nbttool.nbt.NbtIO
+import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import com.spaimic.nbttool.worlds.LocalWorldStore
@@ -74,8 +75,23 @@ class MapViewerActivity : AppCompatActivity() {
                 LevelDbSession.worldDir = worldDir
                 val keys = bridge.listKeys()
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+
+                val playerPos = LevelDbSession.keyBytesByName["~local_player"]?.let { rawKey ->
+                    try {
+                        val bytes = bridge.read(rawKey)
+                        val compound = bytes?.let { NbtIO.readRootCompoundNoHeader(it) }
+                        val pos = compound?.entries?.get("Pos") as? NbtTag.ListTag
+                        val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
+                        val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
+                        if (x != null && z != null) x.toInt() to z.toInt() else null
+                    } catch (e: Exception) {
+                        null // fine — the map just falls back to bounding-box centering
+                    }
+                }
+
                 val scanResult = ChunkScanner.scanOverworld(bridge)
                 runOnUiThread {
+                    mapView.preferredCenterBlock = playerPos
                     mapView.chunkData = scanResult.grid
                     reportScanStats(scanResult.stats)
                 }
@@ -96,7 +112,11 @@ class MapViewerActivity : AppCompatActivity() {
             "\n\nBlock names not yet in the color table (${stats.unknownBlockNames.size} distinct):\n$unknownSample" +
                 if (stats.unknownBlockNames.size > 15) "\n  …and ${stats.unknownBlockNames.size - 15} more" else ""
         val reasonsNote = if (stats.failureReasonCounts.isEmpty()) "" else
-            "\n\nWhy parsing failed:\n" + stats.failureReasonCounts.joinToString("\n") { (reason, count) -> "  ×$count: $reason" }
+            "\n\nWhy parsing failed:\n" + stats.failureReasonCounts.joinToString("\n") { (reason, count) -> "  ×$count: $reason" } +
+                "\n\nExample bytes (top reasons):\n" +
+                stats.failureReasonCounts.take(2).joinToString("\n\n") { (reason, _) ->
+                    "$reason:\n${stats.failureReasonExamples[reason] ?: "(no sample)"}"
+                }
         val message = "Loaded chunks: ${stats.totalLoadedChunks}" +
             (if (stats.outliersDropped > 0) " (${stats.outliersDropped} dropped as likely false-positive outliers)" else "") +
             "\nRendered with real terrain colors: ${stats.parsedOk}" +

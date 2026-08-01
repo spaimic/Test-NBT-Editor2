@@ -16,7 +16,9 @@ data class ScanStats(
     val parsedOk: Int,
     val unknownBlockNames: Set<String>,
     /** failure reason (from SubChunkParser) -> how many subchunks hit it, most common first */
-    val failureReasonCounts: List<Pair<String, Int>>
+    val failureReasonCounts: List<Pair<String, Int>>,
+    /** failure reason -> one example hex dump of an actual failing subchunk's bytes */
+    val failureReasonExamples: Map<String, String>
 )
 
 data class ScanResult(val grid: Map<Pair<Int, Int>, Array<Array<ColumnInfo>>>, val stats: ScanStats)
@@ -48,6 +50,7 @@ object ChunkScanner {
         var parsedOk = 0
         val unknownBlockNames = HashSet<String>()
         val failureReasonCounts = HashMap<String, Int>()
+        val failureReasonExamples = HashMap<String, String>()
 
         val result = HashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
         for (pos in filtered) {
@@ -60,6 +63,7 @@ object ChunkScanner {
                 when (val parseResult = SubChunkParser.parse(bytes)) {
                     is SubChunkParser.ParseResult.Failure -> {
                         failureReasonCounts[parseResult.reason] = (failureReasonCounts[parseResult.reason] ?: 0) + 1
+                        failureReasonExamples.getOrPut(parseResult.reason) { parseResult.hexSample }
                     }
                     is SubChunkParser.ParseResult.Success -> {
                         parsedOk++
@@ -89,7 +93,7 @@ object ChunkScanner {
 
         val subchunkParseFailed = failureReasonCounts.values.sum()
         val topReasons = failureReasonCounts.entries.sortedByDescending { it.value }.take(8).map { it.key to it.value }
-        val stats = ScanStats(loadedChunks.size, outliersDropped, noSubchunkFound, subchunkParseFailed, parsedOk, unknownBlockNames, topReasons)
+        val stats = ScanStats(loadedChunks.size, outliersDropped, noSubchunkFound, subchunkParseFailed, parsedOk, unknownBlockNames, topReasons, failureReasonExamples)
         return ScanResult(result, stats)
     }
 

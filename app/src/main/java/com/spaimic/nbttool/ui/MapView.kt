@@ -25,6 +25,10 @@ class MapView(context: Context) : View(context) {
             invalidate()
         }
 
+    /** World block X/Z to center on the first time the map draws — typically the
+     * player's real position. Falls back to the bounding-box center if left null. */
+    var preferredCenterBlock: Pair<Int, Int>? = null
+
     var onTap: ((worldX: Int, worldY: Int, worldZ: Int) -> Unit)? = null
 
     private val blockPx = 3f // on-screen pixels per block
@@ -51,11 +55,21 @@ class MapView(context: Context) : View(context) {
         val maxCz = chunkData.keys.maxOf { it.second }
 
         if (!centered) {
-            // center the explored area on first draw so the player isn't staring at a blank corner
-            val totalWidthPx = (maxCx - minCx + 1) * 16 * blockPx
-            val totalHeightPx = (maxCz - minCz + 1) * 16 * blockPx
-            offsetX = (width - totalWidthPx) / 2f
-            offsetY = (height - totalHeightPx) / 2f
+            val preferred = preferredCenterBlock
+            if (preferred != null) {
+                // put the player's exact block position in the middle of the screen
+                val (px, pz) = preferred
+                val screenPx = offsetX + (Math.floorDiv(px, 16) - minCx) * 16 * blockPx + Math.floorMod(px, 16) * blockPx
+                val screenPz = offsetY + (Math.floorDiv(pz, 16) - minCz) * 16 * blockPx + Math.floorMod(pz, 16) * blockPx
+                offsetX += width / 2f - screenPx
+                offsetY += height / 2f - screenPz
+            } else {
+                // no known player position — fall back to centering the whole explored area
+                val totalWidthPx = (maxCx - minCx + 1) * 16 * blockPx
+                val totalHeightPx = (maxCz - minCz + 1) * 16 * blockPx
+                offsetX = (width - totalWidthPx) / 2f
+                offsetY = (height - totalHeightPx) / 2f
+            }
             centered = true
         }
 

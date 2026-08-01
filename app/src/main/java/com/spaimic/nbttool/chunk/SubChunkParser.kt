@@ -19,26 +19,31 @@ object SubChunkParser {
 
     sealed class ParseResult {
         data class Success(val blocks: Array<Array<Array<String>>>) : ParseResult()
-        data class Failure(val reason: String) : ParseResult()
+        data class Failure(val reason: String, val hexSample: String) : ParseResult()
     }
 
     fun parse(value: ByteArray): ParseResult {
+        fun fail(reason: String): ParseResult.Failure {
+            val n = minOf(24, value.size)
+            val hex = (0 until n).joinToString(" ") { "%02x".format(value[it]) }
+            return ParseResult.Failure(reason, "size=${value.size} bytes: $hex")
+        }
         return try {
             val stream = DataInputStream(ByteArrayInputStream(value))
             val version = stream.readUnsignedByte()
             if (version != 8 && version != 9) {
-                return ParseResult.Failure("unsupported subchunk version=$version (size=${value.size} bytes)")
+                return fail("unsupported subchunk version=$version")
             }
             if (version == 9) stream.readByte() // embedded Y index — already known from the key, unused here
             val layerCount = stream.readUnsignedByte()
             if (layerCount < 1) {
-                return ParseResult.Failure("layerCount=$layerCount")
+                return fail("layerCount=$layerCount (version=$version)")
             }
             val layer0 = decodeLayer(stream)
             for (i in 1 until layerCount) decodeLayer(stream) // skip extra layers (e.g. waterlogging)
             ParseResult.Success(layer0)
         } catch (e: Exception) {
-            ParseResult.Failure("${e.javaClass.simpleName}: ${e.message}")
+            fail("${e.javaClass.simpleName}: ${e.message}")
         }
     }
 
