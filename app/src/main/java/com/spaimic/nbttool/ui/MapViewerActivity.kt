@@ -139,11 +139,21 @@ class MapViewerActivity : AppCompatActivity() {
         val chunkZ = Math.floorDiv(worldZ, 16)
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
-            .setItems(arrayOf("Show Entities")) { _, _ ->
-                val i = Intent(this, EntityListActivity::class.java)
-                i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
-                i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
-                startActivity(i)
+            .setItems(arrayOf("Show Entities", "Show Block Entities")) { _, which ->
+                when (which) {
+                    0 -> {
+                        val i = Intent(this, EntityListActivity::class.java)
+                        i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
+                        i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
+                        startActivity(i)
+                    }
+                    1 -> {
+                        val i = Intent(this, BlockEntityListActivity::class.java)
+                        i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_X, chunkX)
+                        i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
+                        startActivity(i)
+                    }
+                }
             }
             .show()
     }

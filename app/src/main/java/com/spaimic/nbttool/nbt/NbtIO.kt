@@ -88,6 +88,23 @@ object NbtIO {
         return readTagPayload(din, typeId)
     }
 
+    /** Reads every concatenated root compound in a byte array until the bytes run out —
+     * the shape Bedrock uses for "BlockEntity" chunk records (chests, furnaces, signs, etc). */
+    fun readConcatenatedCompounds(bytes: ByteArray): List<NbtTag.Compound> {
+        val stream = DataInputStream(ByteArrayInputStream(bytes))
+        val out = ArrayList<NbtTag.Compound>()
+        while (stream.available() > 0) {
+            out.add(readCompoundFromStream(stream))
+        }
+        return out
+    }
+
+    fun writeConcatenatedCompounds(compounds: List<NbtTag.Compound>): ByteArray {
+        val out = ByteArrayOutputStream()
+        for (c in compounds) out.write(writeRootCompoundNoHeader(c))
+        return out.toByteArray()
+    }
+
     /** Reads one (unnamed) NBT compound directly from a shared stream cursor — used
      * when compounds are packed back-to-back inside a larger structure (e.g. a
      * subchunk's block palette), not as a standalone byte array. */
