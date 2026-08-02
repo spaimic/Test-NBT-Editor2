@@ -1,6 +1,7 @@
 package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.EditText
@@ -9,6 +10,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.spaimic.nbttool.nbt.NbtJson
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbSession
 
@@ -21,11 +23,13 @@ import com.spaimic.nbttool.shizuku.LevelDbSession
 class DbEntryEditorActivity : AppCompatActivity() {
 
     private lateinit var adapter: NbtTreeAdapter
+    private lateinit var compound: NbtTag.Compound
+    private var displayName: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: return finish()
-        val compound = LevelDbSession.loadedEntries[displayName] ?: return finish()
+        displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: return finish()
+        compound = LevelDbSession.loadedEntries[displayName] ?: return finish()
         title = displayName
 
         val root = FrameLayout(this)
@@ -83,22 +87,64 @@ class DbEntryEditorActivity : AppCompatActivity() {
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
         menu.add(0, MENU_SAVE, 0, "Save")
+        menu.add(0, MENU_EXPORT_JSON, 0, "Export JSON")
+        menu.add(0, MENU_IMPORT_JSON, 0, "Import JSON")
         return true
     }
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
-        if (item.itemId == MENU_SAVE) {
-            Thread {
-                LevelDbSession.saveAllLoadedEntries()
-                runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
-            }.start()
-            return true
+        when (item.itemId) {
+            MENU_SAVE -> {
+                Thread {
+                    LevelDbSession.saveAllLoadedEntries()
+                    runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
+                }.start()
+                return true
+            }
+            MENU_EXPORT_JSON -> {
+                NbtJsonFileOps.launchExport(this, NbtJsonFileOps.sanitizeFileName(displayName))
+                return true
+            }
+            MENU_IMPORT_JSON -> {
+                NbtJsonFileOps.launchImportPicker(this)
+                return true
+            }
         }
         return super.onOptionsItemSelected(item)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            NbtJsonFileOps.REQUEST_EXPORT_JSON -> {
+                try {
+                    NbtJsonFileOps.writeText(this, uri, NbtJson.exportCompoundToJsonString(compound))
+                    Toast.makeText(this, "Exported.", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    showErrorDialog(this, "Export failed", e)
+                }
+            }
+            NbtJsonFileOps.REQUEST_IMPORT_JSON -> {
+                try {
+                    val json = NbtJsonFileOps.readText(this, uri)
+                    val imported = NbtJson.importCompoundFromJsonString(json) // throws before anything is touched
+                    compound.entries.clear()
+                    compound.entries.putAll(imported.entries)
+                    adapter.refresh()
+                    Toast.makeText(this, "Imported. Tap Save to write it to the world.", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    showErrorDialog(this, "Import failed — nothing was changed", e)
+                }
+            }
+        }
     }
 
     companion object {
         const val EXTRA_DISPLAY_NAME = "display_name"
         private const val MENU_SAVE = 1
+        private const val MENU_EXPORT_JSON = 2
+        private const val MENU_IMPORT_JSON = 3
     }
 }

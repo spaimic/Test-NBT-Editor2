@@ -1,6 +1,7 @@
 package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.*
@@ -8,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.spaimic.nbttool.nbt.NbtIO
+import com.spaimic.nbttool.nbt.NbtJson
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
@@ -60,15 +62,53 @@ class EditorActivity : AppCompatActivity() {
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
         menu.add(0, MENU_SAVE, 0, "Save")
+        menu.add(0, MENU_EXPORT_JSON, 0, "Export JSON")
+        menu.add(0, MENU_IMPORT_JSON, 0, "Import JSON")
         return true
     }
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
-        if (item.itemId == MENU_SAVE) {
-            save()
-            return true
+        when (item.itemId) {
+            MENU_SAVE -> { save(); return true }
+            MENU_EXPORT_JSON -> {
+                NbtJsonFileOps.launchExport(this, NbtJsonFileOps.sanitizeFileName(worldDir.name + "_level"))
+                return true
+            }
+            MENU_IMPORT_JSON -> {
+                NbtJsonFileOps.launchImportPicker(this)
+                return true
+            }
         }
         return super.onOptionsItemSelected(item)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        val dat = levelDat ?: return
+        when (requestCode) {
+            NbtJsonFileOps.REQUEST_EXPORT_JSON -> {
+                try {
+                    NbtJsonFileOps.writeText(this, uri, NbtJson.exportCompoundToJsonString(dat.root))
+                    Toast.makeText(this, "Exported.", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    showErrorDialog(this, "Export failed", e)
+                }
+            }
+            NbtJsonFileOps.REQUEST_IMPORT_JSON -> {
+                try {
+                    val json = NbtJsonFileOps.readText(this, uri)
+                    val imported = NbtJson.importCompoundFromJsonString(json) // throws before anything is touched
+                    dat.root.entries.clear()
+                    dat.root.entries.putAll(imported.entries)
+                    adapter.refresh()
+                    Toast.makeText(this, "Imported. Tap Save to write it to level.dat.", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    showErrorDialog(this, "Import failed — nothing was changed", e)
+                }
+            }
+        }
     }
 
     private fun load() {
@@ -148,5 +188,7 @@ class EditorActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
         private const val MENU_SAVE = 1
+        private const val MENU_EXPORT_JSON = 2
+        private const val MENU_IMPORT_JSON = 3
     }
 }
