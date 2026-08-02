@@ -34,25 +34,36 @@ class EditorActivity : AppCompatActivity() {
         levelDatFile = File(worldDir, "level.dat")
         title = "level.dat"
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val root = FrameLayout(this)
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         recycler = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@EditorActivity)
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        }
-        val saveButton = Button(this).apply {
-            text = "Save"
-            setOnClickListener { save() }
         }
         val openDbButton = Button(this).apply {
             text = "Player / Map / Village data…"
             setOnClickListener { openLevelDb() }
         }
-        root.addView(recycler)
-        root.addView(openDbButton)
-        root.addView(saveButton)
+        content.addView(recycler)
+        content.addView(openDbButton)
+        root.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(createAddFab(this) { adapter.promptAddChildToRoot() })
         setContentView(root)
 
         load()
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_SAVE, 0, "Save")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_SAVE) {
+            save()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     private fun load() {
@@ -131,5 +142,6 @@ class EditorActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
+        private const val MENU_SAVE = 1
     }
 }

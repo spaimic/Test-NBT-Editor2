@@ -4,7 +4,7 @@ import android.app.AlertDialog
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.EditText
-import android.widget.LinearLayout
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -14,11 +14,13 @@ import com.spaimic.nbttool.shizuku.LevelDbSession
 
 /**
  * Tree editor for a single LevelDB entry (e.g. ~local_player, a map_ item, a
- * village record). Edits mutate the same in-memory NbtTag.Compound that
- * PlayerDbActivity holds, so they're only actually written to the world when
- * you go back and tap "Save all changes to world" there.
+ * village record). Edits mutate the same in-memory NbtTag.Compound the parent
+ * screen holds; the top-right Save writes every currently-loaded entry back
+ * to the world (not just this one), matching what Save does everywhere else.
  */
 class DbEntryEditorActivity : AppCompatActivity() {
+
+    private lateinit var adapter: NbtTreeAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -26,15 +28,16 @@ class DbEntryEditorActivity : AppCompatActivity() {
         val compound = LevelDbSession.loadedEntries[displayName] ?: return finish()
         title = displayName
 
+        val root = FrameLayout(this)
         val recycler = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@DbEntryEditorActivity)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        setContentView(recycler)
-
-        lateinit var adapter: NbtTreeAdapter
         adapter = NbtTreeAdapter(this, compound) { row -> onLeafTapped(row) { adapter.refresh() } }
         recycler.adapter = adapter
+
+        root.addView(recycler, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(createAddFab(this) { adapter.promptAddChildToRoot() })
+        setContentView(root)
     }
 
     private fun onLeafTapped(row: NbtRow, onSaved: () -> Unit) {
@@ -75,7 +78,24 @@ class DbEntryEditorActivity : AppCompatActivity() {
             .show()
     }
 
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_SAVE, 0, "Save")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_SAVE) {
+            Thread {
+                LevelDbSession.saveAllLoadedEntries()
+                runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
+            }.start()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
     companion object {
         const val EXTRA_DISPLAY_NAME = "display_name"
+        private const val MENU_SAVE = 1
     }
 }

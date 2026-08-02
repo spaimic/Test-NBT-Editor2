@@ -31,12 +31,7 @@ class BlockEntityListActivity : AppCompatActivity() {
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        val saveButton = Button(this).apply {
-            text = "Save"
-            setOnClickListener { save() }
-        }
         root.addView(listView)
-        root.addView(saveButton)
         setContentView(root)
 
         listView.setOnItemClickListener { _, _, position, _ ->
@@ -46,6 +41,19 @@ class BlockEntityListActivity : AppCompatActivity() {
         }
 
         loadBlockEntities(chunkX, chunkZ)
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_SAVE, 0, "Save")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_SAVE) {
+            save()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     private fun loadBlockEntities(chunkX: Int, chunkZ: Int) {
@@ -116,5 +124,6 @@ class BlockEntityListActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_CHUNK_X = "chunk_x"
         const val EXTRA_CHUNK_Z = "chunk_z"
+        private const val MENU_SAVE = 1
     }
 }

@@ -168,7 +168,6 @@ class MapViewerActivity : AppCompatActivity() {
             "~local_player",
             "MCStructure editor" + if (structureCount > 0) " ($structureCount)" else "",
             "Multiplayer editor" + if (playerCount > 0) " ($playerCount)" else "",
-            "Save changes",
             "World settings (level.dat)",
             "Advanced: browse all DB keys"
         )
@@ -180,12 +179,24 @@ class MapViewerActivity : AppCompatActivity() {
                          else Toast.makeText(this, "No ~local_player found in this world", Toast.LENGTH_SHORT).show()
                     1 -> showStructurePicker()
                     2 -> showMultiplayerPicker()
-                    3 -> saveChanges()
-                    4 -> openLevelDatEditor()
-                    5 -> openAllKeysBrowser()
+                    3 -> openLevelDatEditor()
+                    4 -> openAllKeysBrowser()
                 }
             }
             .show()
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_SAVE, 0, "Save")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_SAVE) {
+            saveChanges()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     private fun showStructurePicker() {
@@ -236,38 +247,26 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun saveChanges() {
-        val bridge = LevelDbSession.bridge ?: return
+        if (LevelDbSession.bridge == null) return
         Thread {
             try {
-                for ((name, compound) in LevelDbSession.loadedEntries) {
-                    val rawKey = LevelDbSession.keyBytesByName[name] ?: continue
-                    bridge.write(rawKey, NbtIO.writeRootCompoundNoHeader(compound))
-                }
-                bridge.close()
+                LevelDbSession.saveAllLoadedEntries()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
+                rescanMap() // in case a pasted structure or edit changed visible terrain
             } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Save failed (your edits are still kept — safe to retry)", e) }
-            } finally {
-                // the handle used above may now be closed — get a fresh one, keeping edits,
-                // and re-scan the map in case a pasted structure changed the terrain
-                runOnUiThread { reopenPreservingEdits() }
             }
         }.start()
     }
 
-    private fun reopenPreservingEdits() {
+    private fun rescanMap() {
+        val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
-                LevelDbSession.keyBytesByName.clear()
-                val bridge = LevelDbBridge.open(worldDir)
-                LevelDbSession.bridge = bridge
-                val keys = bridge.listKeys()
-                for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
                 val scanResult = ChunkScanner.scanOverworld(bridge)
                 runOnUiThread { mapView.chunkData = scanResult.grid }
             } catch (e: Throwable) {
-                runOnUiThread { showErrorDialog(this, "Failed to reopen world DB", e) }
+                runOnUiThread { showErrorDialog(this, "Failed to refresh the map", e) }
             }
         }.start()
     }
@@ -293,5 +292,6 @@ class MapViewerActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
+        private const val MENU_SAVE = 1
     }
 }

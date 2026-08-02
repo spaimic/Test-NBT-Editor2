@@ -109,10 +109,10 @@ class NbtTreeAdapter(
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val (path, row) = rows[position]
-        val indent = "  ".repeat(row.depth)
         val summary = summaryOf(row.tag)
         holder.icon.setImageResource(NbtIcons.iconFor(row.tag))
-        holder.text.text = "$indent${row.label}: ${NbtTag.typeName(row.tag.id)} = $summary"
+        holder.text.text = "${row.label}: ${NbtTag.typeName(row.tag.id)} = $summary"
+        holder.row.setPadding(24 + row.depth * 48, 20, 24, 20)
 
         val isContainer = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag
         holder.row.setOnClickListener {
@@ -166,7 +166,7 @@ class NbtTreeAdapter(
                     "Delete" -> deleteRow(row)
                     "Rename" -> promptRename(row.container as NbtContainer.InCompound)
                     "Copy to NBT clipboard" -> promptCopy(row)
-                    "Add child" -> promptAddChild(row)
+                    "Add child" -> promptAddChild(row.tag)
                     "Paste from NBT clipboard" -> promptPasteMenu(row)
                 }
             }
@@ -283,7 +283,12 @@ class NbtTreeAdapter(
         }
     }
 
-    private fun promptAddChild(row: NbtRow) {
+    /** Public entry point for adding a brand-new top-level tag directly to the root
+     * compound — the long-press "Add child" menu only works on an existing
+     * compound/list row, which can't reach the root itself since it has no row. */
+    fun promptAddChildToRoot() = promptAddChild(root)
+
+    private fun promptAddChild(target: NbtTag) {
         val typeNames = listOf(
             "Byte" to 1, "Short" to 2, "Int" to 3, "Long" to 4, "Float" to 5,
             "Double" to 6, "String" to 8, "Compound" to 10, "List" to 9
@@ -304,7 +309,7 @@ class NbtTreeAdapter(
                     9 -> NbtTag.ListTag(10, mutableListOf())
                     else -> NbtTag.Str("")
                 }
-                when (val target = row.tag) {
+                when (target) {
                     is NbtTag.Compound -> {
                         val keyInput = EditText(context).apply { hint = "key name" }
                         AlertDialog.Builder(context)

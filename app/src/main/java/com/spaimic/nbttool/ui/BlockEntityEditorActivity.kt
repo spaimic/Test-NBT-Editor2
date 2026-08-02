@@ -2,17 +2,20 @@ package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
 import android.os.Bundle
-import android.view.ViewGroup
 import android.widget.EditText
-import android.widget.LinearLayout
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.BlockEntitySession
+import com.spaimic.nbttool.shizuku.LevelDbSession
 
 class BlockEntityEditorActivity : AppCompatActivity() {
+
+    private lateinit var adapter: NbtTreeAdapter
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -20,15 +23,16 @@ class BlockEntityEditorActivity : AppCompatActivity() {
         val compound = BlockEntitySession.compounds.getOrNull(index) ?: return finish()
         title = (compound.entries["id"] as? NbtTag.Str)?.value ?: "Block entity"
 
+        val root = FrameLayout(this)
         val recycler = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@BlockEntityEditorActivity)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        setContentView(recycler)
-
-        lateinit var adapter: NbtTreeAdapter
         adapter = NbtTreeAdapter(this, compound) { row -> onLeafTapped(row) { adapter.refresh() } }
         recycler.adapter = adapter
+
+        root.addView(recycler, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(createAddFab(this) { adapter.promptAddChildToRoot() })
+        setContentView(root)
     }
 
     private fun onLeafTapped(row: NbtRow, onSaved: () -> Unit) {
@@ -69,7 +73,35 @@ class BlockEntityEditorActivity : AppCompatActivity() {
             .show()
     }
 
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_SAVE, 0, "Save")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_SAVE) {
+            save()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
+    }
+
+    private fun save() {
+        val bridge = LevelDbSession.bridge ?: return
+        val key = BlockEntitySession.rawKey ?: return
+        Thread {
+            try {
+                val bytes = NbtIO.writeConcatenatedCompounds(BlockEntitySession.compounds)
+                bridge.write(key, bytes)
+                runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Save failed", e) }
+            }
+        }.start()
+    }
+
     companion object {
         const val EXTRA_INDEX = "index"
+        private const val MENU_SAVE = 1
     }
 }

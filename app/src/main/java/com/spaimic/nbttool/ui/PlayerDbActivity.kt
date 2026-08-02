@@ -40,18 +40,26 @@ class PlayerDbActivity : AppCompatActivity() {
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        val saveButton = Button(this).apply {
-            text = "Save"
-            setOnClickListener { saveAll() }
-        }
         root.addView(filterToggle)
         root.addView(listView)
-        root.addView(saveButton)
         setContentView(root)
 
         listView.setOnItemClickListener { _, _, position, _ -> openEntry(shownDisplayNames[position]) }
 
         openDbAndListKeys(worldDir)
+    }
+
+    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
+        menu.add(0, MENU_SAVE, 0, "Save")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
+        if (item.itemId == MENU_SAVE) {
+            saveAll()
+            return true
+        }
+        return super.onOptionsItemSelected(item)
     }
 
     private fun isInterestingKey(name: String): Boolean =
@@ -115,20 +123,13 @@ class PlayerDbActivity : AppCompatActivity() {
     }
 
     private fun saveAll() {
-        val bridge = LevelDbSession.bridge ?: return
-        val worldDir = LevelDbSession.worldDir ?: return
+        if (LevelDbSession.bridge == null) return
         Thread {
             try {
-                for ((name, compound) in LevelDbSession.loadedEntries) {
-                    val rawKey = LevelDbSession.keyBytesByName[name] ?: continue
-                    bridge.write(rawKey, NbtIO.writeRootCompoundNoHeader(compound))
-                }
-                bridge.close()
+                LevelDbSession.saveAllLoadedEntries()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
             } catch (e: Exception) {
                 runOnUiThread { showErrorDialog(this, "Save failed (your edits are still kept — safe to retry)", e) }
-            } finally {
-                openDbAndListKeys(worldDir, preserveEdits = true)
             }
         }.start()
     }
@@ -142,5 +143,6 @@ class PlayerDbActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
+        private const val MENU_SAVE = 1
     }
 }

@@ -24,4 +24,16 @@ object LevelDbSession {
         keyBytesByName.clear()
         loadedEntries.clear()
     }
+
+    /** Writes every currently-loaded entry back to the DB. Deliberately does NOT
+     * close/reopen the bridge — that dance was only ever needed to work around
+     * Shizuku's remote-write quirks from the old architecture; now that worlds
+     * live entirely in this app's own sandbox, a plain write is enough. */
+    fun saveAllLoadedEntries() {
+        val b = bridge ?: return
+        for ((name, compound) in loadedEntries) {
+            val rawKey = keyBytesByName[name] ?: continue
+            b.write(rawKey, com.spaimic.nbttool.nbt.NbtIO.writeRootCompoundNoHeader(compound))
+        }
+    }
 }
