@@ -36,15 +36,20 @@ class EditorActivity : AppCompatActivity() {
 
         val root = FrameLayout(this)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val hScroll = HorizontalScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            isFillViewport = true
+        }
         recycler = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@EditorActivity)
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
+        hScroll.addView(recycler)
         val openDbButton = Button(this).apply {
             text = "Player / Map / Village data…"
             setOnClickListener { openLevelDb() }
         }
-        content.addView(recycler)
+        content.addView(hScroll)
         content.addView(openDbButton)
         root.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         root.addView(createAddFab(this) { adapter.promptAddChildToRoot() })

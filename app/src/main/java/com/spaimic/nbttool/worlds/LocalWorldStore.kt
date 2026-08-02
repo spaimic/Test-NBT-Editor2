@@ -40,22 +40,18 @@ object LocalWorldStore {
             ?.sortedBy { it.name }
             ?: emptyList()
 
-    /** Reads a local world's LevelName for display, falling back to the folder name. */
-    fun levelName(worldDir: File): String = try {
-        val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
-        (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir.name
-    } catch (e: Exception) {
-        worldDir.name
-    }
+    /** The name to show for a local world — the folder name the user chose during
+     * import, NOT the internal level.dat "LevelName" tag, which may be completely
+     * different (whatever the world was last named inside Minecraft itself). */
+    fun levelName(worldDir: File): String = worldDir.name
 
     data class WorldInfo(val name: String, val dateLine: String, val timeLine: String)
 
-    /** name + LastPlayed formatted as separate date/time lines (both from one level.dat parse). */
+    /** name (from the folder, i.e. what was typed at import) + LastPlayed date/time from level.dat. */
     fun worldInfo(worldDir: File): WorldInfo = try {
         val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
-        val name = (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir.name
         val (date, time) = lastPlayedDateTime(dat)
-        WorldInfo(name, date, time)
+        WorldInfo(worldDir.name, date, time)
     } catch (e: Exception) {
         WorldInfo(worldDir.name, "", "")
     }

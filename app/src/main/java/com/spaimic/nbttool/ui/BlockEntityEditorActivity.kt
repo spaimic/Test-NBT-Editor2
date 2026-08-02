@@ -24,13 +24,16 @@ class BlockEntityEditorActivity : AppCompatActivity() {
         title = (compound.entries["id"] as? NbtTag.Str)?.value ?: "Block entity"
 
         val root = FrameLayout(this)
+        val hScroll = android.widget.HorizontalScrollView(this).apply { isFillViewport = true }
         val recycler = RecyclerView(this).apply {
             layoutManager = LinearLayoutManager(this@BlockEntityEditorActivity)
+            layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
         }
         adapter = NbtTreeAdapter(this, compound) { row -> onLeafTapped(row) { adapter.refresh() } }
         recycler.adapter = adapter
+        hScroll.addView(recycler)
 
-        root.addView(recycler, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+        root.addView(hScroll, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         root.addView(createAddFab(this) { adapter.promptAddChildToRoot() })
         setContentView(root)
     }

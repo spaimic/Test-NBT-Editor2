@@ -49,8 +49,36 @@ class NbtTreeAdapter(
 
     private val expanded = HashSet<String>()
     private var rows: List<Pair<String, NbtRow>> = emptyList()
+    private var attachedRecyclerView: RecyclerView? = null
 
     init { rebuild() }
+
+    override fun onAttachedToRecyclerView(recyclerView: RecyclerView) {
+        super.onAttachedToRecyclerView(recyclerView)
+        attachedRecyclerView = recyclerView
+        resizeForContent()
+    }
+
+    override fun onDetachedFromRecyclerView(recyclerView: RecyclerView) {
+        super.onDetachedFromRecyclerView(recyclerView)
+        attachedRecyclerView = null
+    }
+
+    /** Widens the RecyclerView to fit the deepest currently-visible nesting, so a
+     * HorizontalScrollView parent can actually scroll to reveal content that
+     * would otherwise run off the right edge on a heavily-nested tree. */
+    private fun resizeForContent() {
+        val rv = attachedRecyclerView ?: return
+        val maxDepth = rows.maxOfOrNull { it.second.depth } ?: 0
+        val screenWidth = context.resources.displayMetrics.widthPixels
+        val neededWidth = 24 + (maxDepth + 1) * 48 + 900 // indent budget + icon/text budget
+        val newWidth = maxOf(screenWidth, neededWidth)
+        val lp = rv.layoutParams
+        if (lp != null && lp.width != newWidth) {
+            lp.width = newWidth
+            rv.layoutParams = lp
+        }
+    }
 
     private fun rebuild() {
         val out = ArrayList<Pair<String, NbtRow>>()
@@ -86,6 +114,7 @@ class NbtTreeAdapter(
     fun refresh() {
         rebuild()
         notifyDataSetChanged()
+        resizeForContent()
     }
 
     inner class VH(val row: LinearLayout, val icon: ImageView, val text: TextView) : RecyclerView.ViewHolder(row)

@@ -10,22 +10,22 @@ import android.widget.TextView
 /** A simple circular "+" button, bottom-right — built manually (no Material
  * Components dependency) since the rest of this app avoids extra libraries. */
 fun createAddFab(context: Context, onClick: () -> Unit): TextView {
-    val sizePx = 160
+    val sizePx = 100
     val bg = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         setColor(Color.parseColor("#2196F3"))
     }
     return TextView(context).apply {
         text = "+"
-        textSize = 28f
+        textSize = 20f
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER
         background = bg
-        elevation = 12f
+        elevation = 8f
         layoutParams = FrameLayout.LayoutParams(sizePx, sizePx).apply {
             gravity = Gravity.BOTTOM or Gravity.END
-            marginEnd = 48
-            bottomMargin = 48
+            marginEnd = 32
+            bottomMargin = 32
         }
         setOnClickListener { onClick() }
     }
