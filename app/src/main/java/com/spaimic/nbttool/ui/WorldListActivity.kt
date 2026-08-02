@@ -68,10 +68,15 @@ class WorldListActivity : AppCompatActivity() {
     private fun showWorldMenu(worldDir: File) {
         android.app.AlertDialog.Builder(this)
             .setTitle(LocalWorldStore.levelName(worldDir))
-            .setItems(arrayOf("Open in Minecraft", "Delete")) { _, which ->
+            .setItems(arrayOf("Open in Minecraft", "Flat World Generator", "Delete")) { _, which ->
                 when (which) {
                     0 -> openInMinecraft(worldDir)
-                    1 -> confirmDelete(worldDir)
+                    1 -> {
+                        val i = Intent(this, FlatWorldGeneratorActivity::class.java)
+                        i.putExtra(FlatWorldGeneratorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
+                        startActivity(i)
+                    }
+                    2 -> confirmDelete(worldDir)
                 }
             }
             .show()
