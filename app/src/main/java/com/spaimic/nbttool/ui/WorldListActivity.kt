@@ -126,12 +126,44 @@ class WorldListActivity : AppCompatActivity() {
 
     private fun showImportMenu() {
         android.app.AlertDialog.Builder(this)
-            .setItems(arrayOf("Copy from Minecraft", "Import .mcworld / .mctemplate file")) { _, which ->
+            .setItems(arrayOf("Copy from Minecraft", "Import .mcworld / .mctemplate file", "Create New Flat World")) { _, which ->
                 when (which) {
                     0 -> startActivity(Intent(this, ImportFromMinecraftActivity::class.java))
                     1 -> pickFileToImport()
+                    2 -> promptCreateFlatWorld()
                 }
             }
+            .show()
+    }
+
+    private fun promptCreateFlatWorld() {
+        val input = android.widget.EditText(this).apply { setText("Custom Flat World") }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Name this new world")
+            .setView(input)
+            .setPositiveButton("Create") { _, _ ->
+                val typedName = input.text.toString().ifBlank { "Custom Flat World" }
+                val localName = LocalWorldStore.uniqueLocalName(this, typedName)
+                Thread {
+                    try {
+                        val worldDir = File(LocalWorldStore.rootDir(this), localName).apply { mkdirs() }
+                        val defaultLayers = listOf(
+                            com.spaimic.nbttool.worlds.FlatLayer("minecraft:bedrock", 1),
+                            com.spaimic.nbttool.worlds.FlatLayer("minecraft:dirt", 2),
+                            com.spaimic.nbttool.worlds.FlatLayer("minecraft:grass_block", 1)
+                        )
+                        val dat = com.spaimic.nbttool.worlds.FlatWorldGenerator.buildNewWorldLevelDat(typedName, defaultLayers)
+                        File(worldDir, "level.dat").writeBytes(com.spaimic.nbttool.nbt.NbtIO.writeLevelDat(dat))
+                        runOnUiThread {
+                            Toast.makeText(this, "Created \"$localName\"", Toast.LENGTH_SHORT).show()
+                            refreshWorldList()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { showErrorDialog(this, "Failed to create world", e) }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 

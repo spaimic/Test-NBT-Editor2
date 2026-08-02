@@ -71,7 +71,11 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
 
             val dbDir = File(worldDir, "db")
             val options = Options().apply {
-                createIfMissing(false)
+                // true so a brand-new world (level.dat only, no db/ yet — see
+                // FlatWorldGenerator.buildNewWorldLevelDat) gets a fresh empty
+                // database instead of throwing; existing worlds already have a
+                // db/ folder, so this never actually triggers for them
+                createIfMissing(true)
                 // Bedrock's own C++ engine expects NONE or zlib — never write Snappy-compressed
                 // tables back, or Minecraft itself may fail to read data we wrote.
                 compressionType(CompressionType.NONE)
