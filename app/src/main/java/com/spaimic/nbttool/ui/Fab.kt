@@ -11,7 +11,7 @@ import android.widget.TextView
  * Components dependency) since the rest of this app avoids extra libraries. */
 fun createAddFab(context: Context, onClick: () -> Unit): TextView {
     val sizePx = 160
-    val background = GradientDrawable().apply {
+    val bg = GradientDrawable().apply {
         shape = GradientDrawable.OVAL
         setColor(Color.parseColor("#2196F3"))
     }
@@ -20,7 +20,7 @@ fun createAddFab(context: Context, onClick: () -> Unit): TextView {
         textSize = 28f
         setTextColor(Color.WHITE)
         gravity = Gravity.CENTER
-        background = background
+        background = bg
         elevation = 12f
         layoutParams = FrameLayout.LayoutParams(sizePx, sizePx).apply {
             gravity = Gravity.BOTTOM or Gravity.END
