@@ -20,10 +20,12 @@ object FlatWorldGenerator {
 
     const val GENERATOR_FLAT = 2
 
+    // NOTE: deliberately no "preset_id" field — its presence tells Minecraft to use
+    // that named built-in preset and ignore block_layers entirely, which defeats
+    // the whole point of a custom layer stack (confirmed by testing on-device).
     fun toJson(
         layers: List<FlatLayer>,
         biomeId: Int = 1,
-        presetId: String = "Overworld",
         worldVersion: String = "version.post_1_18",
         encodingVersion: Int = 6
     ): String {
@@ -38,7 +40,6 @@ object FlatWorldGenerator {
             put("biome_id", biomeId)
             put("block_layers", layersArray)
             put("encoding_version", encodingVersion)
-            put("preset_id", presetId)
             put("world_version", worldVersion)
         }.toString()
     }
