@@ -115,6 +115,7 @@ object NbtJson {
     }
 
     private fun typeIdForName(name: String): Int = when (name) {
+        "End" -> 0 // conventional elementType for an empty list — never a real stored value itself
         "Byte" -> 1; "Short" -> 2; "Int" -> 3; "Long" -> 4; "Float" -> 5; "Double" -> 6
         "ByteArray" -> 7; "String" -> 8; "List" -> 9; "Compound" -> 10; "IntArray" -> 11; "LongArray" -> 12
         else -> throw IllegalArgumentException("Unknown NBT type name \"$name\"")
