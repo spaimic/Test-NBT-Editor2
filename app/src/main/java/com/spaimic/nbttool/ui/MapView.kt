@@ -29,6 +29,21 @@ class MapView(context: Context) : View(context) {
             invalidate()
         }
 
+    data class MarkerDraw(val worldX: Int, val worldZ: Int, val iconRes: Int)
+
+    var entityMarkers: List<MarkerDraw> = emptyList()
+        set(value) { field = value; invalidate() }
+    var blockEntityMarkers: List<MarkerDraw> = emptyList()
+        set(value) { field = value; invalidate() }
+    var showEntityIcons = true
+        set(value) { field = value; invalidate() }
+    var showTileEntityIcons = true
+        set(value) { field = value; invalidate() }
+
+    private val markerBitmapCache = HashMap<Int, Bitmap>()
+    private fun bitmapFor(resId: Int): Bitmap =
+        markerBitmapCache.getOrPut(resId) { BitmapFactory.decodeResource(resources, resId) }
+
     /** World block X/Z to center on the first time the map draws — typically the
      * player's real position. Falls back to the bounding-box center if left null. */
     var preferredCenterBlock: Pair<Int, Int>? = null
@@ -99,6 +114,26 @@ class MapView(context: Context) : View(context) {
                 }
                 canvas.drawRect(screenX, screenY, screenX + 16 * blockPx, screenY + 16 * blockPx, gridPaint)
             }
+        }
+
+        fun screenPos(worldX: Int, worldZ: Int): Pair<Float, Float> {
+            val sx = offsetX + (Math.floorDiv(worldX, 16) - minCx) * 16 * blockPx + Math.floorMod(worldX, 16) * blockPx
+            val sz = offsetY + (Math.floorDiv(worldZ, 16) - minCz) * 16 * blockPx + Math.floorMod(worldZ, 16) * blockPx
+            return sx to sz
+        }
+
+        fun drawMarker(worldX: Int, worldZ: Int, iconRes: Int, size: Int) {
+            val (sx, sz) = screenPos(worldX, worldZ)
+            if (sx < -size || sx > width + size || sz < -size || sz > height + size) return
+            val dest = Rect((sx - size / 2).toInt(), (sz - size).toInt(), (sx + size / 2).toInt(), sz.toInt())
+            canvas.drawBitmap(bitmapFor(iconRes), null, dest, null)
+        }
+
+        if (showTileEntityIcons) {
+            for (m in blockEntityMarkers) drawMarker(m.worldX, m.worldZ, m.iconRes, 32)
+        }
+        if (showEntityIcons) {
+            for (m in entityMarkers) drawMarker(m.worldX, m.worldZ, m.iconRes, 32)
         }
 
         preferredCenterBlock?.let { (px, pz) ->

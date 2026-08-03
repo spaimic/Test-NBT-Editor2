@@ -93,9 +93,17 @@ class MapViewerActivity : AppCompatActivity() {
                 }
 
                 val scanResult = ChunkScanner.scanOverworld(bridge)
+                val entityMarkerDraws = scanResult.entityMarkers.map {
+                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                }
+                val blockEntityMarkerDraws = scanResult.blockEntityMarkers.map {
+                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                }
                 runOnUiThread {
                     mapView.preferredCenterBlock = playerPos
                     mapView.chunkData = scanResult.grid
+                    mapView.entityMarkers = entityMarkerDraws
+                    mapView.blockEntityMarkers = blockEntityMarkerDraws
                     reportScanStats(scanResult.stats)
                 }
             } catch (e: OutOfMemoryError) {
@@ -168,6 +176,8 @@ class MapViewerActivity : AppCompatActivity() {
             "~local_player",
             "MCStructure editor" + if (structureCount > 0) " ($structureCount)" else "",
             "Multiplayer editor" + if (playerCount > 0) " ($playerCount)" else "",
+            (if (mapView.showEntityIcons) "Hide" else "Show") + " Entity Icons",
+            (if (mapView.showTileEntityIcons) "Hide" else "Show") + " Tile Entity Icons",
             "World settings (level.dat)",
             "Advanced: browse all DB keys"
         )
@@ -179,8 +189,10 @@ class MapViewerActivity : AppCompatActivity() {
                          else Toast.makeText(this, "No ~local_player found in this world", Toast.LENGTH_SHORT).show()
                     1 -> showStructurePicker()
                     2 -> showMultiplayerPicker()
-                    3 -> openLevelDatEditor()
-                    4 -> openAllKeysBrowser()
+                    3 -> mapView.showEntityIcons = !mapView.showEntityIcons
+                    4 -> mapView.showTileEntityIcons = !mapView.showTileEntityIcons
+                    5 -> openLevelDatEditor()
+                    6 -> openAllKeysBrowser()
                 }
             }
             .show()
@@ -264,7 +276,17 @@ class MapViewerActivity : AppCompatActivity() {
         Thread {
             try {
                 val scanResult = ChunkScanner.scanOverworld(bridge)
-                runOnUiThread { mapView.chunkData = scanResult.grid }
+                val entityMarkerDraws = scanResult.entityMarkers.map {
+                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                }
+                val blockEntityMarkerDraws = scanResult.blockEntityMarkers.map {
+                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                }
+                runOnUiThread {
+                    mapView.chunkData = scanResult.grid
+                    mapView.entityMarkers = entityMarkerDraws
+                    mapView.blockEntityMarkers = blockEntityMarkerDraws
+                }
             } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to refresh the map", e) }
             }
