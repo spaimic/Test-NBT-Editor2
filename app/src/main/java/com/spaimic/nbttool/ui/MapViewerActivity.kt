@@ -147,7 +147,7 @@ class MapViewerActivity : AppCompatActivity() {
         val chunkZ = Math.floorDiv(worldZ, 16)
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
-            .setItems(arrayOf("Show Entities", "Show Block Entities")) { _, which ->
+            .setItems(arrayOf("Show Entities", "Show Block Entities", "Delete Chunk")) { _, which ->
                 when (which) {
                     0 -> {
                         val i = Intent(this, EntityListActivity::class.java)
@@ -161,9 +161,45 @@ class MapViewerActivity : AppCompatActivity() {
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         startActivity(i)
                     }
+                    2 -> promptDeleteChunk(chunkX, chunkZ)
                 }
             }
             .show()
+    }
+
+    private fun promptDeleteChunk(chunkX: Int, chunkZ: Int) {
+        val input = EditText(this).apply { hint = "Type DELETE to confirm" }
+        AlertDialog.Builder(this)
+            .setTitle("Delete chunk ($chunkX, $chunkZ)?")
+            .setMessage(
+                "This replaces every block in this chunk with air, from Y 320 down to " +
+                    "Y -64, and removes every entity and block entity in it. This can't be " +
+                    "undone (though a backup of the world's database was taken when you " +
+                    "opened this map).\n\nType DELETE to confirm."
+            )
+            .setView(input)
+            .setPositiveButton("Confirm") { _, _ ->
+                if (input.text.toString() == "DELETE") {
+                    deleteChunk(chunkX, chunkZ)
+                } else {
+                    Toast.makeText(this, "Didn't match \"DELETE\" — nothing was changed.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteChunk(chunkX: Int, chunkZ: Int) {
+        val bridge = LevelDbSession.bridge ?: return
+        Thread {
+            try {
+                com.spaimic.nbttool.chunk.ChunkDeleter.clearChunkToAir(bridge, chunkX, chunkZ)
+                runOnUiThread { Toast.makeText(this, "Chunk cleared to air.", Toast.LENGTH_SHORT).show() }
+                rescanMap()
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to delete chunk", e) }
+            }
+        }.start()
     }
 
     private fun showMenu() {

@@ -58,6 +58,20 @@ object ChunkKeys {
         return out.toByteArray()
     }
 
+    fun subChunkKey(chunkX: Int, chunkZ: Int, subChunkY: Int, dimension: Int = 0): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        fun writeI32LE(v: Int) {
+            out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
+            out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        }
+        writeI32LE(chunkX)
+        writeI32LE(chunkZ)
+        if (dimension != 0) writeI32LE(dimension)
+        out.write(TAG_SUBCHUNK_PREFIX)
+        out.write(subChunkY)
+        return out.toByteArray()
+    }
+
     private fun readI32(b: ByteArray, off: Int): Int =
         (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8) or
             ((b[off + 2].toInt() and 0xFF) shl 16) or ((b[off + 3].toInt() and 0xFF) shl 24)
