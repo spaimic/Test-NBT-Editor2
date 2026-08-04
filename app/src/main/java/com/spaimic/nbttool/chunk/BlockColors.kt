@@ -3,433 +3,301 @@ package com.spaimic.nbttool.chunk
 import android.graphics.Color
 
 /**
- * Block-name -> map color. Minecraft has 1000+ block identifiers, but most of
- * that count is repetition — 16 dye colors × (wool/concrete/terracotta/glass/
- * carpet/etc), a dozen wood types × (planks/log/fence/door/etc), redstone
- * on/off variants, stairs/slabs/walls of the same material, and so on. Rather
- * than hand-type every single one, the big repeating families are generated
- * from a small color table below; everything else is curated by hand.
- * Anything still missing falls back to a neutral "solid, unknown" color.
+ * Block name -> map color. Rather than inventing a unique RGB per block (or
+ * hand-typing thousands of lines), this uses the same system Minecraft's own
+ * in-game maps use: every block is assigned one of a small set of ~62
+ * official "base map colors" (net.minecraft.world.level.material.MapColor —
+ * Bedrock's own map rendering matches this palette closely). Coverage of the
+ * huge number of actual block IDs comes from:
+ *   1. An explicit table for common/structurally-unique blocks.
+ *   2. Pattern rules for the big regular "product families" — 16 dye colors
+ *      across wool/concrete/terracotta/glass/carpet/etc., wood species across
+ *      planks/stairs/slabs/doors/etc., ore variants, stone-family shapes.
+ * A block this app has never heard of (e.g. one added after this was written)
+ * still gets colored correctly as long as it follows one of those naming
+ * patterns, which almost all Minecraft blocks do.
  */
 object BlockColors {
 
-    // ---- dye-color families: wool, concrete, terracotta, glass, carpet, etc. ----
-    // all come in the same 16 colors, so generate them instead of typing ~190 entries.
+    // ---- the official ~62 base map colors (Java's MapColor table; Bedrock's own
+    // map palette matches this closely) — every block below reuses one of these,
+    // never an invented RGB. ----
+    private fun rgb(r: Int, g: Int, b: Int) = Color.rgb(r, g, b)
 
-    private data class Dye(val id: String, val rgb: Int)
+    private val NONE = rgb(0, 0, 0)
+    private val GRASS = rgb(127, 178, 56)
+    private val SAND = rgb(247, 233, 163)
+    private val WOOL = rgb(199, 199, 199)
+    private val FIRE = rgb(255, 0, 0)
+    private val ICE = rgb(160, 160, 255)
+    private val METAL = rgb(167, 167, 167)
+    private val PLANT = rgb(0, 124, 0)
+    private val SNOW = rgb(255, 255, 255)
+    private val CLAY = rgb(164, 168, 184)
+    private val DIRT = rgb(151, 109, 77)
+    private val STONE = rgb(112, 112, 112)
+    private val WATER = rgb(64, 64, 255)
+    private val WOOD = rgb(143, 119, 72)
+    private val QUARTZ = rgb(255, 252, 245)
+    private val COLOR_ORANGE = rgb(216, 127, 51)
+    private val COLOR_MAGENTA = rgb(178, 76, 216)
+    private val COLOR_LIGHT_BLUE = rgb(102, 153, 216)
+    private val COLOR_YELLOW = rgb(229, 229, 51)
+    private val COLOR_LIGHT_GREEN = rgb(127, 204, 25)
+    private val COLOR_PINK = rgb(242, 127, 165)
+    private val COLOR_GRAY = rgb(76, 76, 76)
+    private val COLOR_LIGHT_GRAY = rgb(153, 153, 153)
+    private val COLOR_CYAN = rgb(76, 127, 153)
+    private val COLOR_PURPLE = rgb(127, 63, 178)
+    private val COLOR_BLUE = rgb(51, 76, 178)
+    private val COLOR_BROWN = rgb(102, 76, 51)
+    private val COLOR_GREEN = rgb(102, 127, 51)
+    private val COLOR_RED = rgb(153, 51, 51)
+    private val COLOR_BLACK = rgb(25, 25, 25)
+    private val GOLD = rgb(250, 238, 77)
+    private val DIAMOND = rgb(92, 219, 213)
+    private val LAPIS = rgb(74, 128, 255)
+    private val EMERALD = rgb(0, 217, 58)
+    private val PODZOL = rgb(129, 86, 49)
+    private val NETHER = rgb(112, 2, 0)
+    private val TERRACOTTA_WHITE = rgb(209, 177, 161)
+    private val TERRACOTTA_ORANGE = rgb(159, 82, 36)
+    private val TERRACOTTA_MAGENTA = rgb(149, 87, 108)
+    private val TERRACOTTA_LIGHT_BLUE = rgb(112, 108, 138)
+    private val TERRACOTTA_YELLOW = rgb(186, 133, 36)
+    private val TERRACOTTA_LIGHT_GREEN = rgb(103, 117, 53)
+    private val TERRACOTTA_PINK = rgb(160, 77, 78)
+    private val TERRACOTTA_GRAY = rgb(57, 41, 35)
+    private val TERRACOTTA_LIGHT_GRAY = rgb(135, 107, 98)
+    private val TERRACOTTA_CYAN = rgb(87, 92, 92)
+    private val TERRACOTTA_PURPLE = rgb(122, 73, 88)
+    private val TERRACOTTA_BLUE = rgb(76, 62, 92)
+    private val TERRACOTTA_BROWN = rgb(76, 50, 35)
+    private val TERRACOTTA_GREEN = rgb(76, 82, 42)
+    private val TERRACOTTA_RED = rgb(142, 60, 46)
+    private val TERRACOTTA_BLACK = rgb(37, 22, 16)
+    private val CRIMSON_NYLIUM = rgb(189, 48, 49)
+    private val CRIMSON_STEM = rgb(148, 63, 97)
+    private val CRIMSON_HYPHAE = rgb(92, 25, 29)
+    private val WARPED_NYLIUM = rgb(22, 126, 134)
+    private val WARPED_STEM = rgb(58, 142, 140)
+    private val WARPED_HYPHAE = rgb(86, 44, 62)
+    private val WARPED_WART_BLOCK = rgb(20, 180, 133)
+    private val DEEPSLATE = rgb(100, 100, 100)
+    private val RAW_IRON = rgb(216, 175, 147)
+    private val GLOW_LICHEN = rgb(127, 167, 150)
 
-    private val DYES = listOf(
-        Dye("white", Color.rgb(234, 236, 236)),
-        Dye("orange", Color.rgb(241, 118, 20)),
-        Dye("magenta", Color.rgb(189, 68, 179)),
-        Dye("light_blue", Color.rgb(58, 175, 217)),
-        Dye("yellow", Color.rgb(249, 198, 40)),
-        Dye("lime", Color.rgb(112, 185, 26)),
-        Dye("pink", Color.rgb(237, 141, 173)),
-        Dye("gray", Color.rgb(62, 68, 71)),
-        Dye("light_gray", Color.rgb(142, 142, 135)),
-        Dye("cyan", Color.rgb(21, 138, 145)),
-        Dye("purple", Color.rgb(121, 43, 173)),
-        Dye("blue", Color.rgb(53, 58, 159)),
-        Dye("brown", Color.rgb(114, 72, 41)),
-        Dye("green", Color.rgb(85, 110, 28)),
-        Dye("red", Color.rgb(161, 40, 35)),
-        Dye("black", Color.rgb(21, 21, 26))
+    // dye-color name -> its wool/concrete-family map color and terracotta-family map color
+    private val DYE_WOOL = mapOf(
+        "white" to WOOL, "orange" to COLOR_ORANGE, "magenta" to COLOR_MAGENTA, "light_blue" to COLOR_LIGHT_BLUE,
+        "yellow" to COLOR_YELLOW, "lime" to COLOR_LIGHT_GREEN, "pink" to COLOR_PINK, "gray" to COLOR_GRAY,
+        "light_gray" to COLOR_LIGHT_GRAY, "cyan" to COLOR_CYAN, "purple" to COLOR_PURPLE, "blue" to COLOR_BLUE,
+        "brown" to COLOR_BROWN, "green" to COLOR_GREEN, "red" to COLOR_RED, "black" to COLOR_BLACK
+    )
+    private val DYE_TERRACOTTA = mapOf(
+        "white" to TERRACOTTA_WHITE, "orange" to TERRACOTTA_ORANGE, "magenta" to TERRACOTTA_MAGENTA,
+        "light_blue" to TERRACOTTA_LIGHT_BLUE, "yellow" to TERRACOTTA_YELLOW, "lime" to TERRACOTTA_LIGHT_GREEN,
+        "pink" to TERRACOTTA_PINK, "gray" to TERRACOTTA_GRAY, "light_gray" to TERRACOTTA_LIGHT_GRAY,
+        "cyan" to TERRACOTTA_CYAN, "purple" to TERRACOTTA_PURPLE, "blue" to TERRACOTTA_BLUE,
+        "brown" to TERRACOTTA_BROWN, "green" to TERRACOTTA_GREEN, "red" to TERRACOTTA_RED, "black" to TERRACOTTA_BLACK
     )
 
-    /** Muted toward gray/brown — terracotta and glazed terracotta read as more earthy than pure wool/dye colors. */
-    private fun muted(rgb: Int): Int {
-        val r = (Color.red(rgb) * 0.75 + 90 * 0.25).toInt()
-        val g = (Color.green(rgb) * 0.75 + 75 * 0.25).toInt()
-        val b = (Color.blue(rgb) * 0.75 + 65 * 0.25).toInt()
-        return Color.rgb(r, g, b)
-    }
+    // wood species -> its map color (all standard species share WOOD; nether "wood" is its own family)
+    private val WOOD_SPECIES = listOf(
+        "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "mangrove", "cherry", "bamboo", "pale_oak"
+    )
+    private val CRIMSON_SPECIES = mapOf("crimson" to (CRIMSON_STEM to CRIMSON_HYPHAE))
+    private val WARPED_SPECIES = mapOf("warped" to (WARPED_STEM to WARPED_HYPHAE))
 
-    /** Lightened/washed out — stained glass is translucent, so it reads lighter than a solid dye color. */
-    private fun lightened(rgb: Int): Int {
-        val r = (Color.red(rgb) + 255) / 2
-        val g = (Color.green(rgb) + 255) / 2
-        val b = (Color.blue(rgb) + 255) / 2
-        return Color.rgb(r, g, b)
-    }
-
-    private fun dyeFamily(): Map<String, Int> {
-        val out = HashMap<String, Int>()
-        for (d in DYES) {
-            out["minecraft:${d.id}_wool"] = d.rgb
-            out["minecraft:${d.id}_carpet"] = d.rgb
-            out["minecraft:${d.id}_concrete"] = d.rgb
-            out["minecraft:${d.id}_concrete_powder"] = lightened(d.rgb)
-            out["minecraft:${d.id}_terracotta"] = muted(d.rgb)
-            out["minecraft:${d.id}_glazed_terracotta"] = muted(d.rgb)
-            out["minecraft:${d.id}_stained_glass"] = lightened(d.rgb)
-            out["minecraft:${d.id}_stained_glass_pane"] = lightened(d.rgb)
-            out["minecraft:${d.id}_shulker_box"] = d.rgb
-            out["minecraft:${d.id}_candle"] = d.rgb
-            out["minecraft:${d.id}_bed"] = d.rgb
-            out["minecraft:${d.id}_banner"] = d.rgb
-        }
-        return out
-    }
-
-    // ---- wood-type families: planks/log/fence/door/etc share one color per wood type ----
-
-    private data class Wood(val id: String, val planksRgb: Int, val logRgb: Int, val leavesRgb: Int? = null)
-
-    private val WOODS = listOf(
-        Wood("oak", Color.rgb(157, 128, 79), Color.rgb(102, 81, 51), Color.rgb(59, 105, 36)),
-        Wood("spruce", Color.rgb(114, 84, 48), Color.rgb(66, 49, 30), Color.rgb(48, 84, 47)),
-        Wood("birch", Color.rgb(192, 175, 121), Color.rgb(197, 191, 172), Color.rgb(96, 122, 60)),
-        Wood("jungle", Color.rgb(160, 115, 80), Color.rgb(85, 67, 40), Color.rgb(65, 115, 35)),
-        Wood("acacia", Color.rgb(168, 90, 50), Color.rgb(103, 90, 79), Color.rgb(97, 128, 51)),
-        Wood("dark_oak", Color.rgb(66, 43, 20), Color.rgb(60, 46, 27), Color.rgb(52, 88, 33)),
-        Wood("mangrove", Color.rgb(117, 54, 48), Color.rgb(84, 60, 60), Color.rgb(65, 122, 68)),
-        Wood("cherry", Color.rgb(227, 168, 193), Color.rgb(147, 94, 90), Color.rgb(233, 192, 210)),
-        Wood("bamboo", Color.rgb(193, 168, 80), Color.rgb(163, 150, 65), Color.rgb(103, 138, 46)),
-        Wood("crimson", Color.rgb(110, 49, 58), Color.rgb(92, 46, 62), null),
-        Wood("warped", Color.rgb(46, 110, 105), Color.rgb(58, 94, 91), null)
+    // explicit table: common/structurally-unique blocks that don't fit a generic pattern
+    private val explicit: Map<String, Int> = mapOf(
+        // terrain / ground
+        "grass_block" to GRASS, "grass" to PLANT, "tallgrass" to PLANT, "short_grass" to PLANT, "tall_grass" to PLANT,
+        "fern" to PLANT, "large_fern" to PLANT, "seagrass" to PLANT, "tall_seagrass" to PLANT, "kelp" to PLANT, "kelp_plant" to PLANT,
+        "vine" to PLANT, "lily_pad" to PLANT, "sugar_cane" to PLANT, "reeds" to PLANT, "bamboo" to PLANT, "bamboo_sapling" to PLANT,
+        "sapling" to PLANT, "azalea" to PLANT, "flowering_azalea" to PLANT, "moss_block" to PLANT, "moss_carpet" to PLANT,
+        "hanging_roots" to DIRT, "sculk_vein" to COLOR_BLACK, "sculk" to COLOR_BLACK, "sculk_catalyst" to COLOR_BLACK, "sculk_shrieker" to TERRACOTTA_WHITE,
+        "dirt" to DIRT, "coarse_dirt" to DIRT, "farmland" to DIRT, "dirt_path" to DIRT, "grass_path" to DIRT,
+        "rooted_dirt" to DIRT, "mud" to COLOR_GRAY, "muddy_mangrove_roots" to DIRT, "mangrove_roots" to WOOD,
+        "podzol" to PODZOL, "mycelium" to TERRACOTTA_PURPLE,
+        "sand" to SAND, "red_sand" to COLOR_ORANGE, "sandstone" to SAND, "red_sandstone" to COLOR_ORANGE,
+        "gravel" to STONE, "clay" to CLAY, "ice" to ICE, "packed_ice" to ICE, "blue_ice" to DIAMOND, "frosted_ice" to ICE,
+        "snow" to SNOW, "snow_layer" to SNOW, "powder_snow" to SNOW,
+        // stone family
+        "stone" to STONE, "cobblestone" to STONE, "mossy_cobblestone" to STONE, "smooth_stone" to STONE,
+        "andesite" to STONE, "polished_andesite" to STONE, "diorite" to QUARTZ, "polished_diorite" to QUARTZ,
+        "granite" to COLOR_ORANGE, "polished_granite" to COLOR_ORANGE,
+        "deepslate" to DEEPSLATE, "cobbled_deepslate" to DEEPSLATE, "polished_deepslate" to DEEPSLATE,
+        "deepslate_bricks" to DEEPSLATE, "deepslate_tiles" to DEEPSLATE, "chiseled_deepslate" to DEEPSLATE,
+        "tuff" to STONE, "tuff_bricks" to STONE, "chiseled_tuff" to STONE, "tuff_brick_slab" to STONE,
+        "calcite" to QUARTZ, "dripstone_block" to DIRT, "pointed_dripstone" to DIRT,
+        "bedrock" to STONE, "obsidian" to COLOR_BLACK, "crying_obsidian" to COLOR_PURPLE,
+        "basalt" to STONE, "polished_basalt" to STONE, "smooth_basalt" to STONE, "blackstone" to TERRACOTTA_BLACK,
+        "polished_blackstone" to TERRACOTTA_BLACK, "chiseled_polished_blackstone" to TERRACOTTA_BLACK,
+        "gilded_blackstone" to TERRACOTTA_BLACK, "cracked_polished_blackstone_bricks" to TERRACOTTA_BLACK,
+        "polished_blackstone_bricks" to TERRACOTTA_BLACK,
+        "quartz_block" to QUARTZ, "smooth_quartz" to QUARTZ, "quartz_bricks" to QUARTZ, "chiseled_quartz_block" to QUARTZ,
+        "quartz_pillar" to QUARTZ,
+        "prismarine" to DIAMOND, "prismarine_bricks" to DIAMOND, "dark_prismarine" to COLOR_CYAN, "sea_lantern" to QUARTZ,
+        "purpur_block" to COLOR_MAGENTA, "purpur_pillar" to COLOR_MAGENTA,
+        "end_stone" to SAND, "end_stone_bricks" to SAND, "end_rod" to QUARTZ,
+        "netherrack" to NETHER, "nether_bricks" to NETHER, "cracked_nether_bricks" to NETHER, "chiseled_nether_bricks" to NETHER,
+        "red_nether_bricks" to NETHER, "soul_sand" to COLOR_BROWN, "soul_soil" to COLOR_BROWN,
+        "magma" to COLOR_RED, "magma_block" to COLOR_RED, "glowstone" to GOLD, "shroomlight" to COLOR_ORANGE,
+        "crimson_nylium" to CRIMSON_NYLIUM, "warped_nylium" to WARPED_NYLIUM, "warped_wart_block" to WARPED_WART_BLOCK,
+        "nether_wart_block" to COLOR_RED, "nether_gold_ore" to NETHER, "ancient_debris" to NETHER,
+        // liquids
+        "water" to WATER, "flowing_water" to WATER, "lava" to FIRE, "flowing_lava" to FIRE,
+        // ores (metal/gem-colored)
+        "iron_ore" to STONE, "deepslate_iron_ore" to DEEPSLATE, "iron_block" to METAL, "raw_iron_block" to RAW_IRON, "raw_iron" to RAW_IRON,
+        "gold_ore" to STONE, "deepslate_gold_ore" to DEEPSLATE, "gold_block" to GOLD, "raw_gold_block" to GOLD,
+        "diamond_ore" to STONE, "deepslate_diamond_ore" to DEEPSLATE, "diamond_block" to DIAMOND,
+        "emerald_ore" to STONE, "deepslate_emerald_ore" to DEEPSLATE, "emerald_block" to EMERALD,
+        "lapis_ore" to STONE, "deepslate_lapis_ore" to DEEPSLATE, "lapis_block" to LAPIS,
+        "redstone_ore" to STONE, "deepslate_redstone_ore" to DEEPSLATE, "redstone_block" to FIRE,
+        "coal_ore" to STONE, "deepslate_coal_ore" to DEEPSLATE, "coal_block" to COLOR_BLACK,
+        "copper_ore" to STONE, "deepslate_copper_ore" to DEEPSLATE, "copper_block" to COLOR_ORANGE, "raw_copper_block" to COLOR_ORANGE, "raw_copper" to COLOR_ORANGE,
+        "cut_copper" to COLOR_ORANGE, "chiseled_copper" to COLOR_ORANGE, "copper_grate" to COLOR_ORANGE,
+        "copper_bulb" to COLOR_ORANGE, "copper_door" to COLOR_ORANGE, "copper_trapdoor" to COLOR_ORANGE,
+        "oxidized_copper" to COLOR_CYAN, "weathered_copper" to COLOR_GREEN, "exposed_copper" to COLOR_ORANGE,
+        // wood-derived but not planks/log family
+        "bookshelf" to WOOD, "chiseled_bookshelf" to WOOD, "ladder" to WOOD, "scaffolding" to SAND,
+        "crafting_table" to WOOD, "cartography_table" to WOOD, "fletching_table" to WOOD, "smithing_table" to WOOD,
+        "loom" to WOOL, "composter" to WOOD, "barrel" to WOOD, "beehive" to WOOD, "bee_nest" to WOOD,
+        "lectern" to WOOD, "jukebox" to WOOD, "note_block" to WOOD, "chest" to WOOD, "trapped_chest" to WOOD,
+        "ender_chest" to COLOR_BLACK,
+        // functional / utility
+        "furnace" to STONE, "blast_furnace" to STONE, "smoker" to WOOD, "brewing_stand" to STONE,
+        "cauldron" to STONE, "anvil" to METAL, "chipped_anvil" to METAL, "damaged_anvil" to METAL,
+        "grindstone" to METAL, "stonecutter" to STONE, "enchanting_table" to COLOR_GREEN,
+        "beacon" to DIAMOND, "conduit" to DIAMOND, "dragon_egg" to COLOR_BLACK,
+        "hopper" to METAL, "dispenser" to STONE, "dropper" to STONE, "observer" to STONE, "piston" to STONE,
+        "sticky_piston" to STONE, "piston_head" to WOOD, "target" to TERRACOTTA_WHITE,
+        "tnt" to COLOR_RED, "spawner" to STONE, "trial_spawner" to DEEPSLATE, "vault" to DEEPSLATE,
+        "iron_bars" to METAL, "chain" to METAL, "lightning_rod" to COLOR_ORANGE, "bell" to GOLD,
+        "cake" to SNOW, "flower_pot" to TERRACOTTA_ORANGE, "armor_stand" to WOOD,
+        "campfire" to WOOD, "soul_campfire" to WOOD, "torch" to WOOD, "soul_torch" to COLOR_CYAN, "lantern" to METAL, "soul_lantern" to COLOR_CYAN,
+        "redstone_lamp" to COLOR_YELLOW, "sea_pickle" to COLOR_LIGHT_GREEN, "glass" to ICE, "glass_pane" to ICE, "tinted_glass" to COLOR_GRAY,
+        "amethyst_block" to COLOR_PURPLE, "budding_amethyst" to COLOR_PURPLE, "amethyst_cluster" to COLOR_PURPLE,
+        "small_amethyst_bud" to COLOR_PURPLE, "medium_amethyst_bud" to COLOR_PURPLE, "large_amethyst_bud" to COLOR_PURPLE,
+        "honeycomb_block" to COLOR_ORANGE, "honey_block" to COLOR_ORANGE, "slime" to COLOR_LIGHT_GREEN, "slime_block" to COLOR_LIGHT_GREEN,
+        "hay_block" to COLOR_YELLOW, "sponge" to COLOR_YELLOW, "wet_sponge" to COLOR_YELLOW,
+        "bone_block" to QUARTZ, "structure_block" to COLOR_MAGENTA, "structure_void" to COLOR_MAGENTA,
+        "jigsaw" to COLOR_PURPLE, "command_block" to COLOR_BROWN, "repeating_command_block" to COLOR_PURPLE, "chain_command_block" to COLOR_LIGHT_GREEN,
+        "barrier" to NONE, "light_block" to NONE, "air" to NONE, "cave_air" to NONE, "void_air" to NONE,
+        "resin_block" to COLOR_ORANGE, "resin_bricks" to COLOR_ORANGE, "resin_clump" to COLOR_ORANGE,
+        "chalkboard" to COLOR_BLACK,
+        // redstone components
+        "redstone_wire" to FIRE, "repeater" to STONE, "unpowered_repeater" to STONE, "powered_repeater" to FIRE,
+        "comparator" to STONE, "unpowered_comparator" to STONE, "powered_comparator" to FIRE,
+        "lever" to STONE, "tripwire" to WOOD, "tripwire_hook" to STONE,
+        "daylight_detector" to WOOD, "rail" to METAL, "golden_rail" to GOLD, "detector_rail" to METAL, "activator_rail" to METAL
     )
 
-    private fun woodFamily(): Map<String, Int> {
-        val out = HashMap<String, Int>()
-        for (w in WOODS) {
-            val stemOrLog = if (w.id == "crimson" || w.id == "warped") "stem" else "log"
-            out["minecraft:${w.id}_planks"] = w.planksRgb
-            out["minecraft:${w.id}_$stemOrLog"] = w.logRgb
-            out["minecraft:stripped_${w.id}_$stemOrLog"] = w.planksRgb
-            out["minecraft:${w.id}_fence"] = w.planksRgb
-            out["minecraft:${w.id}_fence_gate"] = w.planksRgb
-            out["minecraft:${w.id}_door"] = w.planksRgb
-            out["minecraft:${w.id}_trapdoor"] = w.planksRgb
-            out["minecraft:${w.id}_slab"] = w.planksRgb
-            out["minecraft:${w.id}_stairs"] = w.planksRgb
-            out["minecraft:${w.id}_button"] = w.planksRgb
-            out["minecraft:${w.id}_pressure_plate"] = w.planksRgb
-            out["minecraft:${w.id}_sign"] = w.planksRgb
-            out["minecraft:${w.id}_hanging_sign"] = w.planksRgb
-            if (w.leavesRgb != null) out["minecraft:${w.id}_leaves"] = w.leavesRgb
+    val fallbackSolid: Int = rgb(120, 120, 120)   // a recognized-solid but not-in-the-table block
+    val fallbackUnloaded: Int = rgb(55, 55, 55)   // no chunk data at all
+    val fallbackUnparsed: Int = rgb(90, 90, 90)   // chunk exists but its subchunk format wasn't decodable
+
+    private val cache = HashMap<String, Int>()
+
+    fun colorFor(blockNameWithNamespace: String): Int =
+        cache.getOrPut(blockNameWithNamespace) { resolve(blockNameWithNamespace.substringAfter(':')) }
+
+    fun isKnown(blockNameWithNamespace: String): Boolean =
+        resolveOrNull(blockNameWithNamespace.substringAfter(':')) != null
+
+    private fun resolve(name: String): Int = resolveOrNull(name) ?: fallbackSolid
+
+    private fun resolveOrNull(name: String): Int? {
+        explicit[name]?.let { return it }
+
+        // colored product families: <dye_color>_<family>
+        for ((dye, wool) in DYE_WOOL) {
+            if (name == "${dye}_wool" || name == "${dye}_carpet" || name == "${dye}_bed" ||
+                name == "${dye}_banner" || name == "${dye}_wall_banner" || name == "${dye}_candle" ||
+                name == "${dye}_candle_cake" || name == "${dye}_shulker_box" || name == "${dye}_stained_glass" ||
+                name == "${dye}_stained_glass_pane"
+            ) return wool
         }
-        return out
-    }
+        for ((dye, terracotta) in DYE_TERRACOTTA) {
+            if (name == "${dye}_terracotta" || name == "${dye}_glazed_terracotta" || name == "${dye}_concrete_powder") return terracotta
+            if (name == "${dye}_concrete") return terracotta
+        }
+        if (name == "terracotta") return TERRACOTTA_ORANGE
 
-    // ---- copper: several oxidation stages, each with waxed/unwaxed and cut/block/etc variants ----
-
-    private fun copperFamily(): Map<String, Int> {
-        // (block-name stage id, cut-variant stage id, color) — the "cut_" prefix comes
-        // BEFORE the oxidation stage name for anything past plain copper, e.g.
-        // "exposed_cut_copper", not "cut_exposed_copper".
-        val stages = listOf(
-            Triple("copper", "cut_copper", Color.rgb(201, 111, 76)),
-            Triple("exposed_copper", "exposed_cut_copper", Color.rgb(153, 135, 113)),
-            Triple("weathered_copper", "weathered_cut_copper", Color.rgb(109, 152, 118)),
-            Triple("oxidized_copper", "oxidized_cut_copper", Color.rgb(82, 162, 132))
+        // wood species: <species>_<part>
+        val woodSuffixes = listOf(
+            "_planks", "_log", "_wood", "_stairs", "_slab", "_fence", "_fence_gate", "_door", "_trapdoor",
+            "_button", "_pressure_plate", "_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign",
+            "_boat", "_chest_boat", "_leaves"
         )
-        val out = HashMap<String, Int>()
-        for ((blockId, cutId, rgb) in stages) {
-            for (prefix in listOf("", "waxed_")) {
-                out["minecraft:$prefix${blockId}_block"] = rgb
-                out["minecraft:$prefix$blockId"] = rgb
-                out["minecraft:$prefix$cutId"] = rgb
-                out["minecraft:${prefix}${cutId}_stairs"] = rgb
-                out["minecraft:${prefix}${cutId}_slab"] = rgb
-                out["minecraft:${prefix}chiseled_$cutId"] = rgb
+        for (species in WOOD_SPECIES) {
+            if (name.startsWith("stripped_${species}_")) return WOOD
+            for (suf in woodSuffixes) {
+                if (name == "$species$suf") return if (suf == "_leaves") PLANT else WOOD
             }
         }
-        return out
+        for ((species, colors) in CRIMSON_SPECIES) {
+            val (stem, hyphae) = colors
+            if (name.startsWith("stripped_${species}_")) return stem
+            if (name == "${species}_stem" || name.startsWith("${species}_stem_")) return stem
+            if (name == "${species}_hyphae" || name.startsWith("${species}_hyphae_")) return hyphae
+            for (suf in listOf("_planks", "_stairs", "_slab", "_fence", "_fence_gate", "_door", "_trapdoor", "_button", "_pressure_plate", "_sign", "_hanging_sign", "_boat")) {
+                if (name == "$species$suf") return stem
+            }
+            if (name == "${species}_roots") return stem
+        }
+        for ((species, colors) in WARPED_SPECIES) {
+            val (stem, hyphae) = colors
+            if (name.startsWith("stripped_${species}_")) return stem
+            if (name == "${species}_stem" || name.startsWith("${species}_stem_")) return stem
+            if (name == "${species}_hyphae" || name.startsWith("${species}_hyphae_")) return hyphae
+            for (suf in listOf("_planks", "_stairs", "_slab", "_fence", "_fence_gate", "_door", "_trapdoor", "_button", "_pressure_plate", "_sign", "_hanging_sign", "_boat")) {
+                if (name == "$species$suf") return stem
+            }
+            if (name == "${species}_roots") return stem
+        }
+
+        // stone-family shapes (X_stairs / X_slab / X_wall / polished_X / cut_X / chiseled_X / X_bricks)
+        // inherit the base material's color if the base material itself is a recognized entry
+        val stoneShapeSuffixes = listOf("_stairs", "_slab", "_double_slab", "_wall", "_bricks", "_brick_stairs", "_brick_slab", "_brick_wall")
+        for (suf in stoneShapeSuffixes) {
+            if (name.endsWith(suf)) {
+                val base = name.removeSuffix(suf)
+                explicit[base]?.let { return it }
+            }
+        }
+        val stonePrefixes = listOf("polished_", "cut_", "chiseled_", "smooth_", "cracked_", "mossy_")
+        for (prefix in stonePrefixes) {
+            if (name.startsWith(prefix)) {
+                explicit[name.removePrefix(prefix)]?.let { return it }
+            }
+        }
+
+        // ore family fallback: <metal>_ore / deepslate_<metal>_ore not already listed explicitly
+        if (name.endsWith("_ore")) return STONE
+        if (name.startsWith("deepslate_") && name.endsWith("_ore")) return DEEPSLATE
+
+        // generic leaves / saplings / flowers / crops
+        if (name.endsWith("_leaves")) return PLANT
+        if (name.endsWith("_sapling")) return PLANT
+        if (name.contains("mushroom")) return name.let { if (it.contains("stem") || it.contains("block")) TERRACOTTA_WHITE else PLANT }
+        if (name.endsWith("_stem") && !name.endsWith("nether_wart_block")) return PLANT // pumpkin/melon stems etc.
+        if (name in setOf(
+                "poppy", "dandelion", "blue_orchid", "allium", "azure_bluet", "red_tulip", "orange_tulip",
+                "white_tulip", "pink_tulip", "oxeye_daisy", "cornflower", "lily_of_the_valley", "wither_rose",
+                "sunflower", "lilac", "rose_bush", "peony", "torchflower", "pitcher_plant", "wheat", "carrots",
+                "potatoes", "beetroots", "nether_wart", "cocoa", "sweet_berry_bush", "cave_vines", "glow_berries",
+                "spore_blossom", "pink_petals", "wildflowers", "leaf_litter", "bush", "firefly_bush"
+            )
+        ) return PLANT
+
+        // glow lichen / sculk family
+        if (name == "glow_lichen") return GLOW_LICHEN
+
+        // concrete without dye prefix handled above; anything ending in _powder defaults to sand-ish
+        if (name.endsWith("_powder")) return SAND
+
+        return null
     }
-
-    // ---- everything else: curated by hand ----
-
-    private val curated: Map<String, Int> = mapOf(
-        // terrain
-        "minecraft:grass" to Color.rgb(86, 149, 55),
-        "minecraft:grass_block" to Color.rgb(86, 149, 55),
-        "minecraft:tallgrass" to Color.rgb(86, 149, 55),
-        "minecraft:short_grass" to Color.rgb(86, 149, 55),
-        "minecraft:tall_grass" to Color.rgb(86, 149, 55),
-        "minecraft:fern" to Color.rgb(89, 138, 62),
-        "minecraft:large_fern" to Color.rgb(89, 138, 62),
-        "minecraft:dirt" to Color.rgb(134, 96, 67),
-        "minecraft:coarse_dirt" to Color.rgb(120, 85, 60),
-        "minecraft:rooted_dirt" to Color.rgb(128, 92, 64),
-        "minecraft:mud" to Color.rgb(60, 56, 60),
-        "minecraft:muddy_mangrove_roots" to Color.rgb(70, 60, 55),
-        "minecraft:mangrove_roots" to Color.rgb(90, 65, 55),
-        "minecraft:podzol" to Color.rgb(101, 76, 43),
-        "minecraft:farmland" to Color.rgb(107, 77, 51),
-        "minecraft:path" to Color.rgb(151, 127, 84),
-        "minecraft:grass_path" to Color.rgb(151, 127, 84),
-        "minecraft:dirt_path" to Color.rgb(151, 127, 84),
-
-        // stone family
-        "minecraft:stone" to Color.rgb(125, 125, 125),
-        "minecraft:granite" to Color.rgb(149, 103, 85),
-        "minecraft:polished_granite" to Color.rgb(154, 108, 90),
-        "minecraft:diorite" to Color.rgb(188, 188, 188),
-        "minecraft:polished_diorite" to Color.rgb(193, 193, 193),
-        "minecraft:andesite" to Color.rgb(132, 133, 132),
-        "minecraft:polished_andesite" to Color.rgb(136, 138, 136),
-        "minecraft:deepslate" to Color.rgb(80, 80, 84),
-        "minecraft:cobbled_deepslate" to Color.rgb(76, 76, 80),
-        "minecraft:polished_deepslate" to Color.rgb(70, 70, 74),
-        "minecraft:deepslate_bricks" to Color.rgb(68, 68, 72),
-        "minecraft:deepslate_tiles" to Color.rgb(63, 63, 67),
-        "minecraft:cobblestone" to Color.rgb(115, 115, 115),
-        "minecraft:mossy_cobblestone" to Color.rgb(100, 118, 95),
-        "minecraft:mossy_stone_bricks" to Color.rgb(115, 128, 108),
-        "minecraft:stone_bricks" to Color.rgb(122, 122, 122),
-        "minecraft:cracked_stone_bricks" to Color.rgb(118, 118, 118),
-        "minecraft:chiseled_stone_bricks" to Color.rgb(124, 124, 124),
-        "minecraft:smooth_stone" to Color.rgb(160, 160, 160),
-        "minecraft:calcite" to Color.rgb(224, 224, 216),
-        "minecraft:tuff" to Color.rgb(108, 110, 100),
-        "minecraft:dripstone_block" to Color.rgb(140, 105, 85),
-        "minecraft:pointed_dripstone" to Color.rgb(133, 100, 82),
-
-        // sand / gravel / clay
-        "minecraft:sand" to Color.rgb(219, 207, 163),
-        "minecraft:red_sand" to Color.rgb(190, 101, 33),
-        "minecraft:sandstone" to Color.rgb(216, 203, 155),
-        "minecraft:chiseled_sandstone" to Color.rgb(214, 201, 153),
-        "minecraft:smooth_sandstone" to Color.rgb(218, 205, 157),
-        "minecraft:cut_sandstone" to Color.rgb(216, 203, 155),
-        "minecraft:red_sandstone" to Color.rgb(180, 96, 34),
-        "minecraft:chiseled_red_sandstone" to Color.rgb(178, 94, 32),
-        "minecraft:smooth_red_sandstone" to Color.rgb(182, 98, 36),
-        "minecraft:cut_red_sandstone" to Color.rgb(180, 96, 34),
-        "minecraft:gravel" to Color.rgb(136, 126, 126),
-        "minecraft:clay" to Color.rgb(160, 166, 179),
-
-        // liquids
-        "minecraft:water" to Color.rgb(64, 100, 192),
-        "minecraft:flowing_water" to Color.rgb(64, 100, 192),
-        "minecraft:lava" to Color.rgb(207, 92, 15),
-        "minecraft:flowing_lava" to Color.rgb(207, 92, 15),
-
-        // ice / snow
-        "minecraft:snow" to Color.rgb(240, 240, 240),
-        "minecraft:snow_layer" to Color.rgb(240, 240, 240),
-        "minecraft:powder_snow" to Color.rgb(233, 241, 246),
-        "minecraft:ice" to Color.rgb(160, 188, 255),
-        "minecraft:packed_ice" to Color.rgb(150, 178, 245),
-        "minecraft:blue_ice" to Color.rgb(120, 160, 240),
-        "minecraft:frosted_ice" to Color.rgb(155, 185, 250),
-
-        // nether
-        "minecraft:netherrack" to Color.rgb(112, 54, 53),
-        "minecraft:soul_sand" to Color.rgb(84, 64, 51),
-        "minecraft:soul_soil" to Color.rgb(75, 60, 51),
-        "minecraft:crimson_nylium" to Color.rgb(150, 40, 40),
-        "minecraft:warped_nylium" to Color.rgb(40, 130, 120),
-        "minecraft:nether_bricks" to Color.rgb(45, 20, 24),
-        "minecraft:cracked_nether_bricks" to Color.rgb(42, 18, 22),
-        "minecraft:chiseled_nether_bricks" to Color.rgb(47, 21, 25),
-        "minecraft:red_nether_bricks" to Color.rgb(70, 8, 10),
-        "minecraft:nether_wart_block" to Color.rgb(114, 20, 20),
-        "minecraft:warped_wart_block" to Color.rgb(20, 138, 130),
-        "minecraft:nether_gold_ore" to Color.rgb(130, 68, 50),
-        "minecraft:nether_quartz_ore" to Color.rgb(120, 75, 68),
-        "minecraft:ancient_debris" to Color.rgb(98, 77, 68),
-        "minecraft:glowstone" to Color.rgb(171, 131, 84),
-        "minecraft:shroomlight" to Color.rgb(240, 149, 68),
-        "minecraft:magma" to Color.rgb(150, 70, 30),
-        "minecraft:magma_block" to Color.rgb(150, 70, 30),
-        "minecraft:basalt" to Color.rgb(80, 80, 88),
-        "minecraft:polished_basalt" to Color.rgb(94, 94, 100),
-        "minecraft:smooth_basalt" to Color.rgb(84, 84, 90),
-        "minecraft:blackstone" to Color.rgb(50, 47, 51),
-        "minecraft:polished_blackstone" to Color.rgb(58, 54, 59),
-        "minecraft:polished_blackstone_bricks" to Color.rgb(53, 50, 54),
-        "minecraft:chiseled_polished_blackstone" to Color.rgb(56, 52, 57),
-        "minecraft:gilded_blackstone" to Color.rgb(96, 78, 47),
-        "minecraft:crimson_fungus" to Color.rgb(150, 30, 30),
-        "minecraft:warped_fungus" to Color.rgb(20, 120, 110),
-        "minecraft:weeping_vines" to Color.rgb(130, 20, 25),
-        "minecraft:twisting_vines" to Color.rgb(20, 130, 110),
-
-        // end
-        "minecraft:end_stone" to Color.rgb(219, 219, 172),
-        "minecraft:end_stone_bricks" to Color.rgb(216, 216, 169),
-        "minecraft:purpur_block" to Color.rgb(169, 125, 169),
-        "minecraft:purpur_pillar" to Color.rgb(172, 128, 172),
-        "minecraft:chorus_plant" to Color.rgb(97, 68, 97),
-        "minecraft:chorus_flower" to Color.rgb(151, 128, 151),
-        "minecraft:end_rod" to Color.rgb(210, 200, 190),
-        "minecraft:obsidian" to Color.rgb(20, 18, 28),
-        "minecraft:crying_obsidian" to Color.rgb(40, 15, 60),
-
-        // ores
-        "minecraft:coal_ore" to Color.rgb(90, 90, 90),
-        "minecraft:deepslate_coal_ore" to Color.rgb(70, 70, 74),
-        "minecraft:iron_ore" to Color.rgb(150, 130, 110),
-        "minecraft:deepslate_iron_ore" to Color.rgb(120, 108, 100),
-        "minecraft:copper_ore" to Color.rgb(170, 120, 90),
-        "minecraft:deepslate_copper_ore" to Color.rgb(130, 100, 90),
-        "minecraft:gold_ore" to Color.rgb(190, 165, 60),
-        "minecraft:deepslate_gold_ore" to Color.rgb(150, 135, 90),
-        "minecraft:diamond_ore" to Color.rgb(110, 190, 190),
-        "minecraft:deepslate_diamond_ore" to Color.rgb(95, 155, 155),
-        "minecraft:emerald_ore" to Color.rgb(80, 180, 100),
-        "minecraft:deepslate_emerald_ore" to Color.rgb(70, 145, 95),
-        "minecraft:lapis_ore" to Color.rgb(60, 90, 170),
-        "minecraft:deepslate_lapis_ore" to Color.rgb(65, 85, 140),
-        "minecraft:redstone_ore" to Color.rgb(160, 50, 40),
-        "minecraft:deepslate_redstone_ore" to Color.rgb(125, 55, 48),
-
-        // metal / mineral blocks
-        "minecraft:iron_block" to Color.rgb(216, 216, 216),
-        "minecraft:gold_block" to Color.rgb(247, 219, 76),
-        "minecraft:diamond_block" to Color.rgb(98, 219, 213),
-        "minecraft:emerald_block" to Color.rgb(60, 174, 91),
-        "minecraft:lapis_block" to Color.rgb(38, 66, 145),
-        "minecraft:redstone_block" to Color.rgb(172, 32, 25),
-        "minecraft:coal_block" to Color.rgb(24, 24, 24),
-        "minecraft:netherite_block" to Color.rgb(66, 61, 62),
-        "minecraft:raw_iron_block" to Color.rgb(180, 133, 105),
-        "minecraft:raw_gold_block" to Color.rgb(222, 175, 61),
-        "minecraft:raw_copper_block" to Color.rgb(151, 96, 70),
-        "minecraft:amethyst_block" to Color.rgb(122, 92, 178),
-        "minecraft:budding_amethyst" to Color.rgb(122, 92, 178),
-        "minecraft:quartz_block" to Color.rgb(235, 229, 219),
-        "minecraft:chiseled_quartz_block" to Color.rgb(233, 227, 217),
-        "minecraft:quartz_pillar" to Color.rgb(236, 230, 220),
-        "minecraft:smooth_quartz" to Color.rgb(237, 231, 221),
-        "minecraft:quartz_bricks" to Color.rgb(234, 228, 218),
-
-        // wood extras
-        "minecraft:bedrock" to Color.rgb(40, 40, 40),
-        "minecraft:mycelium" to Color.rgb(111, 98, 100),
-        "minecraft:moss_block" to Color.rgb(89, 121, 46),
-        "minecraft:moss_carpet" to Color.rgb(89, 121, 46),
-        "minecraft:bookshelf" to Color.rgb(134, 108, 66),
-        "minecraft:hay_block" to Color.rgb(196, 165, 30),
-        "minecraft:melon_block" to Color.rgb(108, 148, 38),
-        "minecraft:pumpkin" to Color.rgb(198, 118, 30),
-        "minecraft:carved_pumpkin" to Color.rgb(198, 118, 30),
-        "minecraft:jack_o_lantern" to Color.rgb(206, 128, 30),
-        "minecraft:sponge" to Color.rgb(197, 194, 78),
-        "minecraft:wet_sponge" to Color.rgb(172, 172, 60),
-        "minecraft:glass" to Color.rgb(220, 235, 235),
-        "minecraft:glass_pane" to Color.rgb(220, 235, 235),
-        "minecraft:tinted_glass" to Color.rgb(60, 55, 66),
-        "minecraft:sea_lantern" to Color.rgb(172, 199, 190),
-        "minecraft:prismarine" to Color.rgb(99, 156, 151),
-        "minecraft:prismarine_bricks" to Color.rgb(88, 168, 154),
-        "minecraft:dark_prismarine" to Color.rgb(62, 98, 79),
-        "minecraft:sea_pickle" to Color.rgb(160, 175, 60),
-        "minecraft:kelp" to Color.rgb(63, 111, 46),
-        "minecraft:seagrass" to Color.rgb(60, 130, 60),
-        "minecraft:sculk" to Color.rgb(15, 30, 38),
-        "minecraft:sculk_catalyst" to Color.rgb(30, 45, 50),
-        "minecraft:sculk_sensor" to Color.rgb(24, 60, 61),
-        "minecraft:sculk_vein" to Color.rgb(20, 38, 45),
-
-        // redstone / mechanisms
-        "minecraft:redstone_wire" to Color.rgb(170, 30, 20),
-        "minecraft:redstone_lamp" to Color.rgb(102, 68, 36),
-        "minecraft:lit_redstone_lamp" to Color.rgb(250, 220, 160),
-        "minecraft:lever" to Color.rgb(140, 140, 140),
-        "minecraft:tripwire_hook" to Color.rgb(140, 140, 140),
-        "minecraft:tripwire" to Color.rgb(180, 180, 180),
-        "minecraft:observer" to Color.rgb(100, 100, 100),
-        "minecraft:piston" to Color.rgb(140, 120, 90),
-        "minecraft:sticky_piston" to Color.rgb(110, 140, 70),
-        "minecraft:dispenser" to Color.rgb(105, 105, 105),
-        "minecraft:dropper" to Color.rgb(105, 105, 105),
-        "minecraft:hopper" to Color.rgb(70, 70, 70),
-        "minecraft:rail" to Color.rgb(150, 150, 150),
-        "minecraft:golden_rail" to Color.rgb(200, 175, 90),
-        "minecraft:detector_rail" to Color.rgb(160, 130, 90),
-        "minecraft:activator_rail" to Color.rgb(140, 90, 60),
-        "minecraft:tnt" to Color.rgb(200, 60, 40),
-        "minecraft:target" to Color.rgb(230, 230, 220),
-        "minecraft:lodestone" to Color.rgb(120, 122, 128),
-        "minecraft:crafting_table" to Color.rgb(134, 94, 56),
-        "minecraft:furnace" to Color.rgb(112, 112, 112),
-        "minecraft:lit_furnace" to Color.rgb(120, 100, 80),
-        "minecraft:smoker" to Color.rgb(105, 105, 105),
-        "minecraft:blast_furnace" to Color.rgb(100, 100, 105),
-        "minecraft:anvil" to Color.rgb(60, 60, 60),
-        "minecraft:grindstone" to Color.rgb(130, 128, 122),
-        "minecraft:cauldron" to Color.rgb(70, 70, 74),
-        "minecraft:beacon" to Color.rgb(110, 210, 200),
-        "minecraft:conduit" to Color.rgb(90, 170, 165),
-        "minecraft:barrier" to Color.rgb(255, 0, 0),
-        "minecraft:structure_void" to Color.rgb(255, 0, 255),
-        "minecraft:command_block" to Color.rgb(196, 130, 90),
-        "minecraft:chain_command_block" to Color.rgb(90, 145, 100),
-        "minecraft:repeating_command_block" to Color.rgb(130, 90, 145),
-        "minecraft:jukebox" to Color.rgb(107, 63, 46),
-        "minecraft:note_block" to Color.rgb(106, 74, 51),
-        "minecraft:composter" to Color.rgb(120, 90, 55),
-        "minecraft:cake" to Color.rgb(245, 240, 230),
-        "minecraft:scaffolding" to Color.rgb(195, 158, 96),
-        "minecraft:ladder" to Color.rgb(133, 100, 62),
-        "minecraft:chest" to Color.rgb(134, 94, 56),
-        "minecraft:trapped_chest" to Color.rgb(134, 94, 56),
-        "minecraft:ender_chest" to Color.rgb(40, 55, 55),
-        "minecraft:barrel" to Color.rgb(118, 87, 51),
-        "minecraft:loom" to Color.rgb(150, 120, 80),
-        "minecraft:cartography_table" to Color.rgb(120, 95, 65),
-        "minecraft:fletching_table" to Color.rgb(210, 205, 190),
-        "minecraft:smithing_table" to Color.rgb(70, 65, 75),
-        "minecraft:stonecutter" to Color.rgb(120, 120, 120),
-        "minecraft:brewing_stand" to Color.rgb(100, 100, 105),
-        "minecraft:respawn_anchor" to Color.rgb(60, 40, 90),
-
-        // crops / plants
-        "minecraft:wheat" to Color.rgb(200, 180, 80),
-        "minecraft:carrots" to Color.rgb(90, 160, 50),
-        "minecraft:potatoes" to Color.rgb(90, 150, 55),
-        "minecraft:beetroot" to Color.rgb(110, 150, 60),
-        "minecraft:pumpkin_stem" to Color.rgb(120, 150, 50),
-        "minecraft:melon_stem" to Color.rgb(120, 150, 50),
-        "minecraft:sugar_cane" to Color.rgb(130, 175, 90),
-        "minecraft:bamboo" to Color.rgb(103, 158, 46),
-        "minecraft:cactus" to Color.rgb(75, 115, 45),
-        "minecraft:vine" to Color.rgb(60, 100, 40),
-        "minecraft:lily_pad" to Color.rgb(40, 105, 50),
-        "minecraft:dandelion" to Color.rgb(200, 180, 40),
-        "minecraft:poppy" to Color.rgb(180, 40, 35),
-        "minecraft:blue_orchid" to Color.rgb(60, 150, 200),
-        "minecraft:allium" to Color.rgb(160, 110, 200),
-        "minecraft:azure_bluet" to Color.rgb(220, 220, 210),
-        "minecraft:red_tulip" to Color.rgb(180, 50, 40),
-        "minecraft:orange_tulip" to Color.rgb(210, 120, 40),
-        "minecraft:white_tulip" to Color.rgb(220, 220, 210),
-        "minecraft:pink_tulip" to Color.rgb(220, 170, 190),
-        "minecraft:oxeye_daisy" to Color.rgb(210, 210, 190),
-        "minecraft:cornflower" to Color.rgb(70, 90, 180),
-        "minecraft:lily_of_the_valley" to Color.rgb(230, 230, 220),
-        "minecraft:sunflower" to Color.rgb(210, 180, 40),
-        "minecraft:lilac" to Color.rgb(170, 130, 180),
-        "minecraft:rose_bush" to Color.rgb(150, 30, 30),
-        "minecraft:peony" to Color.rgb(220, 170, 190),
-        "minecraft:brown_mushroom" to Color.rgb(150, 110, 80),
-        "minecraft:red_mushroom" to Color.rgb(180, 40, 35),
-        "minecraft:brown_mushroom_block" to Color.rgb(110, 85, 60),
-        "minecraft:red_mushroom_block" to Color.rgb(170, 50, 45),
-        "minecraft:mushroom_stem" to Color.rgb(220, 215, 205),
-        "minecraft:azalea" to Color.rgb(80, 120, 55),
-        "minecraft:flowering_azalea" to Color.rgb(150, 130, 100),
-        "minecraft:spore_blossom" to Color.rgb(190, 90, 130),
-        "minecraft:big_dripleaf" to Color.rgb(70, 120, 55),
-        "minecraft:small_dripleaf" to Color.rgb(70, 120, 55),
-        "minecraft:glow_lichen" to Color.rgb(150, 180, 150)
-    )
-
-    private val table: Map<String, Int> = HashMap<String, Int>().apply {
-        putAll(dyeFamily())
-        putAll(woodFamily())
-        putAll(copperFamily())
-        putAll(curated)
-    }
-
-    val fallbackSolid: Int = Color.rgb(120, 120, 120)   // a recognized-solid but not-in-the-table block
-    val fallbackUnloaded: Int = Color.rgb(55, 55, 55)   // no chunk data at all
-    val fallbackUnparsed: Int = Color.rgb(90, 90, 90)   // chunk exists but its subchunk format wasn't decodable
-
-    fun colorFor(blockName: String): Int = table[blockName] ?: fallbackSolid
-
-    fun isKnown(blockName: String): Boolean = blockName in table
 }
