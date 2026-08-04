@@ -136,7 +136,7 @@ object BlockColors {
         "polished_blackstone" to TERRACOTTA_BLACK, "chiseled_polished_blackstone" to TERRACOTTA_BLACK,
         "gilded_blackstone" to TERRACOTTA_BLACK, "cracked_polished_blackstone_bricks" to TERRACOTTA_BLACK,
         "polished_blackstone_bricks" to TERRACOTTA_BLACK,
-        "quartz_block" to QUARTZ, "smooth_quartz" to QUARTZ, "quartz_bricks" to QUARTZ, "chiseled_quartz_block" to QUARTZ,
+        "quartz_block" to QUARTZ, "quartz" to QUARTZ, "smooth_quartz" to QUARTZ, "quartz_bricks" to QUARTZ, "chiseled_quartz_block" to QUARTZ,
         "quartz_pillar" to QUARTZ,
         "prismarine" to DIAMOND, "prismarine_bricks" to DIAMOND, "dark_prismarine" to COLOR_CYAN, "sea_lantern" to QUARTZ,
         "purpur_block" to COLOR_MAGENTA, "purpur_pillar" to COLOR_MAGENTA,
@@ -172,7 +172,8 @@ object BlockColors {
         "grindstone" to METAL, "stonecutter" to STONE, "enchanting_table" to COLOR_GREEN,
         "beacon" to DIAMOND, "conduit" to DIAMOND, "dragon_egg" to COLOR_BLACK,
         "hopper" to METAL, "dispenser" to STONE, "dropper" to STONE, "observer" to STONE, "piston" to STONE,
-        "sticky_piston" to STONE, "piston_head" to WOOD, "target" to TERRACOTTA_WHITE,
+        "sticky_piston" to STONE, "piston_head" to WOOD, "piston_arm_collision" to WOOD, "sticky_piston_arm_collision" to WOOD,
+        "target" to TERRACOTTA_WHITE,
         "tnt" to COLOR_RED, "spawner" to STONE, "trial_spawner" to DEEPSLATE, "vault" to DEEPSLATE,
         "iron_bars" to METAL, "chain" to METAL, "lightning_rod" to COLOR_ORANGE, "bell" to GOLD,
         "cake" to SNOW, "flower_pot" to TERRACOTTA_ORANGE, "armor_stand" to WOOD,
@@ -186,7 +187,9 @@ object BlockColors {
         "jigsaw" to COLOR_PURPLE, "command_block" to COLOR_BROWN, "repeating_command_block" to COLOR_PURPLE, "chain_command_block" to COLOR_LIGHT_GREEN,
         "barrier" to NONE, "light_block" to NONE, "air" to NONE, "cave_air" to NONE, "void_air" to NONE,
         "resin_block" to COLOR_ORANGE, "resin_bricks" to COLOR_ORANGE, "resin_clump" to COLOR_ORANGE,
-        "chalkboard" to COLOR_BLACK,
+        "chalkboard" to COLOR_BLACK, // Education Edition block, togglable in Bedrock
+        // sulfur bricks: added in a Bedrock update after this app's block-name knowledge cutoff
+        "sulfur_bricks" to TERRACOTTA_YELLOW, "sulfur_brick_stairs" to TERRACOTTA_YELLOW, "sulfur_brick_slab" to TERRACOTTA_YELLOW, "sulfur_brick_wall" to TERRACOTTA_YELLOW,
         // redstone components
         "redstone_wire" to FIRE, "repeater" to STONE, "unpowered_repeater" to STONE, "powered_repeater" to FIRE,
         "comparator" to STONE, "unpowered_comparator" to STONE, "powered_comparator" to FIRE,
@@ -228,7 +231,7 @@ object BlockColors {
         // wood species: <species>_<part>
         val woodSuffixes = listOf(
             "_planks", "_log", "_wood", "_stairs", "_slab", "_fence", "_fence_gate", "_door", "_trapdoor",
-            "_button", "_pressure_plate", "_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign",
+            "_button", "_pressure_plate", "_sign", "_standing_sign", "_hanging_sign", "_wall_sign", "_wall_hanging_sign",
             "_boat", "_chest_boat", "_leaves"
         )
         for (species in WOOD_SPECIES) {
@@ -258,12 +261,20 @@ object BlockColors {
             if (name == "${species}_roots") return stem
         }
 
-        // stone-family shapes (X_stairs / X_slab / X_wall / polished_X / cut_X / chiseled_X / X_bricks)
+        // stone-family shapes (X_stairs / X_slab / X_wall / polished_X / cut_X / chiseled_X)
         // inherit the base material's color if the base material itself is a recognized entry
-        val stoneShapeSuffixes = listOf("_stairs", "_slab", "_double_slab", "_wall", "_bricks", "_brick_stairs", "_brick_slab", "_brick_wall")
-        for (suf in stoneShapeSuffixes) {
+        val plainShapeSuffixes = listOf("_stairs", "_slab", "_double_slab", "_wall")
+        for (suf in plainShapeSuffixes) {
             if (name.endsWith(suf)) {
                 val base = name.removeSuffix(suf)
+                explicit[base]?.let { return it }
+            }
+        }
+        // "X_bricks" -> stairs/slab/wall forms use singular "brick" (X_brick_stairs, not X_bricks_stairs)
+        val brickShapeSuffixes = listOf("_brick_stairs", "_brick_slab", "_brick_double_slab", "_brick_wall")
+        for (suf in brickShapeSuffixes) {
+            if (name.endsWith(suf)) {
+                val base = name.removeSuffix(suf) + "_bricks"
                 explicit[base]?.let { return it }
             }
         }
