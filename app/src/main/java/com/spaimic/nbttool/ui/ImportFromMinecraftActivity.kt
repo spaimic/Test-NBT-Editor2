@@ -72,9 +72,10 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
             }
             val withLevelDat = dirs.filter { ShizukuShell.hasLevelDat(it, basePath) }
             val fetched = withLevelDat.map { dir -> dir to readWorldRow(basePath, dir) }
+                .sortedByDescending { it.second.second }
             runOnUiThread {
                 worldDirs = fetched.map { it.first }
-                rows = fetched.map { it.second }
+                rows = fetched.map { it.second.first }
                 worldsBasePath = basePath
                 if (worldDirs.isEmpty()) {
                     Toast.makeText(this, "No worlds with level.dat found under $basePath", Toast.LENGTH_LONG).show()
@@ -84,15 +85,15 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun readWorldRow(basePath: String, worldDir: String): WorldRow = try {
+    private fun readWorldRow(basePath: String, worldDir: String): Pair<WorldRow, Long> = try {
         val localPath = File(getExternalFilesDir(null), "peek_level.dat").absolutePath
         ShizukuShell.pullFile("$basePath/$worldDir/level.dat", localPath)
         val dat = NbtIO.readLevelDat(File(localPath).readBytes())
         val name = (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir
         val (date, time) = LocalWorldStore.lastPlayedDateTime(dat)
-        WorldRow(name, date, time)
+        WorldRow(name, date, time) to LocalWorldStore.lastPlayedEpoch(dat)
     } catch (e: Exception) {
-        WorldRow(worldDir, "", "")
+        WorldRow(worldDir, "", "") to 0L
     }
 
     private fun promptImport(remoteWorldDir: String, suggestedName: String) {

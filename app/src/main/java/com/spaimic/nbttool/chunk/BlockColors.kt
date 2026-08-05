@@ -185,7 +185,7 @@ object BlockColors {
         "hay_block" to COLOR_YELLOW, "sponge" to COLOR_YELLOW, "wet_sponge" to COLOR_YELLOW,
         "bone_block" to QUARTZ, "structure_block" to COLOR_MAGENTA, "structure_void" to COLOR_MAGENTA,
         "jigsaw" to COLOR_PURPLE, "command_block" to COLOR_BROWN, "repeating_command_block" to COLOR_PURPLE, "chain_command_block" to COLOR_LIGHT_GREEN,
-        "barrier" to NONE, "light_block" to NONE, "air" to NONE, "cave_air" to NONE, "void_air" to NONE,
+        "barrier" to fallbackSolid, "light_block" to fallbackSolid,
         "resin_block" to COLOR_ORANGE, "resin_bricks" to COLOR_ORANGE, "resin_clump" to COLOR_ORANGE,
         "chalkboard" to COLOR_BLACK, // Education Edition block, togglable in Bedrock
         // sulfur bricks: added in a Bedrock update after this app's block-name knowledge cutoff

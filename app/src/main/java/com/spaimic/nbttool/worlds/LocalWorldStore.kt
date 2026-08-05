@@ -45,28 +45,32 @@ object LocalWorldStore {
      * different (whatever the world was last named inside Minecraft itself). */
     fun levelName(worldDir: File): String = worldDir.name
 
-    data class WorldInfo(val name: String, val dateLine: String, val timeLine: String)
+    data class WorldInfo(val name: String, val dateLine: String, val timeLine: String, val lastPlayedEpoch: Long)
 
     /** name (from the folder, i.e. what was typed at import) + LastPlayed date/time from level.dat. */
     fun worldInfo(worldDir: File): WorldInfo = try {
         val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
         val (date, time) = lastPlayedDateTime(dat)
-        WorldInfo(worldDir.name, date, time)
+        WorldInfo(worldDir.name, date, time, lastPlayedEpoch(dat))
     } catch (e: Exception) {
-        WorldInfo(worldDir.name, "", "")
+        WorldInfo(worldDir.name, "", "", 0L)
     }
 
     /** Formats the level.dat "LastPlayed" tag (epoch seconds) as separate date/time strings. */
     fun lastPlayedDateTime(dat: NbtIO.LevelDat): Pair<String, String> {
-        val seconds = when (val tag = dat.root.entries["LastPlayed"]) {
-            is NbtTag.Long -> tag.value
-            is NbtTag.Int -> tag.value.toLong()
-            else -> return "" to ""
-        }
+        val seconds = lastPlayedEpoch(dat)
+        if (seconds == 0L) return "" to ""
         val date = java.util.Date(seconds * 1000)
         val dateFmt = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
         val timeFmt = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
         return dateFmt.format(date) to timeFmt.format(date)
+    }
+
+    /** The level.dat "LastPlayed" tag as raw epoch seconds — 0 if missing/unreadable, for sorting. */
+    fun lastPlayedEpoch(dat: NbtIO.LevelDat): Long = when (val tag = dat.root.entries["LastPlayed"]) {
+        is NbtTag.Long -> tag.value
+        is NbtTag.Int -> tag.value.toLong()
+        else -> 0L
     }
 
     /** Picks a local folder name that doesn't collide with an existing import. */

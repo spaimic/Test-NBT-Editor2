@@ -51,11 +51,11 @@ class WorldListActivity : AppCompatActivity() {
     }
 
     private fun refreshWorldList() {
-        worldDirs = LocalWorldStore.listLocalWorlds(this)
-        val rows = worldDirs.map { dir ->
-            val info = LocalWorldStore.worldInfo(dir)
-            WorldRow(info.name, info.dateLine, info.timeLine)
-        }
+        val infoPairs = LocalWorldStore.listLocalWorlds(this)
+            .map { dir -> dir to LocalWorldStore.worldInfo(dir) }
+            .sortedByDescending { it.second.lastPlayedEpoch }
+        worldDirs = infoPairs.map { it.first }
+        val rows = infoPairs.map { (_, info) -> WorldRow(info.name, info.dateLine, info.timeLine) }
         listView.adapter = WorldRowAdapter(this, rows)
     }
 
