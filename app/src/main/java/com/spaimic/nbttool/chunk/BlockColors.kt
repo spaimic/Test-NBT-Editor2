@@ -110,6 +110,10 @@ object BlockColors {
     private val WARPED_SPECIES = mapOf("warped" to (WARPED_STEM to WARPED_HYPHAE))
 
     // explicit table: common/structurally-unique blocks that don't fit a generic pattern
+    val fallbackSolid: Int = rgb(120, 120, 120)   // a recognized-solid but not-in-the-table block
+    val fallbackUnloaded: Int = rgb(55, 55, 55)   // no chunk data at all
+    val fallbackUnparsed: Int = rgb(90, 90, 90)   // chunk exists but its subchunk format wasn't decodable
+
     private val explicit: Map<String, Int> = mapOf(
         // terrain / ground
         "grass_block" to GRASS, "grass" to PLANT, "tallgrass" to PLANT, "short_grass" to PLANT, "tall_grass" to PLANT,
@@ -196,10 +200,6 @@ object BlockColors {
         "lever" to STONE, "tripwire" to WOOD, "tripwire_hook" to STONE,
         "daylight_detector" to WOOD, "rail" to METAL, "golden_rail" to GOLD, "detector_rail" to METAL, "activator_rail" to METAL
     )
-
-    val fallbackSolid: Int = rgb(120, 120, 120)   // a recognized-solid but not-in-the-table block
-    val fallbackUnloaded: Int = rgb(55, 55, 55)   // no chunk data at all
-    val fallbackUnparsed: Int = rgb(90, 90, 90)   // chunk exists but its subchunk format wasn't decodable
 
     private val cache = HashMap<String, Int>()
 
