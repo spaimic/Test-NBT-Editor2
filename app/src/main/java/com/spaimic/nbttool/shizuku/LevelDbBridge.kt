@@ -85,6 +85,16 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
             while (iterator.hasNext()) {
                 val entry = iterator.next()
                 if (com.spaimic.nbttool.chunk.ChunkKeys.parse(entry.key) != null) continue
+                // Entity/actor records are already exposed through the per-chunk Entity Editor.
+                // Their raw LevelDB keys are not useful as standalone browser entries:
+                //   actorprefix + 8-byte actor ID
+                //   digp + chunk coordinates (+ optional dimension)
+                // Keep them out of the non-chunk NBT browser.
+                if (com.spaimic.nbttool.chunk.EntityKeys.isActorPrefixKey(entry.key)) continue
+                if (com.spaimic.nbttool.chunk.EntityKeys.isOverworldDigpKey(entry.key)) continue
+                if (entry.key.size >= 4 &&
+                    entry.key[0] == 'd'.code.toByte() && entry.key[1] == 'i'.code.toByte() &&
+                    entry.key[2] == 'g'.code.toByte() && entry.key[3] == 'p'.code.toByte()) continue
                 out.add(KeyEntry(decodeKeyName(entry.key), entry.key))
             }
         }
