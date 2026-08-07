@@ -47,12 +47,7 @@ class EditorActivity : AppCompatActivity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
         hScroll.addView(recycler)
-        val openDbButton = Button(this).apply {
-            text = "Player / Map / Village data…"
-            setOnClickListener { openLevelDb() }
-        }
         content.addView(hScroll)
-        content.addView(openDbButton)
         root.addView(content, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         root.addView(createAddFab(this) { adapter.promptAddChildToRoot() })
         setContentView(root)
@@ -184,11 +179,6 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
-    private fun openLevelDb() {
-        val intent = android.content.Intent(this, PlayerDbActivity::class.java)
-        intent.putExtra(PlayerDbActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
-        startActivity(intent)
-    }
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"

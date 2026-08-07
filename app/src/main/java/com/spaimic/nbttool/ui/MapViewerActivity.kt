@@ -133,26 +133,11 @@ class MapViewerActivity : AppCompatActivity() {
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
                     coordText.text = "Loading visible chunks…"
-                    // Immediately request the viewport. Separately, build only the
-                    // small non-terrain key index used by the menu/editor in the
-                    // background. It reads KEYS only and never copies or parses all
-                    // chunk values, so it cannot block map startup.
+                    // IMPORTANT: do not enumerate LevelDB here. The database can contain
+                    // thousands of chunk records plus map_*, village, player, structure,
+                    // entity and other records. Every non-map feature discovers/reads its
+                    // own data only after the user explicitly asks for it.
                     mapView.refreshVisibleChunks()
-                    Thread {
-                        try {
-                            val interestingPrefixes = listOf("~local_player", "player_", "structuretemplate_")
-                            val named = ArrayList<LevelDbBridge.KeyEntry>()
-                            bridge.forEachRawKey { raw ->
-                                val name = bridge.decodeKeyName(raw)
-                                if (name == "~local_player" || interestingPrefixes.drop(1).any { name.startsWith(it) }) {
-                                    named.add(LevelDbBridge.KeyEntry(name, raw))
-                                }
-                            }
-                            synchronized(LevelDbSession.keyBytesByName) {
-                                for (entry in named) LevelDbSession.keyBytesByName[entry.displayName] = entry.rawKey
-                            }
-                        } catch (_: Exception) {}
-                    }.start()
                 }
             } catch (e: OutOfMemoryError) {
                 runOnUiThread { showErrorDialog(this, "Out of memory opening world", Exception("Could not open the world database.", e)) }
@@ -288,17 +273,6 @@ class MapViewerActivity : AppCompatActivity() {
             .show()
     }
 
-    private fun ensureBackup() {
-        if (backupCreated) return
-        val bridge = LevelDbSession.bridge ?: return
-        try {
-            LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
-            backupCreated = true
-        } catch (e: Exception) {
-            throw IllegalStateException("Could not create the safety backup before editing the world.", e)
-        }
-    }
-
     private fun copyChunk(chunkX: Int, chunkZ: Int) {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
@@ -349,7 +323,6 @@ class MapViewerActivity : AppCompatActivity() {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                ensureBackup()
                 val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ)
                 runOnUiThread {
                     Toast.makeText(
@@ -391,7 +364,6 @@ class MapViewerActivity : AppCompatActivity() {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                ensureBackup()
                 com.spaimic.nbttool.chunk.ChunkDeleter.clearChunkToAir(bridge, chunkX, chunkZ)
                 runOnUiThread { Toast.makeText(this, "Chunk cleared to air.", Toast.LENGTH_SHORT).show() }
                 rescanMap()
@@ -402,15 +374,14 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun showMenu() {
-        val names = LevelDbSession.keyBytesByName.keys
-        val hasLocalPlayer = "~local_player" in names
-        val structureCount = names.count { it.startsWith("structuretemplate_") }
-        val playerCount = names.count { it.startsWith("player_") }
-
+        // Building the menu itself must perform ZERO LevelDB enumeration or value reads.
+        // Availability/counts are intentionally discovered only after the user taps an item.
         val options = listOf(
-            "~local_player",
-            "MCStructure editor" + if (structureCount > 0) " ($structureCount)" else "",
-            "Multiplayer editor" + if (playerCount > 0) " ($playerCount)" else "",
+            "Local Player (~local_player)",
+            "Multiplayer Players",
+            "MCStructures",
+            "Map Data (map_*)",
+            "Village Data",
             (if (mapView.showEntityIcons) "Hide" else "Show") + " Entity Icons",
             (if (mapView.showTileEntityIcons) "Hide" else "Show") + " Tile Entity Icons",
             "World settings (level.dat)",
@@ -420,58 +391,94 @@ class MapViewerActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> if (hasLocalPlayer) openEntry("~local_player")
-                         else Toast.makeText(this, "No ~local_player found in this world", Toast.LENGTH_SHORT).show()
-                    1 -> showStructurePicker()
-                    2 -> showMultiplayerPicker()
-                    3 -> mapView.showEntityIcons = !mapView.showEntityIcons
-                    4 -> mapView.showTileEntityIcons = !mapView.showTileEntityIcons
-                    5 -> openLevelDatEditor()
-                    6 -> openAllKeysBrowser()
+                    0 -> openLocalPlayerLazily()
+                    1 -> showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_") }
+                    2 -> showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") }
+                    3 -> showKeyPickerLazily("Map Data") { it.startsWith("map_") }
+                    4 -> showKeyPickerLazily("Village Data") { it.startsWith("village_") }
+                    5 -> {
+                        mapView.showEntityIcons = !mapView.showEntityIcons
+                        mapView.invalidate()
+                    }
+                    6 -> {
+                        mapView.showTileEntityIcons = !mapView.showTileEntityIcons
+                        mapView.invalidate()
+                    }
+                    7 -> openLevelDatEditor()
+                    8 -> openAllKeysBrowser()
                 }
             }
             .show()
     }
 
-    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
-        menu.add(0, MENU_SAVE, 0, "Save")
-        return true
+    private fun openLocalPlayerLazily() {
+        Thread {
+            try {
+                val bridge = LevelDbSession.bridge
+                    ?: throw IllegalStateException("World database isn't open")
+                val rawKey = "~local_player".toByteArray(Charsets.UTF_8)
+                val bytes = bridge.read(rawKey)
+                    ?: throw IllegalStateException("No ~local_player data exists in this world")
+                val displayName = "~local_player"
+                LevelDbSession.keyBytesByName[displayName] = rawKey
+                LevelDbSession.loadedEntries[displayName] = NbtIO.readRootCompoundNoHeader(bytes)
+                runOnUiThread { openEntry(displayName) }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Couldn't load ~local_player", e) }
+            }
+        }.start()
     }
 
-    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
-        if (item.itemId == MENU_SAVE) {
-            saveChanges()
-            return true
-        }
-        return super.onOptionsItemSelected(item)
-    }
-
-    private fun showStructurePicker() {
-        val structures = LevelDbSession.keyBytesByName.keys.filter { it.startsWith("structuretemplate_") }.sorted()
-        if (structures.isEmpty()) {
-            AlertDialog.Builder(this).setMessage("No MCStructure found").setPositiveButton("OK", null).show()
+    /**
+     * The expensive key enumeration happens ONLY after the user selects a specific
+     * lazy category. Values are still not read until the user selects a key.
+     */
+    private fun showKeyPickerLazily(titleText: String, predicate: (String) -> Boolean) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
             return
         }
-        AlertDialog.Builder(this)
-            .setTitle("MCStructures")
-            .setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, structures)) { _, which ->
-                openEntry(structures[which])
-            }
-            .show()
-    }
 
-    private fun showMultiplayerPicker() {
-        val players = LevelDbSession.keyBytesByName.keys.filter { it.startsWith("player_") }.sorted()
-        if (players.isEmpty()) {
-            AlertDialog.Builder(this).setMessage("No other player data found").setPositiveButton("OK", null).show()
-            return
-        }
         AlertDialog.Builder(this)
-            .setTitle("Pick a player")
-            .setAdapter(ArrayAdapter(this, android.R.layout.simple_list_item_1, players)) { _, which ->
-                openEntry(players[which])
-            }
+            .setTitle(titleText)
+            .setMessage("Loading available keys…")
+            .setNegativeButton("Cancel", null)
             .show()
+
+        Thread {
+            try {
+                val names = bridge.listKeys()
+                    .asSequence()
+                    .map { it.displayName to it.rawKey }
+                    .filter { predicate(it.first) }
+                    .sortedBy { it.first }
+                    .toList()
+
+                synchronized(LevelDbSession.keyBytesByName) {
+                    for ((name, rawKey) in names) LevelDbSession.keyBytesByName[name] = rawKey
+                }
+
+                runOnUiThread {
+                    if (names.isEmpty()) {
+                        AlertDialog.Builder(this)
+                            .setTitle(titleText)
+                            .setMessage("No matching LevelDB entries were found.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("$titleText (${names.size})")
+                            .setItems(names.map { it.first }.toTypedArray()) { _, which ->
+                                openEntry(names[which].first)
+                            }
+                            .show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Couldn't discover $titleText", e) }
+            }
+        }.start()
     }
 
     private fun openEntry(displayName: String) {
@@ -497,7 +504,6 @@ class MapViewerActivity : AppCompatActivity() {
         if (LevelDbSession.bridge == null) return
         Thread {
             try {
-                ensureBackup()
                 LevelDbSession.saveAllLoadedEntries()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
                 rescanMap() // in case a pasted structure or edit changed visible terrain
