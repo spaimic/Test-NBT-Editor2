@@ -25,17 +25,21 @@ class PlayerDbActivity : AppCompatActivity() {
     private var allDisplayNames: List<String> = emptyList()
     private var shownDisplayNames: List<String> = emptyList()
     private var isLoading = false
+    private var worldDir: File? = null
+    private var allKeysLoaded = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
+        worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
         title = "Player / Map / Village data"
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         filterToggle = CheckBox(this).apply {
             text = "Show everything (maps, villages, raw chunk data)"
             isChecked = false
-            setOnCheckedChangeListener { _, _ -> applyFilter() }
+            setOnCheckedChangeListener { _, checked ->
+                if (checked && !allKeysLoaded) loadAllKeysInBackground() else applyFilter()
+            }
         }
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -82,16 +86,25 @@ class PlayerDbActivity : AppCompatActivity() {
                     LevelDbSession.keyBytesByName.clear()
                 } else {
                     LevelDbSession.reset()
-                    // one backup per fresh editing session, before anything gets touched
-                    LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
                 }
                 val bridge = LevelDbBridge.open(worldDir)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldDir = worldDir
-                val keys = bridge.listKeys()
-                for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+
+                // Fast startup: only index the small set of entries that the normal
+                // screen displays. Raw chunk/village/map keys are deferred until the
+                // user explicitly asks for "Show everything". No 50 MB DB backup is
+                // made just by opening this screen; backup happens on Save.
+                val interesting = ArrayList<LevelDbBridge.KeyEntry>()
+                bridge.forEachRawKey { raw ->
+                    val name = bridge.decodeKeyName(raw)
+                    if (isInterestingKey(name)) interesting.add(LevelDbBridge.KeyEntry(name, raw))
+                }
+                interesting.sortBy { it.displayName }
+                for (k in interesting) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
                 runOnUiThread {
-                    allDisplayNames = keys.map { it.displayName }
+                    allDisplayNames = interesting.map { it.displayName }
+                    allKeysLoaded = false
                     applyFilter()
                     isLoading = false
                 }
@@ -100,6 +113,38 @@ class PlayerDbActivity : AppCompatActivity() {
                 runOnUiThread { showErrorDialog(this, "Failed to open world DB", e) }
             }
         }.start()
+    }
+
+    private fun loadAllKeysInBackground() {
+        val bridge = LevelDbSession.bridge ?: return
+        isLoading = true
+        Thread {
+            try {
+                val keys = bridge.listKeys()
+                for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+                allDisplayNames = keys.map { it.displayName }
+                allKeysLoaded = true
+                runOnUiThread {
+                    applyFilter()
+                    isLoading = false
+                }
+            } catch (e: Exception) {
+                isLoading = false
+                runOnUiThread {
+                    filterToggle.isChecked = false
+                    showErrorDialog(this, "Couldn't load all DB keys", e)
+                }
+            }
+        }.start()
+    }
+
+    private fun ensureBackup() {
+        val dir = worldDir ?: return
+        try {
+            LevelDbBridge.backup(dir, LocalWorldStore.backupsDir(this))
+        } catch (e: Exception) {
+            throw IllegalStateException("Couldn't create DB backup before saving", e)
+        }
     }
 
     private fun openEntry(displayName: String) {
@@ -126,6 +171,7 @@ class PlayerDbActivity : AppCompatActivity() {
         if (LevelDbSession.bridge == null) return
         Thread {
             try {
+                ensureBackup()
                 LevelDbSession.saveAllLoadedEntries()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
             } catch (e: Exception) {

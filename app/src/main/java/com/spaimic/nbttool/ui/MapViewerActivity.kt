@@ -133,9 +133,26 @@ class MapViewerActivity : AppCompatActivity() {
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
                     coordText.text = "Loading visible chunks…"
-                    // This immediately requests the current viewport. There is no
-                    // global index and no full-world LevelDB traversal on startup.
+                    // Immediately request the viewport. Separately, build only the
+                    // small non-terrain key index used by the menu/editor in the
+                    // background. It reads KEYS only and never copies or parses all
+                    // chunk values, so it cannot block map startup.
                     mapView.refreshVisibleChunks()
+                    Thread {
+                        try {
+                            val interestingPrefixes = listOf("~local_player", "player_", "structuretemplate_")
+                            val named = ArrayList<LevelDbBridge.KeyEntry>()
+                            bridge.forEachRawKey { raw ->
+                                val name = bridge.decodeKeyName(raw)
+                                if (name == "~local_player" || interestingPrefixes.drop(1).any { name.startsWith(it) }) {
+                                    named.add(LevelDbBridge.KeyEntry(name, raw))
+                                }
+                            }
+                            synchronized(LevelDbSession.keyBytesByName) {
+                                for (entry in named) LevelDbSession.keyBytesByName[entry.displayName] = entry.rawKey
+                            }
+                        } catch (_: Exception) {}
+                    }.start()
                 }
             } catch (e: OutOfMemoryError) {
                 runOnUiThread { showErrorDialog(this, "Out of memory opening world", Exception("Could not open the world database.", e)) }

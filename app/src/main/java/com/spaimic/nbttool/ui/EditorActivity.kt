@@ -112,12 +112,17 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun load() {
-        try {
-            levelDat = NbtIO.readLevelDat(levelDatFile.readBytes())
-            showTree()
-        } catch (e: Exception) {
-            showErrorDialog(this, "Failed to load level.dat", e)
-        }
+        Thread {
+            try {
+                val parsed = NbtIO.readLevelDat(levelDatFile.readBytes())
+                runOnUiThread {
+                    levelDat = parsed
+                    showTree()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to load level.dat", e) }
+            }
+        }.start()
     }
 
     private fun showTree() {

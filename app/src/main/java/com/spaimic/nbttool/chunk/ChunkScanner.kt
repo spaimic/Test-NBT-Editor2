@@ -214,7 +214,45 @@ object ChunkScanner {
                 }
             }
         }
-        return if (hadSuccessfulSubchunk) LoadedChunk(grid, emptyList(), emptyList()) else null
+        if (!hadSuccessfulSubchunk) return null
+
+        // Marker data is loaded directly for this viewport chunk. The lazy map
+        // renderer intentionally does not build a world-wide entity/block-entity
+        // index, so use the deterministic Bedrock keys for this one chunk.
+        val blockMarkers = ArrayList<BlockEntityMarker>()
+        try {
+            val bytes = bridge.read(ChunkKeys.blockEntityKey(chunkX, chunkZ))
+            if (bytes != null) {
+                for (compound in NbtIO.readConcatenatedCompounds(bytes)) {
+                    val id = (compound.entries["id"] as? NbtTag.Str)?.value ?: continue
+                    val x = (compound.entries["x"] as? NbtTag.Int)?.value ?: continue
+                    val y = (compound.entries["y"] as? NbtTag.Int)?.value ?: continue
+                    val z = (compound.entries["z"] as? NbtTag.Int)?.value ?: continue
+                    blockMarkers.add(BlockEntityMarker(x, y, z, id))
+                }
+            }
+        } catch (_: Exception) {}
+
+        val entityMarkers = ArrayList<EntityMarker>()
+        try {
+            val digp = bridge.read(EntityKeys.digpKey(chunkX, chunkZ))
+            if (digp != null) {
+                for (actorId in EntityKeys.splitActorIds(digp)) {
+                    try {
+                        val actor = bridge.read(EntityKeys.actorPrefixKey(actorId)) ?: continue
+                        val compound = NbtIO.readRootCompoundNoHeader(actor)
+                        val identifier = (compound.entries["identifier"] as? NbtTag.Str)?.value ?: continue
+                        val posTag = compound.entries["Pos"] as? NbtTag.ListTag ?: continue
+                        val px = (posTag.items.getOrNull(0) as? NbtTag.Float)?.value ?: continue
+                        val py = (posTag.items.getOrNull(1) as? NbtTag.Float)?.value ?: continue
+                        val pz = (posTag.items.getOrNull(2) as? NbtTag.Float)?.value ?: continue
+                        entityMarkers.add(EntityMarker(px.toInt(), py.toInt(), pz.toInt(), identifier))
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
+
+        return LoadedChunk(grid, entityMarkers, blockMarkers)
     }
 
     /**
