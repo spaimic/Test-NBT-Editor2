@@ -60,6 +60,32 @@ class MapViewerActivity : AppCompatActivity() {
                 gravity = Gravity.TOP or Gravity.START
             }
         )
+
+        val zoomControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.argb(150, 0, 0, 0))
+            val out = Button(this@MapViewerActivity).apply {
+                text = "−"
+                textSize = 22f
+                setOnClickListener { mapView.zoomOut() }
+            }
+            val `in` = Button(this@MapViewerActivity).apply {
+                text = "+"
+                textSize = 22f
+                setOnClickListener { mapView.zoomIn() }
+            }
+            addView(out, LinearLayout.LayoutParams(76, 72))
+            addView(`in`, LinearLayout.LayoutParams(76, 72))
+        }
+        root.addView(
+            zoomControls,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = 24
+                rightMargin = 24
+            }
+        )
         setContentView(root)
 
         mapView.onTap = { x, y, z ->
@@ -84,58 +110,48 @@ class MapViewerActivity : AppCompatActivity() {
         Thread {
             try {
                 LevelDbSession.reset()
-                // IMPORTANT: do not copy the entire db/ just to open the map.
-                // A backup is created lazily immediately before the first destructive edit.
+                // Opening the map must not wait for a world-wide key scan.
+                // The viewport loader can read individual chunks directly from LevelDB.
                 val bridge = LevelDbBridge.open(worldDir)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldDir = worldDir
 
-                val keys = bridge.listKeys() // keys only; values are NOT read here
-                for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
-                val index = com.spaimic.nbttool.chunk.ChunkIndex.fromKeys(keys)
-                chunkIndex = index
-
-                val playerPos = LevelDbSession.keyBytesByName["~local_player"]?.let { rawKey ->
-                    try {
-                        val bytes = bridge.read(rawKey)
-                        val compound = bytes?.let { NbtIO.readRootCompoundNoHeader(it) }
-                        val pos = compound?.entries?.get("Pos") as? NbtTag.ListTag
-                        val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
-                        val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
-                        if (x != null && z != null) x.toInt() to z.toInt() else null
-                    } catch (_: Exception) { null }
-                }
-
-                val center = playerPos ?: index.chunkPositions.takeIf { it.isNotEmpty() }?.let {
-                    val xs = it.map { p -> p.first }.sorted()
-                    val zs = it.map { p -> p.second }.sorted()
-                    xs[xs.size / 2] * 16 + 8 to zs[zs.size / 2] * 16 + 8
-                }
+                // Read only the local player first. This is a single DB lookup and gives
+                // us an immediate camera target without inspecting thousands of chunks.
+                val playerPos = try {
+                    val rawKey = "~local_player".toByteArray(Charsets.US_ASCII)
+                    val bytes = bridge.read(rawKey)
+                    val compound = bytes?.let { NbtIO.readRootCompoundNoHeader(it) }
+                    val pos = compound?.entries?.get("Pos") as? NbtTag.ListTag
+                    val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
+                    val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
+                    if (x != null && z != null) x.toInt() to z.toInt() else null
+                } catch (_: Exception) { null }
 
                 runOnUiThread {
-                    mapView.preferredCenterBlock = center
+                    mapView.preferredCenterBlock = playerPos ?: (0 to 0)
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
                     coordText.text = "Loading visible chunks…"
+                    // This immediately requests the current viewport. There is no
+                    // global index and no full-world LevelDB traversal on startup.
                     mapView.refreshVisibleChunks()
                 }
             } catch (e: OutOfMemoryError) {
-                runOnUiThread { showErrorDialog(this, "Out of memory opening world", Exception("The map index could not be created.", e)) }
+                runOnUiThread { showErrorDialog(this, "Out of memory opening world", Exception("Could not open the world database.", e)) }
             } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to open world map", e) }
             }
         }.start()
     }
 
-
     private fun requestVisibleChunks(positions: Set<Pair<Int, Int>>) {
         val bridge = LevelDbSession.bridge ?: return
-        val index = chunkIndex ?: return
         val todo = ArrayList<Pair<Int, Int>>()
 
         synchronized(loadingChunks) {
             for (pos in positions) {
-                if (!index.hasChunk(pos.first, pos.second)) continue
+                if (index != null && !index.hasChunk(pos.first, pos.second)) continue
                 if (loadedChunks.contains(pos) || loadingChunks.contains(pos)) continue
                 loadingChunks.add(pos)
                 todo.add(pos)
@@ -150,8 +166,10 @@ class MapViewerActivity : AppCompatActivity() {
                     val unknown = HashSet<String>()
                     val reasons = HashMap<String, Int>()
                     val examples = HashMap<String, String>()
-                    val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunk(
-                        bridge, index, pos.first, pos.second, unknown, reasons, examples
+                    // Viewport loading deliberately uses direct LevelDB seeks.
+                    // We never need a complete chunk index just to draw what is on screen.
+                    val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
+                        bridge, pos.first, pos.second, unknown, reasons, examples
                     )
                     runOnUiThread {
                         synchronized(loadingChunks) {
@@ -473,6 +491,7 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun rescanMap() {
+        chunkIndex = null
         synchronized(loadingChunks) {
             loadedChunks.clear()
             loadingChunks.clear()

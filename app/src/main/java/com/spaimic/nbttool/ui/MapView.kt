@@ -65,9 +65,15 @@ class MapView(context: Context) : View(context) {
     }
 
     /** pixels per block. Chunk size on screen is zoom * 16. */
-    private var zoom = 2f
-    private val minZoom = 0.20f
-    private val maxZoom = 12f
+    // Keep the whole-world overview useful: at the minimum zoom a tablet-sized
+    // viewport shows roughly a few hundred blocks, not thousands. This also keeps
+    // the initial visible-chunk set around the same scale as MineTuner.
+    // Camera scale is pixels per world block.  These values are chosen from the
+    // measured MineTuner viewport on the target tablet: roughly 235x350 blocks
+    // at the widest view and roughly 46x70 blocks at the closest view.
+    private var zoom = 3.85f
+    private val minZoom = 3.75f
+    private val maxZoom = 20f
 
     /** World block coordinate at the center of the viewport. */
     private var cameraX = 0f
@@ -154,10 +160,13 @@ class MapView(context: Context) : View(context) {
         if (!centered) centerOnPreferred()
         val halfWorldW = width / zoom / 2f
         val halfWorldH = height / zoom / 2f
-        val minCx = floor((cameraX - halfWorldW) / 16f).toInt() - 1
-        val maxCx = floor((cameraX + halfWorldW) / 16f).toInt() + 1
-        val minCz = floor((cameraZ - halfWorldH) / 16f).toInt() - 1
-        val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt() + 1
+        // Request exactly the viewport. Unlike the old renderer, we don't pre-load
+        // an extra ring of chunks at startup; newly visible chunks are requested
+        // immediately as the camera moves.
+        val minCx = floor((cameraX - halfWorldW) / 16f).toInt()
+        val maxCx = floor((cameraX + halfWorldW) / 16f).toInt()
+        val minCz = floor((cameraZ - halfWorldH) / 16f).toInt()
+        val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt()
         val requested = HashSet<Pair<Int, Int>>()
         for (cx in minCx..maxCx) for (cz in minCz..maxCz) requested.add(cx to cz)
 
@@ -187,10 +196,13 @@ class MapView(context: Context) : View(context) {
         canvas.drawColor(BlockColors.fallbackUnloaded)
         val halfWorldW = width / zoom / 2f
         val halfWorldH = height / zoom / 2f
-        val minCx = floor((cameraX - halfWorldW) / 16f).toInt() - 1
-        val maxCx = floor((cameraX + halfWorldW) / 16f).toInt() + 1
-        val minCz = floor((cameraZ - halfWorldH) / 16f).toInt() - 1
-        val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt() + 1
+        // Request exactly the viewport. Unlike the old renderer, we don't pre-load
+        // an extra ring of chunks at startup; newly visible chunks are requested
+        // immediately as the camera moves.
+        val minCx = floor((cameraX - halfWorldW) / 16f).toInt()
+        val maxCx = floor((cameraX + halfWorldW) / 16f).toInt()
+        val minCz = floor((cameraZ - halfWorldH) / 16f).toInt()
+        val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt()
 
         for (cx in minCx..maxCx) {
             for (cz in minCz..maxCz) {
@@ -205,10 +217,31 @@ class MapView(context: Context) : View(context) {
                 if (grid != null) {
                     canvas.drawBitmap(bitmapForChunk(pos, grid), null, RectF(left, top, right, bottom), tilePaint)
                     // At very small chunk sizes, borders visually merge like MineTuner.
-                    if (zoom >= 0.8f) canvas.drawRect(left, top, right, bottom, gridPaint)
+                    if (zoom >= 6f) {
+                        canvas.drawRect(left, top, right, bottom, gridPaint)
+                    }
                 } else {
                     canvas.drawRect(left, top, right, bottom, unloadedPaint)
                 }
+            }
+        }
+
+        // At the widest zoom MineTuner visually merges 4x4 chunks.  We keep the
+        // underlying 16x16 terrain data, but suppress individual chunk borders and
+        // draw a 64x64-block grid instead.  This makes the overview read as large
+        // terrain tiles while preserving the exact terrain underneath.
+        if (zoom < 6f) {
+            val regionMinX = floor((cameraX - halfWorldW) / 64f).toInt() * 64
+            val regionMaxX = floor((cameraX + halfWorldW) / 64f).toInt() * 64
+            val regionMinZ = floor((cameraZ - halfWorldH) / 64f).toInt() * 64
+            val regionMaxZ = floor((cameraZ + halfWorldH) / 64f).toInt() * 64
+            for (wx in regionMinX..regionMaxX step 64) {
+                val sx = screenX(wx.toFloat())
+                if (sx >= -1f && sx <= width + 1f) canvas.drawLine(sx, 0f, sx, height.toFloat(), gridPaint)
+            }
+            for (wz in regionMinZ..regionMaxZ step 64) {
+                val sz = screenZ(wz.toFloat())
+                if (sz >= -1f && sz <= height + 1f) canvas.drawLine(0f, sz, width.toFloat(), sz, gridPaint)
             }
         }
 

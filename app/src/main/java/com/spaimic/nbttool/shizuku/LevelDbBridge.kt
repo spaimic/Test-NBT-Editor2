@@ -42,7 +42,7 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
 
     fun delete(rawKey: ByteArray) = db.delete(rawKey)
 
-    /** Full raw scan of every key/value pair — used by the chunk map renderer to read subchunk data. */
+    /** Full raw scan of every key/value pair. Kept for advanced/raw tooling. */
     fun forEachRawEntry(action: (key: ByteArray, value: ByteArray) -> Unit) {
         db.iterator().use {
             it.seekToFirst()
@@ -53,9 +53,57 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
         }
     }
 
+    /** Fast key-only scan. Unlike listKeys(), this does not decode, sort, or allocate KeyEntry objects. */
+    fun forEachRawKey(action: (key: ByteArray) -> Unit) {
+        db.iterator().use {
+            it.seekToFirst()
+            while (it.hasNext()) {
+                action(it.next().key)
+            }
+        }
+    }
+
+    /**
+     * Reads all Overworld subchunk records for one chunk using a single LevelDB
+     * iterator seek. This is much faster than probing every possible Y with db.get().
+     */
+    fun readOverworldSubchunks(chunkX: Int, chunkZ: Int): List<Pair<Int, ByteArray>> {
+        val prefix = ByteArray(9)
+        fun putI32LE(offset: Int, v: Int) {
+            prefix[offset] = (v and 0xFF).toByte()
+            prefix[offset + 1] = ((v ushr 8) and 0xFF).toByte()
+            prefix[offset + 2] = ((v ushr 16) and 0xFF).toByte()
+            prefix[offset + 3] = ((v ushr 24) and 0xFF).toByte()
+        }
+        putI32LE(0, chunkX)
+        putI32LE(4, chunkZ)
+        prefix[8] = 0x2F
+
+        val result = ArrayList<Pair<Int, ByteArray>>()
+        db.iterator().use { iterator ->
+            iterator.seek(prefix)
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                val key = entry.key
+                if (key.size != 10) break
+                var matches = true
+                for (i in prefix.indices) {
+                    if (key[i] != prefix[i]) {
+                        matches = false
+                        break
+                    }
+                }
+                if (!matches) break
+                result += (key[9].toInt()) to entry.value
+            }
+        }
+        result.sortByDescending { it.first }
+        return result
+    }
+
     fun close() = db.close()
 
-    private fun decodeKeyName(key: ByteArray): String {
+    fun decodeKeyName(key: ByteArray): String {
         val isPrintable = key.all { (it.toInt() and 0xFF) in 0x20..0x7E }
         return if (isPrintable) String(key, Charsets.US_ASCII)
                else key.joinToString("") { "%02x".format(it.toInt() and 0xFF) }

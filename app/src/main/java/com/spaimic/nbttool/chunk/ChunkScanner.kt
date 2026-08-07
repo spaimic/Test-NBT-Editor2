@@ -51,15 +51,18 @@ class ChunkIndex private constructor(
     fun subchunkCount(x: Int, z: Int): Int = subchunks[x to z]?.size ?: 0
 
     companion object {
-        fun fromKeys(keys: List<LevelDbBridge.KeyEntry>): ChunkIndex {
+        fun fromKeys(keys: List<LevelDbBridge.KeyEntry>): ChunkIndex =
+            fromRawKeys(keys.asSequence().map { it.rawKey })
+
+        fun fromRawKeys(keys: Sequence<ByteArray>): ChunkIndex {
             val positions = HashSet<Pair<Int, Int>>()
             val subs = HashMap<Pair<Int, Int>, MutableList<Pair<Int, ByteArray>>>()
             val blockEntities = HashMap<Pair<Int, Int>, ByteArray>()
             val digp = HashMap<Pair<Int, Int>, ByteArray>()
             val actors = HashMap<String, ByteArray>()
 
-            for (entry in keys) {
-                val key = entry.rawKey
+            for (raw in keys) {
+                val key = raw.copyOf()
                 val info = ChunkKeys.parse(key)
                 if (info != null && info.dimension == 0) {
                     val pos = info.chunkX to info.chunkZ
@@ -67,20 +70,57 @@ class ChunkIndex private constructor(
                     when (info.tag) {
                         ChunkKeys.TAG_SUBCHUNK_PREFIX -> {
                             info.subChunkY?.let { y ->
-                                subs.getOrPut(pos) { ArrayList() }.add(y to key.copyOf())
+                                subs.getOrPut(pos) { ArrayList() }.add(y to key)
                             }
                         }
-                        ChunkKeys.TAG_BLOCK_ENTITY -> blockEntities[pos] = key.copyOf()
+                        ChunkKeys.TAG_BLOCK_ENTITY -> blockEntities[pos] = key
                     }
                 } else if (EntityKeys.isOverworldDigpKey(key)) {
-                    digp[EntityKeys.digpChunkXZ(key)] = key.copyOf()
+                    digp[EntityKeys.digpChunkXZ(key)] = key
                 } else if (EntityKeys.isActorPrefixKey(key)) {
-                    actors[EntityKeys.actorIdHex(key)] = key.copyOf()
+                    actors[EntityKeys.actorIdHex(key)] = key
                 }
             }
+            for (list in subs.values) list.sortByDescending { it.first }
+            return ChunkIndex(positions, subs, blockEntities, digp, actors)
+        }
 
-            // Highest Y first. We use the ordering to avoid decoding more subchunks
-            // than necessary for the top-down surface map.
+        fun fromBridgeFast(
+            bridge: LevelDbBridge,
+            onNamedKey: ((String, ByteArray) -> Unit)? = null
+        ): ChunkIndex {
+            val positions = HashSet<Pair<Int, Int>>()
+            val subs = HashMap<Pair<Int, Int>, MutableList<Pair<Int, ByteArray>>>()
+            val blockEntities = HashMap<Pair<Int, Int>, ByteArray>()
+            val digp = HashMap<Pair<Int, Int>, ByteArray>()
+            val actors = HashMap<String, ByteArray>()
+
+            bridge.forEachRawKey { raw ->
+                val key = raw.copyOf()
+                val info = ChunkKeys.parse(key)
+                if (info != null && info.dimension == 0) {
+                    val pos = info.chunkX to info.chunkZ
+                    positions.add(pos)
+                    when (info.tag) {
+                        ChunkKeys.TAG_SUBCHUNK_PREFIX ->
+                            info.subChunkY?.let { y -> subs.getOrPut(pos) { ArrayList() }.add(y to key) }
+                        ChunkKeys.TAG_BLOCK_ENTITY -> blockEntities[pos] = key
+                    }
+                } else if (EntityKeys.isOverworldDigpKey(key)) {
+                    digp[EntityKeys.digpChunkXZ(key)] = key
+                } else if (EntityKeys.isActorPrefixKey(key)) {
+                    actors[EntityKeys.actorIdHex(key)] = key
+                }
+
+                if (onNamedKey != null) {
+                    val name = if (key.all { (it.toInt() and 0xFF) in 0x20..0x7E })
+                        String(key, Charsets.US_ASCII) else null
+                    if (name != null && (name == "~local_player" ||
+                        name.startsWith("structuretemplate_") || name.startsWith("player_"))) {
+                        onNamedKey(name, key.copyOf())
+                    }
+                }
+            }
             for (list in subs.values) list.sortByDescending { it.first }
             return ChunkIndex(positions, subs, blockEntities, digp, actors)
         }
@@ -126,6 +166,56 @@ object ChunkScanner {
         val entityMarkers: List<EntityMarker>,
         val blockEntityMarkers: List<BlockEntityMarker>
     )
+
+    /**
+     * Fast startup path: read one chunk directly from LevelDB without waiting for
+     * the global index. A single iterator seek retrieves all subchunks for the
+     * requested chunk. Entity/block-entity markers are intentionally deferred
+     * until the global index is ready.
+     */
+    fun loadChunkDirect(
+        bridge: LevelDbBridge,
+        chunkX: Int,
+        chunkZ: Int,
+        unknownBlockNames: MutableSet<String> = HashSet(),
+        failureReasonCounts: MutableMap<String, Int> = HashMap(),
+        failureReasonExamples: MutableMap<String, String> = HashMap()
+    ): LoadedChunk? {
+        val subchunks = bridge.readOverworldSubchunks(chunkX, chunkZ)
+        if (subchunks.isEmpty()) return null
+
+        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
+        val found = Array(16) { BooleanArray(16) }
+        var remaining = 256
+        var hadSuccessfulSubchunk = false
+
+        for ((subY, bytes) in subchunks) {
+            if (remaining == 0) break
+            when (val parsed = SubChunkParser.parse(bytes)) {
+                is SubChunkParser.ParseResult.Failure -> {
+                    failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
+                    failureReasonExamples.putIfAbsent(parsed.reason, parsed.hexSample)
+                }
+                is SubChunkParser.ParseResult.Success -> {
+                    hadSuccessfulSubchunk = true
+                    for (x in 0 until 16) for (z in 0 until 16) {
+                        if (found[x][z]) continue
+                        for (y in 15 downTo 0) {
+                            val name = parsed.blocks[x][z][y]
+                            if (name != "minecraft:air") {
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                grid[x][z] = ColumnInfo(BlockColors.colorFor(name), subY * 16 + y)
+                                found[x][z] = true
+                                remaining--
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return if (hadSuccessfulSubchunk) LoadedChunk(grid, emptyList(), emptyList()) else null
+    }
 
     /**
      * Reads one visible chunk only. Subchunks are decoded highest-to-lowest until
