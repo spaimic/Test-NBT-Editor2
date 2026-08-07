@@ -84,32 +84,21 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
             iterator.seekToFirst()
             while (iterator.hasNext()) {
                 val entry = iterator.next()
-                if (!isExtraBrowserKey(entry.key)) continue
+                if (com.spaimic.nbttool.chunk.ChunkKeys.parse(entry.key) != null) continue
+                // Entity/actor records are already exposed through the per-chunk Entity Editor.
+                // Their raw LevelDB keys are not useful as standalone browser entries:
+                //   actorprefix + 8-byte actor ID
+                //   digp + chunk coordinates (+ optional dimension)
+                // Keep them out of the non-chunk NBT browser.
+                if (com.spaimic.nbttool.chunk.EntityKeys.isActorPrefixKey(entry.key)) continue
+                if (com.spaimic.nbttool.chunk.EntityKeys.isOverworldDigpKey(entry.key)) continue
+                if (entry.key.size >= 4 &&
+                    entry.key[0] == 'd'.code.toByte() && entry.key[1] == 'i'.code.toByte() &&
+                    entry.key[2] == 'g'.code.toByte() && entry.key[3] == 'p'.code.toByte()) continue
                 out.add(KeyEntry(decodeKeyName(entry.key), entry.key))
             }
         }
         return out.sortedBy { it.displayName }
-    }
-
-    /**
-     * The Advanced browser deliberately excludes every namespace that already has
-     * a dedicated lazy editor/menu entry. It also excludes chunk and actor records.
-     */
-    private fun isExtraBrowserKey(key: ByteArray): Boolean {
-        if (com.spaimic.nbttool.chunk.ChunkKeys.parse(key) != null) return false
-        if (com.spaimic.nbttool.chunk.EntityKeys.isActorPrefixKey(key)) return false
-        if (key.size >= 4 && key[0] == 'd'.code.toByte() && key[1] == 'i'.code.toByte() &&
-            key[2] == 'g'.code.toByte() && key[3] == 'p'.code.toByte()) return false
-        val name = decodeKeyName(key)
-        if (name == "~local_player" || name == "AutonomousEntities" ||
-            name == "LevelChunkMetaDataDictionary" || name == "Nether" ||
-            name == "Overworld" || name == "TheEnd" || name == "WorldClocks" ||
-            name == "mobevents" || name == "portals" || name == "schedulerWT" ||
-            name == "scoreboard") return false
-        if (name.startsWith("VILLAGE_Overworld_") || name.startsWith("map_") ||
-            name.startsWith("player_") || name.startsWith("player_server_") ||
-            name.startsWith("structuretemplate_")) return false
-        return true
     }
 
     private fun ByteArray.startsWithBytes(prefix: ByteArray): Boolean {

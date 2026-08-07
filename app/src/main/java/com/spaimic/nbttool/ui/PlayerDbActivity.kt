@@ -1,10 +1,9 @@
 package com.spaimic.nbttool.ui
 
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -35,20 +34,6 @@ class PlayerDbActivity : AppCompatActivity() {
     private var shownDisplayNames: List<String> = emptyList()
     private var isLoading = false
     private var worldDir: File? = null
-    private var allKeysLoaded = false
-    private val keepAliveHandler = Handler(Looper.getMainLooper())
-    private val keepAliveRunnable = object : Runnable {
-        override fun run() {
-            val dir = worldDir
-            if (dir != null) {
-                Thread {
-                    try { LevelDbSession.ensureOpen(dir).containsName("~local_player") }
-                    catch (_: Throwable) { /* next tick will reopen if necessary */ }
-                }.start()
-            }
-            if (!isFinishing) keepAliveHandler.postDelayed(this, 10_000L)
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,24 +47,18 @@ class PlayerDbActivity : AppCompatActivity() {
         }
 
         val info = TextView(this).apply {
-            text = "Extra LevelDB records only. Dedicated world data, players, structures, maps, villages, and chunk/entity records are handled elsewhere."
+            text = "Extra LevelDB records are loaded only when you choose a category. The full database is never scanned just to open this screen."
             setPadding(20, 18, 20, 12)
         }
 
         browseButton = Button(this).apply {
             text = "Browse Extra DB Keys"
-            setOnClickListener {
-                if (!allKeysLoaded) loadAllKeysInBackground()
-            }
+            setOnClickListener { showAdvancedMenu() }
         }
 
-        // Temporary debugging tool: exports EVERY LevelDB key name, including
-        // chunk-storage keys. It never reads the corresponding values.
         exportKeysButton = Button(this).apply {
             text = "DEBUG: Export ALL LevelDB key names (.txt)"
-            setOnClickListener {
-                exportAllKeyNames()
-            }
+            setOnClickListener { exportAllKeyNames() }
         }
 
         listView = ListView(this).apply {
@@ -124,7 +103,10 @@ class PlayerDbActivity : AppCompatActivity() {
 
         Thread {
             try {
-                val bridge = LevelDbSession.ensureOpen(dir)
+                LevelDbSession.reset()
+                val bridge = LevelDbBridge.open(dir)
+                LevelDbSession.bridge = bridge
+                LevelDbSession.worldDir = dir
 
                 val names = ArrayList<String>()
                 if (bridge.containsName("~local_player")) {
@@ -157,44 +139,88 @@ class PlayerDbActivity : AppCompatActivity() {
      * keys from other LevelDB namespaces are intentionally retained; only the
      * coordinate/tag chunk formats are filtered out.
      */
-    private fun loadAllKeysInBackground() {
-        val bridge = LevelDbSession.ensureOpen(worldDir ?: return)
+    private fun showAdvancedMenu() {
+        val options = arrayOf(
+            "~local_player",
+            "player_*",
+            "player_server_*",
+            "structuretemplate_*",
+            "map_*",
+            "VILLAGE_Overworld_*",
+            "Nether",
+            "Overworld",
+            "TheEnd",
+            "AutonomousEntities",
+            "LevelChunkMetaDataDictionary",
+            "WorldClocks",
+            "mobevents",
+            "portals",
+            "schedulerWT",
+            "scoreboard",
+            "tickingarea_*"
+        )
+
+        AlertDialog.Builder(this)
+            .setTitle("Advanced: Browse Extra DB Keys")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> openDirectKey("~local_player")
+                    1 -> showKeyPickerLazily("Player Data", { it.startsWith("player_") && !it.startsWith("player_server_") })
+                    2 -> showKeyPickerLazily("Server Player Data", { it.startsWith("player_server_") })
+                    3 -> showKeyPickerLazily("MCStructure Data", { it.startsWith("structuretemplate_") })
+                    4 -> showMapDataMenu()
+                    5 -> showKeyPickerLazily("Village Data (VILLAGE_Overworld_*)", { it.startsWith("VILLAGE_Overworld_") })
+                    6 -> openDirectKey("Nether")
+                    7 -> openDirectKey("Overworld")
+                    8 -> openDirectKey("TheEnd")
+                    9 -> openDirectKey("AutonomousEntities")
+                    10 -> openDirectKey("LevelChunkMetaDataDictionary")
+                    11 -> openDirectKey("WorldClocks")
+                    12 -> openDirectKey("mobevents")
+                    13 -> openDirectKey("portals")
+                    14 -> openDirectKey("schedulerWT")
+                    15 -> openDirectKey("scoreboard")
+                    16 -> showKeyPickerLazily("Ticking Areas (tickingarea_*)", { it.startsWith("tickingarea_") })
+                }
+            }
+            .show()
+    }
+
+    private fun showMapDataMenu() {
+        AlertDialog.Builder(this)
+            .setTitle("map_*")
+            .setItems(arrayOf("Show map_* keys", "Hide map_* keys")) { _, which ->
+                if (which == 0) {
+                    showKeyPickerLazily("Map Data (map_*)", { it.startsWith("map_") })
+                } else {
+                    Toast.makeText(this, "map_* keys are hidden.", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .show()
+    }
+
+    private fun openDirectKey(keyName: String) {
         if (isLoading) return
-
+        val bridge = LevelDbSession.bridge ?: run {
+            Toast.makeText(this, "LevelDB is not open yet.", Toast.LENGTH_SHORT).show()
+            return
+        }
         isLoading = true
-        browseButton.isEnabled = false
-        browseButton.text = "Loading Extra DB Keys…"
-
         Thread {
             try {
-                val keys = bridge.listNonChunkKeys()
-                for (k in keys) {
-                    LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
-                }
-                val names = keys.map { it.displayName }
-                allKeysLoaded = true
-
-                runOnUiThread {
-                    shownDisplayNames = names
-                    listView.adapter = ArrayAdapter(
-                        this,
-                        android.R.layout.simple_list_item_1,
-                        shownDisplayNames
-                    )
-                    browseButton.text = "Extra DB keys loaded (${names.size})"
-                    isLoading = false
-                }
+                val rawKey = keyName.toByteArray(Charsets.UTF_8)
+                val bytes = bridge.read(rawKey)
+                    ?: throw IllegalStateException("No $keyName data exists in this world")
+                LevelDbSession.keyBytesByName[keyName] = rawKey
+                LevelDbSession.loadedEntries[keyName] = NbtIO.readRootCompoundNoHeader(bytes)
+                runOnUiThread { openEntry(keyName) }
             } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Couldn't load $keyName", e) }
+            } finally {
                 isLoading = false
-                runOnUiThread {
-                    browseButton.isEnabled = true
-                    browseButton.text = "Browse Extra DB Keys"
-                    showErrorDialog(this, "Couldn't load LevelDB keys", e)
-                }
             }
         }.start()
     }
-
 
     /**
      * Temporary debugging feature. Creates a text document containing every
@@ -202,13 +228,8 @@ class PlayerDbActivity : AppCompatActivity() {
      */
     private fun exportAllKeyNames() {
         if (isLoading) return
-        val dir = worldDir
-        if (dir == null) {
-            Toast.makeText(this, "World path is missing.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        try { LevelDbSession.ensureOpen(dir) } catch (e: Exception) {
-            showErrorDialog(this, "LevelDB isn't available", e)
+        if (LevelDbSession.bridge == null) {
+            Toast.makeText(this, "LevelDB is not open yet.", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -228,7 +249,7 @@ class PlayerDbActivity : AppCompatActivity() {
     }
 
     private fun exportKeyNamesToUri(uri: Uri) {
-        val bridge = LevelDbSession.ensureOpen(worldDir ?: return)
+        val bridge = LevelDbSession.bridge ?: return
         if (isLoading) return
 
         isLoading = true
@@ -283,7 +304,8 @@ class PlayerDbActivity : AppCompatActivity() {
 
         Thread {
             try {
-                val bridge = LevelDbSession.ensureOpen(worldDir ?: throw IllegalStateException("World path is missing"))
+                val bridge = LevelDbSession.bridge
+                    ?: throw IllegalStateException("LevelDB is not open")
 
                 if (!LevelDbSession.loadedEntries.containsKey(displayName)) {
                     val rawKey = LevelDbSession.keyBytesByName[displayName]
@@ -337,22 +359,12 @@ class PlayerDbActivity : AppCompatActivity() {
         }.start()
     }
 
-    override fun onResume() {
-        super.onResume()
-        keepAliveHandler.removeCallbacks(keepAliveRunnable)
-        keepAliveHandler.postDelayed(keepAliveRunnable, 10_000L)
-    }
-
-    override fun onPause() {
-        keepAliveHandler.removeCallbacks(keepAliveRunnable)
-        super.onPause()
-    }
-
     override fun onDestroy() {
         super.onDestroy()
-        // Do not close the shared LevelDB here. The map viewer and other editors
-        // may still be using the same session, and ensureOpen() can recover a stale handle.
-
+        if (isFinishing) {
+            try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
+            LevelDbSession.bridge = null
+        }
     }
 
     companion object {
