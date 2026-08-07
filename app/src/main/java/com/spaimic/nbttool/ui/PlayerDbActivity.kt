@@ -34,6 +34,7 @@ class PlayerDbActivity : AppCompatActivity() {
     private var shownDisplayNames: List<String> = emptyList()
     private var isLoading = false
     private var worldDir: File? = null
+    private var keyLoadingDialog: AlertDialog? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -197,6 +198,85 @@ class PlayerDbActivity : AppCompatActivity() {
                 }
             }
             .show()
+    }
+
+
+    /**
+     * Lazily discovers keys for one known LevelDB prefix.
+     * This avoids scanning the entire database when opening a category.
+     */
+    private fun showKeyPickerLazily(titleText: String, predicate: (String) -> Boolean) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        keyLoadingDialog?.dismiss()
+        keyLoadingDialog = AlertDialog.Builder(this)
+            .setTitle(titleText)
+            .setMessage("Loading available keys…")
+            .setNegativeButton("Cancel", null)
+            .create()
+        keyLoadingDialog?.setOnDismissListener { keyLoadingDialog = null }
+        keyLoadingDialog?.show()
+
+        Thread {
+            try {
+                val prefixes = when (titleText) {
+                    "Multiplayer Players" -> listOf("player_")
+                    "MCStructures" -> listOf("structuretemplate_")
+                    "Map Data" -> listOf("map_")
+                    "Village Data" -> listOf("VILLAGE_Overworld_")
+                    "Ticking Areas" -> listOf("tickingarea_")
+                    "Player Data" -> listOf("player_")
+                    "Server Player Data" -> listOf("player_server_")
+                    "MCStructure Data" -> listOf("structuretemplate_")
+                    "Map Data (map_*)" -> listOf("map_")
+                    "Village Data (VILLAGE_Overworld_*)" -> listOf("VILLAGE_Overworld_")
+                    "Ticking Areas (tickingarea_*)" -> listOf("tickingarea_")
+                    else -> emptyList()
+                }
+
+                val names = bridge.listKeysByPrefixes(prefixes)
+                    .asSequence()
+                    .map { it.displayName to it.rawKey }
+                    .filter { predicate(it.first) }
+                    .sortedBy { it.first }
+                    .toList()
+
+                synchronized(LevelDbSession.keyBytesByName) {
+                    for ((name, rawKey) in names) {
+                        LevelDbSession.keyBytesByName[name] = rawKey
+                    }
+                }
+
+                runOnUiThread {
+                    keyLoadingDialog?.dismiss()
+                    keyLoadingDialog = null
+                    if (names.isEmpty()) {
+                        AlertDialog.Builder(this)
+                            .setTitle(titleText)
+                            .setMessage("No matching LevelDB entries were found.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    } else {
+                        AlertDialog.Builder(this)
+                            .setTitle("$titleText (${names.size})")
+                            .setItems(names.map { it.first }.toTypedArray()) { _, which ->
+                                openEntry(names[which].first)
+                            }
+                            .show()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    keyLoadingDialog?.dismiss()
+                    keyLoadingDialog = null
+                    showErrorDialog(this, "Couldn't discover $titleText", e)
+                }
+            }
+        }.start()
     }
 
     private fun openDirectKey(keyName: String) {
