@@ -28,6 +28,7 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private lateinit var mapView: MapView
     private lateinit var coordText: TextView
+    private var dbBackupReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,7 +75,7 @@ class MapViewerActivity : AppCompatActivity() {
         Thread {
             try {
                 LevelDbSession.reset()
-                LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
+                dbBackupReady = false
                 val bridge = LevelDbBridge.open(worldDir)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldDir = worldDir
@@ -233,9 +234,9 @@ class MapViewerActivity : AppCompatActivity() {
         targetZ: Int,
         clipboard: ChunkClipboard.Entry
     ) {
-        val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
+                val bridge = ensureDbBackupAndReopen()
                 val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ)
                 runOnUiThread {
                     Toast.makeText(
@@ -258,8 +259,8 @@ class MapViewerActivity : AppCompatActivity() {
             .setMessage(
                 "This replaces every block in this chunk with air, from Y 320 down to " +
                     "Y -64, and removes every entity and block entity in it. This can't be " +
-                    "undone (though a backup of the world's database was taken when you " +
-                    "opened this map).\n\nType DELETE to confirm."
+                    "undone. A database backup will be created automatically before the " +
+                    "first destructive edit.\n\nType DELETE to confirm."
             )
             .setView(input)
             .setPositiveButton("Confirm") { _, _ ->
@@ -274,9 +275,9 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun deleteChunk(chunkX: Int, chunkZ: Int) {
-        val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
+                val bridge = ensureDbBackupAndReopen()
                 com.spaimic.nbttool.chunk.ChunkDeleter.clearChunkToAir(bridge, chunkX, chunkZ)
                 runOnUiThread { Toast.makeText(this, "Chunk cleared to air.", Toast.LENGTH_SHORT).show() }
                 rescanMap()
@@ -382,6 +383,7 @@ class MapViewerActivity : AppCompatActivity() {
         if (LevelDbSession.bridge == null) return
         Thread {
             try {
+                ensureDbBackupAndReopen()
                 LevelDbSession.saveAllLoadedEntries()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
                 rescanMap() // in case a pasted structure or edit changed visible terrain
@@ -411,6 +413,31 @@ class MapViewerActivity : AppCompatActivity() {
                 runOnUiThread { showErrorDialog(this, "Failed to refresh the map", e) }
             }
         }.start()
+    }
+
+
+    /**
+     * Backups used to be made while opening the Map Viewer, which meant a 50 MB
+     * world was copied before the map could even start scanning. Create the
+     * safety backup lazily on the first write instead. We close the LevelDB
+     * handle before copying so the backup is taken from a stable on-disk state,
+     * then reopen it and rebuild the raw-key index.
+     */
+    private fun ensureDbBackupAndReopen(): LevelDbBridge {
+        val current = LevelDbSession.bridge ?: throw IllegalStateException("World database is not open")
+        if (dbBackupReady) return current
+
+        try { current.close() } catch (_: Exception) {}
+        LevelDbSession.bridge = null
+        LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
+
+        val reopened = LevelDbBridge.open(worldDir)
+        LevelDbSession.bridge = reopened
+        LevelDbSession.worldDir = worldDir
+        LevelDbSession.keyBytesByName.clear()
+        for (k in reopened.listKeys()) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+        dbBackupReady = true
+        return reopened
     }
 
     private fun openLevelDatEditor() {

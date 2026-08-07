@@ -10,22 +10,19 @@ import android.graphics.Rect
 import android.view.MotionEvent
 import android.view.View
 import com.spaimic.nbttool.R
-import com.spaimic.nbttool.chunk.BlockColors
-import com.spaimic.nbttool.chunk.ColumnInfo
+import com.spaimic.nbttool.chunk.ChunkMapData
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.floor
 
-/**
- * Draws loaded chunks as 16x16 grids of column colors with borders between
- * chunks; unloaded chunks (nothing in the DB for that position at all) are
- * flat gray. Drag to pan; tap a spot to report its exact block X/Y/Z via
- * [onTap] — no pinch-zoom in this first version, one screen pixel-per-block
- * setting is fixed via [blockPx].
- */
+/** Fast, pannable and pinch-zoomable top-down chunk map. */
 class MapView(context: Context) : View(context) {
 
-    var chunkData: Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> = emptyMap()
+    var chunkData: Map<Pair<Int, Int>, ChunkMapData> = emptyMap()
         set(value) {
             field = value
+            bitmapCache.clear()
             invalidate()
         }
 
@@ -41,16 +38,13 @@ class MapView(context: Context) : View(context) {
         set(value) { field = value; invalidate() }
 
     private val markerBitmapCache = HashMap<Int, Bitmap>()
-    private fun bitmapFor(resId: Int): Bitmap =
-        markerBitmapCache.getOrPut(resId) { BitmapFactory.decodeResource(resources, resId) }
+    private val bitmapCache = HashMap<Pair<Int, Int>, Bitmap>()
+    private fun bitmapFor(resId: Int): Bitmap = markerBitmapCache.getOrPut(resId) { BitmapFactory.decodeResource(resources, resId) }
 
-    /** World block X/Z to center on the first time the map draws — typically the
-     * player's real position. Falls back to the bounding-box center if left null. */
     var preferredCenterBlock: Pair<Int, Int>? = null
-
     var onTap: ((worldX: Int, worldY: Int, worldZ: Int) -> Unit)? = null
 
-    private val blockPx = 3f // on-screen pixels per block
+    private var blockPx = 3f
     private var offsetX = 0f
     private var offsetY = 0f
     private var lastTouchX = 0f
@@ -59,11 +53,22 @@ class MapView(context: Context) : View(context) {
     private var downY = 0f
     private var dragging = false
     private var centered = false
+    private var pinchStartDistance = 0f
+    private var pinchStartScale = 3f
 
-    private val gridPaint = Paint().apply { color = Color.rgb(25, 25, 25); strokeWidth = 2f; style = Paint.Style.STROKE }
-    private val unloadedPaint = Paint().apply { color = BlockColors.fallbackUnloaded }
+    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(190, 0, 0, 0)
+        strokeWidth = 1.5f
+        style = Paint.Style.STROKE
+    }
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textSize = 30f
+        setShadowLayer(3f, 1f, 1f, Color.BLACK)
+    }
+    private val unloadedPaint = Paint().apply { color = Color.rgb(55, 55, 55) }
     private val steveBitmap: Bitmap by lazy { BitmapFactory.decodeResource(resources, R.drawable.steve) }
-    private val blockPaint = Paint()
+    private val chunkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isFilterBitmap = false }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -77,14 +82,12 @@ class MapView(context: Context) : View(context) {
         if (!centered) {
             val preferred = preferredCenterBlock
             if (preferred != null) {
-                // put the player's exact block position in the middle of the screen
                 val (px, pz) = preferred
-                val screenPx = offsetX + (Math.floorDiv(px, 16) - minCx) * 16 * blockPx + Math.floorMod(px, 16) * blockPx
-                val screenPz = offsetY + (Math.floorDiv(pz, 16) - minCz) * 16 * blockPx + Math.floorMod(pz, 16) * blockPx
-                offsetX += width / 2f - screenPx
-                offsetY += height / 2f - screenPz
+                val sx = offsetX + (px - minCx * 16) * blockPx
+                val sz = offsetY + (pz - minCz * 16) * blockPx
+                offsetX += width / 2f - sx
+                offsetY += height / 2f - sz
             } else {
-                // no known player position — fall back to centering the whole explored area
                 val totalWidthPx = (maxCx - minCx + 1) * 16 * blockPx
                 val totalHeightPx = (maxCz - minCz + 1) * 16 * blockPx
                 offsetX = (width - totalWidthPx) / 2f
@@ -93,81 +96,121 @@ class MapView(context: Context) : View(context) {
             centered = true
         }
 
-        for (cx in minCx..maxCx) {
-            for (cz in minCz..maxCz) {
+        val visibleMinCx = floorDiv(((-offsetX) / blockPx).toInt(), 16) + minCx - 1
+        val visibleMaxCx = floorDiv(((width - offsetX) / blockPx).toInt(), 16) + minCx + 1
+        val visibleMinCz = floorDiv(((-offsetY) / blockPx).toInt(), 16) + minCz - 1
+        val visibleMaxCz = floorDiv(((height - offsetY) / blockPx).toInt(), 16) + minCz + 1
+
+        for (cx in max(minCx, visibleMinCx)..min(maxCx, visibleMaxCx)) {
+            for (cz in max(minCz, visibleMinCz)..min(maxCz, visibleMaxCz)) {
                 val screenX = offsetX + (cx - minCx) * 16 * blockPx
                 val screenY = offsetY + (cz - minCz) * 16 * blockPx
-                if (screenX + 16 * blockPx < 0 || screenX > width || screenY + 16 * blockPx < 0 || screenY > height) continue
-
-                val grid = chunkData[cx to cz]
-                if (grid == null) {
-                    canvas.drawRect(screenX, screenY, screenX + 16 * blockPx, screenY + 16 * blockPx, unloadedPaint)
+                val size = 16f * blockPx
+                if (screenX + size < 0 || screenX > width || screenY + size < 0 || screenY > height) continue
+                val data = chunkData[cx to cz]
+                if (data == null) {
+                    canvas.drawRect(screenX, screenY, screenX + size, screenY + size, unloadedPaint)
                 } else {
-                    for (bx in 0 until 16) {
-                        for (bz in 0 until 16) {
-                            blockPaint.color = grid[bx][bz].color
-                            val px = screenX + bx * blockPx
-                            val py = screenY + bz * blockPx
-                            canvas.drawRect(px, py, px + blockPx, py + blockPx, blockPaint)
-                        }
-                    }
+                    val bmp = bitmapCache.getOrPut(cx to cz) { buildChunkBitmap(data) }
+                    canvas.drawBitmap(bmp, null, Rect(screenX.toInt(), screenY.toInt(), (screenX + size).toInt(), (screenY + size).toInt()), chunkPaint)
                 }
-                canvas.drawRect(screenX, screenY, screenX + 16 * blockPx, screenY + 16 * blockPx, gridPaint)
+                canvas.drawRect(screenX, screenY, screenX + size, screenY + size, gridPaint)
+
+                // Coordinates at chunk corners, like a lightweight world-map grid.
+                if (blockPx >= 1.5f) {
+                    val wx = cx * 16
+                    val wz = cz * 16
+                    canvas.drawText("($wx, $wz)", screenX + 4f, screenY + labelPaint.textSize, labelPaint)
+                }
             }
         }
 
-        fun screenPos(worldX: Int, worldZ: Int): Pair<Float, Float> {
-            val sx = offsetX + (Math.floorDiv(worldX, 16) - minCx) * 16 * blockPx + Math.floorMod(worldX, 16) * blockPx
-            val sz = offsetY + (Math.floorDiv(worldZ, 16) - minCz) * 16 * blockPx + Math.floorMod(worldZ, 16) * blockPx
-            return sx to sz
-        }
+        fun screenPos(worldX: Int, worldZ: Int): Pair<Float, Float> =
+            offsetX + (worldX - minCx * 16) * blockPx to offsetY + (worldZ - minCz * 16) * blockPx
 
-        fun drawMarker(worldX: Int, worldZ: Int, iconRes: Int, size: Int) {
+        fun drawMarker(worldX: Int, worldZ: Int, iconRes: Int, sizePx: Int) {
             val (sx, sz) = screenPos(worldX, worldZ)
-            if (sx < -size || sx > width + size || sz < -size || sz > height + size) return
-            val dest = Rect((sx - size / 2).toInt(), (sz - size).toInt(), (sx + size / 2).toInt(), sz.toInt())
+            if (sx < -sizePx || sx > width + sizePx || sz < -sizePx || sz > height + sizePx) return
+            val dest = Rect((sx - sizePx / 2).toInt(), (sz - sizePx).toInt(), (sx + sizePx / 2).toInt(), sz.toInt())
             canvas.drawBitmap(bitmapFor(iconRes), null, dest, null)
         }
-
-        if (showTileEntityIcons) {
-            for (m in blockEntityMarkers) drawMarker(m.worldX, m.worldZ, m.iconRes, 32)
-        }
-        if (showEntityIcons) {
-            for (m in entityMarkers) drawMarker(m.worldX, m.worldZ, m.iconRes, 32)
-        }
+        if (showTileEntityIcons) for (m in blockEntityMarkers) drawMarker(m.worldX, m.worldZ, m.iconRes, 32)
+        if (showEntityIcons) for (m in entityMarkers) drawMarker(m.worldX, m.worldZ, m.iconRes, 32)
 
         preferredCenterBlock?.let { (px, pz) ->
-            val screenPx = offsetX + (Math.floorDiv(px, 16) - minCx) * 16 * blockPx + Math.floorMod(px, 16) * blockPx
-            val screenPz = offsetY + (Math.floorDiv(pz, 16) - minCz) * 16 * blockPx + Math.floorMod(pz, 16) * blockPx
+            val (sx, sz) = screenPos(px, pz)
             val markerSize = 48
-            val dest = Rect(
-                (screenPx - markerSize / 2).toInt(), (screenPz - markerSize).toInt(),
-                (screenPx + markerSize / 2).toInt(), screenPz.toInt()
-            )
-            canvas.drawBitmap(steveBitmap, null, dest, null)
+            canvas.drawBitmap(steveBitmap, null, Rect((sx - markerSize / 2).toInt(), (sz - markerSize).toInt(), (sx + markerSize / 2).toInt(), sz.toInt()), null)
         }
     }
 
+    private fun buildChunkBitmap(data: ChunkMapData): Bitmap {
+        val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(256)
+        for (x in 0 until 16) {
+            for (z in 0 until 16) {
+                val i = x * 16 + z
+                val base = data.colors[i]
+                val left = if (x > 0) data.surfaceY[(x - 1) * 16 + z] else data.surfaceY[i]
+                val right = if (x < 15) data.surfaceY[(x + 1) * 16 + z] else data.surfaceY[i]
+                val up = if (z > 0) data.surfaceY[x * 16 + z - 1] else data.surfaceY[i]
+                val down = if (z < 15) data.surfaceY[x * 16 + z + 1] else data.surfaceY[i]
+                val shade = ((data.surfaceY[i] - ((left + right + up + down) / 4)) * 3).coerceIn(-36, 36)
+                pixels[i] = shade(base, shade)
+            }
+        }
+        bitmap.setPixels(pixels, 0, 16, 0, 0, 16, 16)
+        return bitmap
+    }
+
+    private fun shade(color: Int, delta: Int): Int {
+        val r = (Color.red(color) + delta).coerceIn(0, 255)
+        val g = (Color.green(color) + delta).coerceIn(0, 255)
+        val b = (Color.blue(color) + delta).coerceIn(0, 255)
+        return Color.rgb(r, g, b)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        when (event.action) {
+        when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = event.x; lastTouchY = event.y
                 downX = event.x; downY = event.y
                 dragging = false
             }
-            MotionEvent.ACTION_MOVE -> {
-                val dx = event.x - lastTouchX
-                val dy = event.y - lastTouchY
-                if (abs(event.x - downX) > 12 || abs(event.y - downY) > 12) dragging = true
-                offsetX += dx
-                offsetY += dy
-                lastTouchX = event.x
-                lastTouchY = event.y
-                invalidate()
+            MotionEvent.ACTION_POINTER_DOWN -> if (event.pointerCount >= 2) {
+                pinchStartDistance = distance(event)
+                pinchStartScale = blockPx
             }
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2 && pinchStartDistance > 0f) {
+                    val factor = distance(event) / pinchStartDistance
+                    val newScale = (pinchStartScale * factor).coerceIn(0.75f, 12f)
+                    val focusX = (event.getX(0) + event.getX(1)) / 2f
+                    val focusY = (event.getY(0) + event.getY(1)) / 2f
+                    val old = blockPx
+                    if (newScale != old) {
+                        val worldX = (focusX - offsetX) / old
+                        val worldZ = (focusY - offsetY) / old
+                        blockPx = newScale
+                        offsetX = focusX - worldX * blockPx
+                        offsetY = focusY - worldZ * blockPx
+                        invalidate()
+                    }
+                } else {
+                    val dx = event.x - lastTouchX
+                    val dy = event.y - lastTouchY
+                    if (abs(event.x - downX) > 12 || abs(event.y - downY) > 12) dragging = true
+                    offsetX += dx; offsetY += dy
+                    lastTouchX = event.x; lastTouchY = event.y
+                    invalidate()
+                }
+            }
+            MotionEvent.ACTION_POINTER_UP -> if (event.pointerCount <= 2) pinchStartDistance = 0f
             MotionEvent.ACTION_UP -> {
+                pinchStartDistance = 0f
                 if (!dragging) handleTap(event.x, event.y)
             }
+            MotionEvent.ACTION_CANCEL -> pinchStartDistance = 0f
         }
         return true
     }
@@ -176,14 +219,21 @@ class MapView(context: Context) : View(context) {
         if (chunkData.isEmpty()) return
         val minCx = chunkData.keys.minOf { it.first }
         val minCz = chunkData.keys.minOf { it.second }
-
-        val worldBlockX = ((screenX - offsetX) / blockPx).toInt() + minCx * 16
-        val worldBlockZ = ((screenY - offsetY) / blockPx).toInt() + minCz * 16
+        val worldBlockX = floor(((screenX - offsetX) / blockPx)).toInt() + minCx * 16
+        val worldBlockZ = floor(((screenY - offsetY) / blockPx)).toInt() + minCz * 16
         val cx = Math.floorDiv(worldBlockX, 16)
         val cz = Math.floorDiv(worldBlockZ, 16)
         val bx = Math.floorMod(worldBlockX, 16)
         val bz = Math.floorMod(worldBlockZ, 16)
-        val y = chunkData[cx to cz]?.get(bx)?.get(bz)?.surfaceY ?: 0
+        val y = chunkData[cx to cz]?.surfaceY?.get(bx * 16 + bz) ?: 0
         onTap?.invoke(worldBlockX, y, worldBlockZ)
     }
+
+    private fun distance(event: MotionEvent): Float {
+        val dx = event.getX(0) - event.getX(1)
+        val dy = event.getY(0) - event.getY(1)
+        return kotlin.math.sqrt(dx * dx + dy * dy)
+    }
+
+    private fun floorDiv(a: Int, b: Int): Int = Math.floorDiv(a, b)
 }
