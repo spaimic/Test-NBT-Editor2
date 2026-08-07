@@ -21,8 +21,189 @@ import org.json.JSONObject
  */
 object NbtJson {
 
+    /**
+     * Exports NBT without using Android's JSONObject.toString(indent) pretty-printer.
+     *
+     * Android's JSONStringer has a fixed maximum nesting depth, which can be
+     * exceeded by perfectly valid, deeply nested NBT (for example, shulker
+     * boxes containing NBT-heavy items). The custom writer below has no
+     * artificial JSON nesting limit.
+     */
     fun exportCompoundToJsonString(compound: NbtTag.Compound): String =
-        toJson(compound).toString(2)
+        buildString {
+            appendJsonTag(compound, 0)
+            append('\\n')
+        }
+
+    private fun StringBuilder.appendJsonTag(tag: NbtTag, indent: Int) {
+        append('{').append('\\n')
+        appendIndent(indent + 1)
+        appendJsonString("type")
+        append(": ")
+        appendJsonString(NbtTag.typeName(tag.id))
+
+        when (tag) {
+            is NbtTag.Byte -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ").append(tag.value.toInt())
+            }
+            is NbtTag.Short -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ").append(tag.value.toInt())
+            }
+            is NbtTag.Int -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ").append(tag.value)
+            }
+            is NbtTag.Long -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ").append(tag.value)
+            }
+            is NbtTag.Float -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ").append(tag.value.toDouble().jsonNumber())
+            }
+            is NbtTag.Double -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ").append(tag.value.jsonNumber())
+            }
+            is NbtTag.Str -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": ")
+                appendJsonString(tag.value)
+            }
+            is NbtTag.ByteArray -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": [")
+                tag.value.forEachIndexed { i, value ->
+                    if (i > 0) append(", ")
+                    append(value.toInt())
+                }
+                append(']')
+            }
+            is NbtTag.IntArray -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": [")
+                tag.value.forEachIndexed { i, value ->
+                    if (i > 0) append(", ")
+                    append(value)
+                }
+                append(']')
+            }
+            is NbtTag.LongArray -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": [")
+                tag.value.forEachIndexed { i, value ->
+                    if (i > 0) append(", ")
+                    append(value)
+                }
+                append(']')
+            }
+            is NbtTag.ListTag -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("elementType")
+                append(": ")
+                appendJsonString(NbtTag.typeName(tag.elementTypeId))
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": [")
+                if (tag.items.isNotEmpty()) {
+                    append('\\n')
+                    tag.items.forEachIndexed { i, item ->
+                        appendIndent(indent + 2)
+                        appendJsonTag(item, indent + 2)
+                        if (i < tag.items.lastIndex) append(',')
+                        append('\\n')
+                    }
+                    appendIndent(indent + 1)
+                }
+                append(']')
+            }
+            is NbtTag.Compound -> {
+                append(",\\n")
+                appendIndent(indent + 1)
+                appendJsonString("value")
+                append(": {")
+                if (tag.entries.isNotEmpty()) {
+                    append('\\n')
+                    val entries = tag.entries.entries.toList()
+                    entries.forEachIndexed { i, (key, value) ->
+                        appendIndent(indent + 2)
+                        appendJsonString(key)
+                        append(": ")
+                        appendJsonTag(value, indent + 2)
+                        if (i < entries.lastIndex) append(',')
+                        append('\\n')
+                    }
+                    appendIndent(indent + 1)
+                }
+                append('}')
+            }
+            NbtTag.End -> {
+                // End has no value field, matching toJson().
+            }
+        }
+
+        append('\\n')
+        appendIndent(indent)
+        append('}')
+    }
+
+    private fun StringBuilder.appendIndent(level: Int) {
+        repeat(level * 2) { append(' ') }
+    }
+
+    /** Writes a JSON string without relying on Android's JSONObject serializer. */
+    private fun StringBuilder.appendJsonString(value: String) {
+        append('"')
+        for (ch in value) {
+            when (ch) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\b' -> append("\\b")
+                '\u000C' -> append("\\f")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> {
+                    if (ch.code < 0x20) {
+                        append("\\u")
+                        append(ch.code.toString(16).padStart(4, '0'))
+                    } else {
+                        append(ch)
+                    }
+                }
+            }
+        }
+        append('"')
+    }
+
+    private fun Double.jsonNumber(): String {
+        require(isFinite()) { "Cannot export non-finite JSON number: $this" }
+        return toString()
+    }
 
     /** Throws a descriptive exception on any structural problem — nothing is
      * ever partially imported; the caller only replaces data after this fully
