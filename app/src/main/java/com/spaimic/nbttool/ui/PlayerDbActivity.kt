@@ -52,7 +52,7 @@ class PlayerDbActivity : AppCompatActivity() {
         }
 
         browseButton = Button(this).apply {
-            text = "Browse LevelDB keys (without chunk data)"
+            text = "Browse LevelDB keys (chunk records hidden)"
             setOnClickListener {
                 if (!allKeysLoaded) loadAllKeysInBackground()
             }
@@ -141,8 +141,9 @@ class PlayerDbActivity : AppCompatActivity() {
 
     /**
      * Explicit non-chunk browse. This is intentionally NOT called during startup.
-     * It lists non-chunk keys but does not read/parse their values until the user
-     * opens an individual entry.
+     * It lists keys that are not recognized Bedrock chunk-storage records. Binary
+     * keys from other LevelDB namespaces are intentionally retained; only the
+     * coordinate/tag chunk formats are filtered out.
      */
     private fun loadAllKeysInBackground() {
         val bridge = LevelDbSession.bridge ?: return
@@ -175,7 +176,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 isLoading = false
                 runOnUiThread {
                     browseButton.isEnabled = true
-                    browseButton.text = "Browse LevelDB keys (without chunk data)"
+                    browseButton.text = "Browse LevelDB keys (chunk records hidden)"
                     showErrorDialog(this, "Couldn't load LevelDB keys", e)
                 }
             }

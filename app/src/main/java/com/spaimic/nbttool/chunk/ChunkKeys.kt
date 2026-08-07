@@ -19,10 +19,18 @@ object ChunkKeys {
 
     // These are the tag bytes any chunk-data key can plausibly carry — used as a sanity
     // check so we don't misparse an unrelated short binary key as a chunk key.
-    private val KNOWN_TAGS = setOf(0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x39, 0x3A, 0x76, 0x77, 0x78)
+    // Tags observed in the exported Bedrock key set used to validate the
+    // chunk-key shape. Keeping this explicit prevents unrelated binary keys
+    // (for example digp/actorprefix records) from being mistaken for chunks.
+    private val KNOWN_TAGS = setOf(
+        0x2B, 0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32,
+        0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A,
+        0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41
+    )
 
     fun parse(key: ByteArray): Info? {
-        // overworld: 9 bytes (whole-chunk tag) or 10 bytes (subchunk tag + Y)
+        // Observed Bedrock chunk records in the debug export are exactly 9 or
+        // 10 bytes for the Overworld. 10-byte records must have 0x2F at byte 8.
         if (key.size == 9 || key.size == 10) {
             val x = readI32(key, 0); val z = readI32(key, 4)
             val tag = key[8].toInt() and 0xFF
@@ -32,7 +40,7 @@ object ChunkKeys {
                 return Info(x, z, 0, tag, subY)
             }
         }
-        // nether/end: 13 bytes or 14 bytes (with a dimension field)
+        // Dimension records are exactly 13 or 14 bytes and carry dimension 1/2.
         if (key.size == 13 || key.size == 14) {
             val x = readI32(key, 0); val z = readI32(key, 4); val dim = readI32(key, 8)
             val tag = key[12].toInt() and 0xFF
