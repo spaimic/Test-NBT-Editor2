@@ -19,8 +19,8 @@ import java.io.File
  * screen can take many seconds on a large world.
  *
  * Startup therefore only opens the DB and performs a direct lookup of
- * ~local_player. "Browse all LevelDB keys" is an explicit user action and is
- * the only operation here that performs a full key enumeration.
+ * ~local_player. The browser is an explicit user action and excludes binary
+ * chunk-storage keys, which are handled by the Map Viewer / chunk tools.
  */
 class PlayerDbActivity : AppCompatActivity() {
 
@@ -48,7 +48,7 @@ class PlayerDbActivity : AppCompatActivity() {
         }
 
         browseButton = Button(this).apply {
-            text = "Browse all LevelDB keys"
+            text = "Browse LevelDB keys (without chunk data)"
             setOnClickListener {
                 if (!allKeysLoaded) loadAllKeysInBackground()
             }
@@ -126,9 +126,9 @@ class PlayerDbActivity : AppCompatActivity() {
     }
 
     /**
-     * Explicit full browse. This is intentionally NOT called during startup.
-     * It lists keys but does not read/parse their values until the user opens
-     * an individual entry.
+     * Explicit non-chunk browse. This is intentionally NOT called during startup.
+     * It lists non-chunk keys but does not read/parse their values until the user
+     * opens an individual entry.
      */
     private fun loadAllKeysInBackground() {
         val bridge = LevelDbSession.bridge ?: return
@@ -136,11 +136,11 @@ class PlayerDbActivity : AppCompatActivity() {
 
         isLoading = true
         browseButton.isEnabled = false
-        browseButton.text = "Loading LevelDB keys…"
+        browseButton.text = "Loading non-chunk LevelDB keys…"
 
         Thread {
             try {
-                val keys = bridge.listKeys()
+                val keys = bridge.listNonChunkKeys()
                 for (k in keys) {
                     LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
                 }
@@ -154,14 +154,14 @@ class PlayerDbActivity : AppCompatActivity() {
                         android.R.layout.simple_list_item_1,
                         shownDisplayNames
                     )
-                    browseButton.text = "LevelDB keys loaded (${names.size})"
+                    browseButton.text = "Non-chunk keys loaded (${names.size})"
                     isLoading = false
                 }
             } catch (e: Exception) {
                 isLoading = false
                 runOnUiThread {
                     browseButton.isEnabled = true
-                    browseButton.text = "Browse all LevelDB keys"
+                    browseButton.text = "Browse LevelDB keys (without chunk data)"
                     showErrorDialog(this, "Couldn't load LevelDB keys", e)
                 }
             }

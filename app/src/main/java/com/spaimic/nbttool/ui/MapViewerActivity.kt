@@ -105,6 +105,7 @@ class MapViewerActivity : AppCompatActivity() {
     private val loadedEntityMarkers = ArrayList<MapView.MarkerDraw>()
     private val loadedBlockEntityMarkers = ArrayList<MapView.MarkerDraw>()
     private var backupCreated = false
+    private var keyLoadingDialog: AlertDialog? = null
 
     private fun loadAndScan() {
         Thread {
@@ -382,10 +383,11 @@ class MapViewerActivity : AppCompatActivity() {
             "MCStructures",
             "Map Data (map_*)",
             "Village Data",
+            "Ticking Areas",
             (if (mapView.showEntityIcons) "Hide" else "Show") + " Entity Icons",
             (if (mapView.showTileEntityIcons) "Hide" else "Show") + " Tile Entity Icons",
             "World settings (level.dat)",
-            "Advanced: browse all DB keys"
+            "Advanced: browse non-chunk DB keys"
         )
 
         AlertDialog.Builder(this)
@@ -395,17 +397,18 @@ class MapViewerActivity : AppCompatActivity() {
                     1 -> showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_") }
                     2 -> showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") }
                     3 -> showKeyPickerLazily("Map Data") { it.startsWith("map_") }
-                    4 -> showKeyPickerLazily("Village Data") { it.startsWith("village_") }
-                    5 -> {
+                    4 -> showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_") }
+                    5 -> showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") }
+                    6 -> {
                         mapView.showEntityIcons = !mapView.showEntityIcons
                         mapView.invalidate()
                     }
-                    6 -> {
+                    7 -> {
                         mapView.showTileEntityIcons = !mapView.showTileEntityIcons
                         mapView.invalidate()
                     }
-                    7 -> openLevelDatEditor()
-                    8 -> openAllKeysBrowser()
+                    8 -> openLevelDatEditor()
+                    9 -> openAllKeysBrowser()
                 }
             }
             .show()
@@ -440,45 +443,45 @@ class MapViewerActivity : AppCompatActivity() {
             return
         }
 
-        AlertDialog.Builder(this)
+        keyLoadingDialog?.dismiss()
+        keyLoadingDialog = AlertDialog.Builder(this)
             .setTitle(titleText)
             .setMessage("Loading available keys…")
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        keyLoadingDialog?.setOnDismissListener { keyLoadingDialog = null }
+        keyLoadingDialog?.show()
 
         Thread {
             try {
-                // Use LevelDB's sorted-key seek instead of scanning the entire DB.
-                // The menu categories all correspond to printable key prefixes.
-                val prefix = when (titleText) {
-                    "Multiplayer Players" -> "player_"
-                    "MCStructures" -> "structuretemplate_"
-                    "Map Data" -> "map_"
-                    "Village Data" -> "village_"
-                    else -> null
+                // Use LevelDB's sorted-key seeks instead of scanning the entire DB.
+                // Village records use uppercase VILLAGE_ prefixes in Bedrock, and
+                // tickingarea records use the lowercase tickingarea_ prefix.
+                val prefixes = when (titleText) {
+                    "Multiplayer Players" -> listOf("player_")
+                    "MCStructures" -> listOf("structuretemplate_")
+                    "Map Data" -> listOf("map_")
+                    "Village Data" -> listOf("VILLAGE_")
+                    "Ticking Areas" -> listOf("tickingarea_")
+                    else -> emptyList()
                 }
 
-                val names = if (prefix != null) {
-                    bridge.listKeysByPrefix(prefix)
-                        .asSequence()
-                        .map { it.displayName to it.rawKey }
-                        .filter { predicate(it.first) }
-                        .toList()
-                } else {
-                    // Fallback for any future category without a known prefix.
-                    bridge.listKeys()
-                        .asSequence()
-                        .map { it.displayName to it.rawKey }
-                        .filter { predicate(it.first) }
-                        .sortedBy { it.first }
-                        .toList()
-                }
+                val names = bridge.listKeysByPrefixes(prefixes)
+                    .asSequence()
+                    .map { it.displayName to it.rawKey }
+                    .filter { predicate(it.first) }
+                    .sortedBy { it.first }
+                    .toList()
 
                 synchronized(LevelDbSession.keyBytesByName) {
-                    for ((name, rawKey) in names) LevelDbSession.keyBytesByName[name] = rawKey
+                    for ((name, rawKey) in names) {
+                        LevelDbSession.keyBytesByName[name] = rawKey
+                    }
                 }
 
                 runOnUiThread {
+                    keyLoadingDialog?.dismiss()
+                    keyLoadingDialog = null
                     if (names.isEmpty()) {
                         AlertDialog.Builder(this)
                             .setTitle(titleText)
@@ -495,7 +498,11 @@ class MapViewerActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Couldn't discover $titleText", e) }
+                runOnUiThread {
+                    keyLoadingDialog?.dismiss()
+                    keyLoadingDialog = null
+                    showErrorDialog(this, "Couldn't discover $titleText", e)
+                }
             }
         }.start()
     }

@@ -60,6 +60,37 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
         return out.sortedBy { it.displayName }
     }
 
+    /** Fast lookup for several related prefixes (for example VILLAGE_ records).
+     * Each prefix gets its own LevelDB seek, so unrelated keys are never walked. */
+    fun listKeysByPrefixes(prefixes: Collection<String>): List<KeyEntry> {
+        val merged = LinkedHashMap<String, KeyEntry>()
+        for (prefix in prefixes) {
+            for (entry in listKeysByPrefix(prefix)) {
+                // Preserve distinct raw keys even if two prefixes happen to decode
+                // to the same display name.
+                val identity = entry.displayName + ":" + entry.rawKey.contentToString()
+                merged[identity] = entry
+            }
+        }
+        return merged.values.sortedBy { it.displayName }
+    }
+
+    /** Full key listing with Minecraft chunk-storage records removed.
+     * Chunk records are binary coordinate/tag keys and are not standalone NBT
+     * documents. This is intentionally an explicit browser operation, not startup work. */
+    fun listNonChunkKeys(): List<KeyEntry> {
+        val out = ArrayList<KeyEntry>()
+        db.iterator().use { iterator ->
+            iterator.seekToFirst()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (com.spaimic.nbttool.chunk.ChunkKeys.parse(entry.key) != null) continue
+                out.add(KeyEntry(decodeKeyName(entry.key), entry.key))
+            }
+        }
+        return out.sortedBy { it.displayName }
+    }
+
     private fun ByteArray.startsWithBytes(prefix: ByteArray): Boolean {
         if (size < prefix.size) return false
         for (i in prefix.indices) {
