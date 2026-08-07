@@ -23,9 +23,27 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
-          gradle-version: '8.4'   # AGP 8.2.2 is only compatible with Gradle 8.2–8.4, not the newer default
+          gradle-version: '8.4'
+
+      - name: Restore persistent signing key
+        env:
+          SIGNING_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$SIGNING_KEYSTORE_B64" ]; then
+            echo "::error::Missing SIGNING_KEYSTORE_B64 repository secret."
+            echo "Create the persistent keystore and add it as a GitHub Actions secret before building."
+            exit 1
+          fi
+          mkdir -p app/signing
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 --decode > app/signing/persistent-release.jks
+          test -s app/signing/persistent-release.jks
 
       - name: Build debug APK
+        env:
+          SIGNING_KEYSTORE_PATH: signing/persistent-release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
         run: gradle assembleDebug
 
       - name: Upload APK

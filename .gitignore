@@ -1,0 +1,3 @@
+
+# Never commit the persistent Android signing key or local signing material.
+app/signing/*.jks

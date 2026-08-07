@@ -8,6 +8,8 @@ import android.view.Gravity
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.chunk.ChunkScanner
+import com.spaimic.nbttool.chunk.ChunkClipboard
+import com.spaimic.nbttool.chunk.ChunkTransfer
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbBridge
@@ -145,9 +147,23 @@ class MapViewerActivity : AppCompatActivity() {
     private fun showChunkDialog(worldX: Int, worldZ: Int) {
         val chunkX = Math.floorDiv(worldX, 16)
         val chunkZ = Math.floorDiv(worldZ, 16)
+        val clipboard = ChunkClipboard.load(this)
+        val pasteLabel = if (clipboard != null) {
+            "Paste Chunk (${clipboard.chunkX}, ${clipboard.chunkZ}) Here"
+        } else {
+            "Paste Chunk"
+        }
+        val options = arrayOf(
+            "Show Entities",
+            "Show Block Entities",
+            "Copy Chunk",
+            pasteLabel,
+            "Delete Chunk"
+        )
+
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
-            .setItems(arrayOf("Show Entities", "Show Block Entities", "Delete Chunk")) { _, which ->
+            .setItems(options) { _, which ->
                 when (which) {
                     0 -> {
                         val i = Intent(this, EntityListActivity::class.java)
@@ -161,10 +177,78 @@ class MapViewerActivity : AppCompatActivity() {
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         startActivity(i)
                     }
-                    2 -> promptDeleteChunk(chunkX, chunkZ)
+                    2 -> copyChunk(chunkX, chunkZ)
+                    3 -> if (clipboard != null) promptPasteChunk(chunkX, chunkZ, clipboard)
+                         else Toast.makeText(this, "Chunk clipboard is empty.", Toast.LENGTH_SHORT).show()
+                    4 -> promptDeleteChunk(chunkX, chunkZ)
                 }
             }
             .show()
+    }
+
+    private fun copyChunk(chunkX: Int, chunkZ: Int) {
+        val bridge = LevelDbSession.bridge ?: return
+        Thread {
+            try {
+                val copied = ChunkTransfer.copy(bridge, chunkX, chunkZ)
+                ChunkClipboard.save(
+                    this,
+                    ChunkClipboard.Entry(copied.chunkX, copied.chunkZ, copied.records)
+                )
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Copied chunk ($chunkX, $chunkZ) to the chunk clipboard.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to copy chunk", e) }
+            }
+        }.start()
+    }
+
+    private fun promptPasteChunk(
+        targetX: Int,
+        targetZ: Int,
+        clipboard: ChunkClipboard.Entry
+    ) {
+        AlertDialog.Builder(this)
+            .setTitle("Paste chunk here?")
+            .setMessage(
+                "This will overwrite chunk ($targetX, $targetZ) with the literal data " +
+                    "copied from chunk (${clipboard.chunkX}, ${clipboard.chunkZ}). " +
+                    "Blocks, block entities, and entities in the destination chunk will be replaced. " +
+                    "This cannot be undone."
+            )
+            .setPositiveButton("Paste") { _, _ ->
+                pasteChunk(targetX, targetZ, clipboard)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun pasteChunk(
+        targetX: Int,
+        targetZ: Int,
+        clipboard: ChunkClipboard.Entry
+    ) {
+        val bridge = LevelDbSession.bridge ?: return
+        Thread {
+            try {
+                val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ)
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Pasted chunk to ($targetX, $targetZ) — $written records written.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                rescanMap()
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to paste chunk", e) }
+            }
+        }.start()
     }
 
     private fun promptDeleteChunk(chunkX: Int, chunkZ: Int) {

@@ -11,11 +11,35 @@ android {
         applicationId "com.spaimic.nbttool"
         minSdk 28
         targetSdk 33
-        versionCode 1
-        versionName "0.1.0"
+        // GitHub Actions run numbers provide monotonically increasing version
+        // codes. The offset keeps them newer than the original versionCode 1.
+        def githubRunNumber = System.getenv("GITHUB_RUN_NUMBER")
+        versionCode githubRunNumber ? (1000 + githubRunNumber.toInteger()) : 2
+        versionName githubRunNumber ? "0.1.${githubRunNumber}" : "0.1.1"
+    }
+
+    def signingKeystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+
+    signingConfigs {
+        if (signingKeystorePath) {
+            persistent {
+                storeFile file(signingKeystorePath)
+                storePassword System.getenv("SIGNING_STORE_PASSWORD") ?: ""
+                keyAlias System.getenv("SIGNING_KEY_ALIAS") ?: ""
+                keyPassword System.getenv("SIGNING_KEY_PASSWORD") ?: ""
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            // GitHub Actions supplies a persistent signing key so every APK can
+            // update the previously installed APK instead of conflicting with it.
+            // Local builds without the secret continue using Android's normal debug key.
+            if (signingKeystorePath) {
+                signingConfig signingConfigs.persistent
+            }
+        }
         release {
             minifyEnabled false
         }
