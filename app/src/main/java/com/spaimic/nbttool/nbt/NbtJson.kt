@@ -32,11 +32,11 @@ object NbtJson {
     fun exportCompoundToJsonString(compound: NbtTag.Compound): String =
         buildString {
             appendJsonTag(compound, 0)
-            append('\\n')
+            append('\n')
         }
 
     private fun StringBuilder.appendJsonTag(tag: NbtTag, indent: Int) {
-        append('{').append('\\n')
+        append('{').append('\n')
         appendIndent(indent + 1)
         appendJsonString("type")
         append(": ")
@@ -44,50 +44,50 @@ object NbtJson {
 
         when (tag) {
             is NbtTag.Byte -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ").append(tag.value.toInt())
             }
             is NbtTag.Short -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ").append(tag.value.toInt())
             }
             is NbtTag.Int -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ").append(tag.value)
             }
             is NbtTag.Long -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ").append(tag.value)
             }
             is NbtTag.Float -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ").append(tag.value.toDouble().jsonNumber())
             }
             is NbtTag.Double -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ").append(tag.value.jsonNumber())
             }
             is NbtTag.Str -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": ")
                 appendJsonString(tag.value)
             }
             is NbtTag.ByteArray -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": [")
@@ -98,7 +98,7 @@ object NbtJson {
                 append(']')
             }
             is NbtTag.IntArray -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": [")
@@ -109,7 +109,7 @@ object NbtJson {
                 append(']')
             }
             is NbtTag.LongArray -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": [")
@@ -120,34 +120,34 @@ object NbtJson {
                 append(']')
             }
             is NbtTag.ListTag -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("elementType")
                 append(": ")
                 appendJsonString(NbtTag.typeName(tag.elementTypeId))
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": [")
                 if (tag.items.isNotEmpty()) {
-                    append('\\n')
+                    append('\n')
                     tag.items.forEachIndexed { i, item ->
                         appendIndent(indent + 2)
                         appendJsonTag(item, indent + 2)
                         if (i < tag.items.lastIndex) append(',')
-                        append('\\n')
+                        append('\n')
                     }
                     appendIndent(indent + 1)
                 }
                 append(']')
             }
             is NbtTag.Compound -> {
-                append(",\\n")
+                append(",\n")
                 appendIndent(indent + 1)
                 appendJsonString("value")
                 append(": {")
                 if (tag.entries.isNotEmpty()) {
-                    append('\\n')
+                    append('\n')
                     val entries = tag.entries.entries.toList()
                     entries.forEachIndexed { i, (key, value) ->
                         appendIndent(indent + 2)
@@ -155,7 +155,7 @@ object NbtJson {
                         append(": ")
                         appendJsonTag(value, indent + 2)
                         if (i < entries.lastIndex) append(',')
-                        append('\\n')
+                        append('\n')
                     }
                     appendIndent(indent + 1)
                 }
@@ -166,7 +166,7 @@ object NbtJson {
             }
         }
 
-        append('\\n')
+        append('\n')
         appendIndent(indent)
         append('}')
     }
