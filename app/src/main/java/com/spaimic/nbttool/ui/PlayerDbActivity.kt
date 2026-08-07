@@ -1,6 +1,7 @@
 package com.spaimic.nbttool.ui
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.*
@@ -9,6 +10,8 @@ import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import java.io.File
+import java.io.BufferedWriter
+import java.io.OutputStreamWriter
 
 /**
  * Lazy LevelDB browser.
@@ -26,6 +29,7 @@ class PlayerDbActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
     private lateinit var browseButton: Button
+    private lateinit var exportKeysButton: Button
     private var shownDisplayNames: List<String> = emptyList()
     private var isLoading = false
     private var worldDir: File? = null
@@ -54,6 +58,15 @@ class PlayerDbActivity : AppCompatActivity() {
             }
         }
 
+        // Temporary debugging tool: exports EVERY LevelDB key name, including
+        // chunk-storage keys. It never reads the corresponding values.
+        exportKeysButton = Button(this).apply {
+            text = "DEBUG: Export ALL LevelDB key names (.txt)"
+            setOnClickListener {
+                exportAllKeyNames()
+            }
+        }
+
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
@@ -62,6 +75,7 @@ class PlayerDbActivity : AppCompatActivity() {
 
         root.addView(info)
         root.addView(browseButton)
+        root.addView(exportKeysButton)
         root.addView(listView)
         setContentView(root)
 
@@ -168,6 +182,80 @@ class PlayerDbActivity : AppCompatActivity() {
         }.start()
     }
 
+
+    /**
+     * Temporary debugging feature. Creates a text document containing every
+     * LevelDB key name, one per line. Values are NEVER read, decoded, or exported.
+     */
+    private fun exportAllKeyNames() {
+        if (isLoading) return
+        if (LevelDbSession.bridge == null) {
+            Toast.makeText(this, "LevelDB is not open yet.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TITLE, "leveldb_key_names.txt")
+        }
+        startActivityForResult(intent, REQUEST_EXPORT_KEY_NAMES)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_EXPORT_KEY_NAMES || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        exportKeyNamesToUri(uri)
+    }
+
+    private fun exportKeyNamesToUri(uri: Uri) {
+        val bridge = LevelDbSession.bridge ?: return
+        if (isLoading) return
+
+        isLoading = true
+        exportKeysButton.isEnabled = false
+        exportKeysButton.text = "DEBUG: Exporting key names…"
+
+        Thread {
+            var count = 0
+            try {
+                val resolver = contentResolver
+                val output = resolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Couldn't open the selected file")
+
+                output.use { stream ->
+                    BufferedWriter(OutputStreamWriter(stream, Charsets.UTF_8), 64 * 1024).use { writer ->
+                        // Key-only scan: entry.value is never accessed.
+                        bridge.forEachRawKey { rawKey ->
+                            writer.write(bridge.decodeKeyName(rawKey))
+                            writer.newLine()
+                            count++
+                        }
+                    }
+                }
+
+                runOnUiThread {
+                    isLoading = false
+                    exportKeysButton.isEnabled = true
+                    exportKeysButton.text = "DEBUG: Export ALL LevelDB key names (.txt)"
+                    Toast.makeText(
+                        this,
+                        "Exported $count key names.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            } catch (e: Exception) {
+                isLoading = false
+                runOnUiThread {
+                    exportKeysButton.isEnabled = true
+                    exportKeysButton.text = "DEBUG: Export ALL LevelDB key names (.txt)"
+                    showErrorDialog(this, "Couldn't export LevelDB key names", e)
+                }
+            }
+        }.start()
+    }
+
     /**
      * Values are loaded only after the user taps a key.
      */
@@ -243,5 +331,6 @@ class PlayerDbActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
         private const val MENU_SAVE = 1
+        private const val REQUEST_EXPORT_KEY_NAMES = 2001
     }
 }
