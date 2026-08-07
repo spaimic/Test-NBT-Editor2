@@ -448,12 +448,31 @@ class MapViewerActivity : AppCompatActivity() {
 
         Thread {
             try {
-                val names = bridge.listKeys()
-                    .asSequence()
-                    .map { it.displayName to it.rawKey }
-                    .filter { predicate(it.first) }
-                    .sortedBy { it.first }
-                    .toList()
+                // Use LevelDB's sorted-key seek instead of scanning the entire DB.
+                // The menu categories all correspond to printable key prefixes.
+                val prefix = when (titleText) {
+                    "Multiplayer Players" -> "player_"
+                    "MCStructures" -> "structuretemplate_"
+                    "Map Data" -> "map_"
+                    "Village Data" -> "village_"
+                    else -> null
+                }
+
+                val names = if (prefix != null) {
+                    bridge.listKeysByPrefix(prefix)
+                        .asSequence()
+                        .map { it.displayName to it.rawKey }
+                        .filter { predicate(it.first) }
+                        .toList()
+                } else {
+                    // Fallback for any future category without a known prefix.
+                    bridge.listKeys()
+                        .asSequence()
+                        .map { it.displayName to it.rawKey }
+                        .filter { predicate(it.first) }
+                        .sortedBy { it.first }
+                        .toList()
+                }
 
                 synchronized(LevelDbSession.keyBytesByName) {
                     for ((name, rawKey) in names) LevelDbSession.keyBytesByName[name] = rawKey

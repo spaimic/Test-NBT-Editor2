@@ -38,6 +38,37 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
 
     fun read(rawKey: ByteArray): ByteArray? = db.get(rawKey)
 
+    /**
+     * Returns only keys beginning with [prefix].
+     *
+     * LevelDB keeps keys sorted, so seeking directly to the prefix means we do
+     * NOT walk the entire database. This is the important fast path for the
+     * multi-key lazy editors (players, structures, maps, villages).
+     */
+    fun listKeysByPrefix(prefix: String): List<KeyEntry> {
+        val prefixBytes = prefix.toByteArray(Charsets.UTF_8)
+        val out = ArrayList<KeyEntry>()
+        db.iterator().use { iterator ->
+            iterator.seek(prefixBytes)
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                val key = entry.key
+                if (!key.startsWithBytes(prefixBytes)) break
+                out.add(KeyEntry(decodeKeyName(key), key))
+            }
+        }
+        return out.sortedBy { it.displayName }
+    }
+
+    private fun ByteArray.startsWithBytes(prefix: ByteArray): Boolean {
+        if (size < prefix.size) return false
+        for (i in prefix.indices) {
+            if (this[i] != prefix[i]) return false
+        }
+        return true
+    }
+
+
     /** Direct lookup for printable Bedrock keys such as ~local_player, map_* and village_*.
      * This does not enumerate the database. Use it for lazy/on-demand access. */
     fun readName(name: String): ByteArray? = db.get(name.toByteArray(Charsets.UTF_8))
