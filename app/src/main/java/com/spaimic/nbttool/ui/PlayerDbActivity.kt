@@ -2,27 +2,30 @@ package com.spaimic.nbttool.ui
 
 import android.content.Intent
 import android.os.Bundle
+import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
-import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
 
 /**
- * Browses a local world's LevelDB `db/` folder — player, map, structure, etc.
- * data. Since the world already lives in this app's own sandbox, writes go
- * straight to the real file; no Shizuku, no push-back step. The db/ folder
- * actually holds ALL world data — a key per explored chunk of terrain being
- * the usual bulk of it — so this defaults to showing just what's normally
- * worth hand-editing: the local player, other player records, and structures.
+ * Lazy LevelDB browser.
+ *
+ * IMPORTANT: opening this screen must NOT enumerate the world's LevelDB.
+ * Bedrock's db/ contains chunk records, map_* records, village data, entities,
+ * structures, and many other keys. Enumerating all of them just to open the
+ * screen can take many seconds on a large world.
+ *
+ * Startup therefore only opens the DB and performs a direct lookup of
+ * ~local_player. "Browse all LevelDB keys" is an explicit user action and is
+ * the only operation here that performs a full key enumeration.
  */
 class PlayerDbActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
-    private lateinit var filterToggle: CheckBox
-    private var allDisplayNames: List<String> = emptyList()
+    private lateinit var browseButton: Button
     private var shownDisplayNames: List<String> = emptyList()
     private var isLoading = false
     private var worldDir: File? = null
@@ -30,28 +33,43 @@ class PlayerDbActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         val initialWorldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
         worldDir = initialWorldDir
-        title = "Player / Map / Village data"
+        title = "LevelDB — lazy access"
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        filterToggle = CheckBox(this).apply {
-            text = "Show everything (maps, villages, raw chunk data)"
-            isChecked = false
-            setOnCheckedChangeListener { _, checked ->
-                if (checked && !allKeysLoaded) loadAllKeysInBackground() else applyFilter()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        val info = TextView(this).apply {
+            text = "LevelDB data loads only when you open it. The full database is not scanned at startup."
+            setPadding(20, 18, 20, 12)
+        }
+
+        browseButton = Button(this).apply {
+            text = "Browse all LevelDB keys"
+            setOnClickListener {
+                if (!allKeysLoaded) loadAllKeysInBackground()
             }
         }
+
         listView = ListView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
+            )
         }
-        root.addView(filterToggle)
+
+        root.addView(info)
+        root.addView(browseButton)
         root.addView(listView)
         setContentView(root)
 
-        listView.setOnItemClickListener { _, _, position, _ -> openEntry(shownDisplayNames[position]) }
+        listView.setOnItemClickListener { _, _, position, _ ->
+            openEntry(shownDisplayNames[position])
+        }
 
-        openDbAndListKeys(initialWorldDir)
+        openDbLazily(initialWorldDir)
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
@@ -67,116 +85,149 @@ class PlayerDbActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
-    private fun isInterestingKey(name: String): Boolean =
-        name == "~local_player" ||
-            name.startsWith("player_") ||
-            name.startsWith("structuretemplate_")
-
-    private fun applyFilter() {
-        shownDisplayNames = if (filterToggle.isChecked) allDisplayNames else allDisplayNames.filter { isInterestingKey(it) }
-        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, shownDisplayNames)
-    }
-
-    private fun openDbAndListKeys(worldDir: File, preserveEdits: Boolean = false) {
+    /**
+     * Opens LevelDB but does not enumerate it. The only startup lookup is the
+     * well-known ~local_player key, which is a single O(1)-style DB get.
+     */
+    private fun openDbLazily(dir: File) {
         if (isLoading) return
         isLoading = true
+
         Thread {
             try {
-                if (preserveEdits) {
-                    try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
-                    LevelDbSession.keyBytesByName.clear()
-                } else {
-                    LevelDbSession.reset()
-                }
-                val bridge = LevelDbBridge.open(worldDir)
+                LevelDbSession.reset()
+                val bridge = LevelDbBridge.open(dir)
                 LevelDbSession.bridge = bridge
-                LevelDbSession.worldDir = worldDir
+                LevelDbSession.worldDir = dir
 
-                // Fast startup: only index the small set of entries that the normal
-                // screen displays. Raw chunk/village/map keys are deferred until the
-                // user explicitly asks for "Show everything". No 50 MB DB backup is
-                // made just by opening this screen; backup happens on Save.
-                val interesting = ArrayList<LevelDbBridge.KeyEntry>()
-                bridge.forEachRawKey { raw ->
-                    val name = bridge.decodeKeyName(raw)
-                    if (isInterestingKey(name)) interesting.add(LevelDbBridge.KeyEntry(name, raw))
+                val names = ArrayList<String>()
+                if (bridge.containsName("~local_player")) {
+                    LevelDbSession.keyBytesByName["~local_player"] =
+                        "~local_player".toByteArray(Charsets.UTF_8)
+                    names += "~local_player"
                 }
-                interesting.sortBy { it.displayName }
-                for (k in interesting) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+
                 runOnUiThread {
-                    allDisplayNames = interesting.map { it.displayName }
-                    allKeysLoaded = false
-                    applyFilter()
+                    shownDisplayNames = names
+                    listView.adapter = ArrayAdapter(
+                        this,
+                        android.R.layout.simple_list_item_1,
+                        shownDisplayNames
+                    )
                     isLoading = false
                 }
             } catch (e: Exception) {
                 isLoading = false
-                runOnUiThread { showErrorDialog(this, "Failed to open world DB", e) }
+                runOnUiThread {
+                    showErrorDialog(this, "Failed to open world DB", e)
+                }
             }
         }.start()
     }
 
+    /**
+     * Explicit full browse. This is intentionally NOT called during startup.
+     * It lists keys but does not read/parse their values until the user opens
+     * an individual entry.
+     */
     private fun loadAllKeysInBackground() {
         val bridge = LevelDbSession.bridge ?: return
+        if (isLoading) return
+
         isLoading = true
+        browseButton.isEnabled = false
+        browseButton.text = "Loading LevelDB keys…"
+
         Thread {
             try {
                 val keys = bridge.listKeys()
-                for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
-                allDisplayNames = keys.map { it.displayName }
+                for (k in keys) {
+                    LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+                }
+                val names = keys.map { it.displayName }
                 allKeysLoaded = true
+
                 runOnUiThread {
-                    applyFilter()
+                    shownDisplayNames = names
+                    listView.adapter = ArrayAdapter(
+                        this,
+                        android.R.layout.simple_list_item_1,
+                        shownDisplayNames
+                    )
+                    browseButton.text = "LevelDB keys loaded (${names.size})"
                     isLoading = false
                 }
             } catch (e: Exception) {
                 isLoading = false
                 runOnUiThread {
-                    filterToggle.isChecked = false
-                    showErrorDialog(this, "Couldn't load all DB keys", e)
+                    browseButton.isEnabled = true
+                    browseButton.text = "Browse all LevelDB keys"
+                    showErrorDialog(this, "Couldn't load LevelDB keys", e)
                 }
             }
         }.start()
     }
 
-    private fun ensureBackup() {
-        val dir = worldDir ?: return
-        try {
-            LevelDbBridge.backup(dir, LocalWorldStore.backupsDir(this))
-        } catch (e: Exception) {
-            throw IllegalStateException("Couldn't create DB backup before saving", e)
-        }
-    }
-
+    /**
+     * Values are loaded only after the user taps a key.
+     */
     private fun openEntry(displayName: String) {
+        if (isLoading) return
+        isLoading = true
+
         Thread {
             try {
+                val bridge = LevelDbSession.bridge
+                    ?: throw IllegalStateException("LevelDB is not open")
+
                 if (!LevelDbSession.loadedEntries.containsKey(displayName)) {
-                    val rawKey = LevelDbSession.keyBytesByName[displayName]!!
-                    val bytes = LevelDbSession.bridge!!.read(rawKey)
-                        ?: throw IllegalStateException("key vanished from DB")
-                    LevelDbSession.loadedEntries[displayName] = NbtIO.readRootCompoundNoHeader(bytes)
+                    val rawKey = LevelDbSession.keyBytesByName[displayName]
+                        ?: displayName.toByteArray(Charsets.UTF_8)
+
+                    val bytes = bridge.read(rawKey)
+                        ?: throw IllegalStateException("Key "$displayName" was not found")
+
+                    LevelDbSession.loadedEntries[displayName] =
+                        NbtIO.readRootCompoundNoHeader(bytes)
                 }
+
                 runOnUiThread {
+                    isLoading = false
                     val i = Intent(this, DbEntryEditorActivity::class.java)
                     i.putExtra(DbEntryEditorActivity.EXTRA_DISPLAY_NAME, displayName)
                     startActivity(i)
                 }
             } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Couldn't parse \"$displayName\"", e) }
+                isLoading = false
+                runOnUiThread {
+                    showErrorDialog(this, "Couldn't parse "$displayName"", e)
+                }
             }
         }.start()
     }
 
+    /**
+     * Save only entries the user actually opened/edited. No full DB backup or
+     * full DB read is performed here.
+     */
     private fun saveAll() {
         if (LevelDbSession.bridge == null) return
+
         Thread {
             try {
-                ensureBackup()
                 LevelDbSession.saveAllLoadedEntries()
-                runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "Saved ${LevelDbSession.loadedEntries.size} loaded entr" +
+                            if (LevelDbSession.loadedEntries.size == 1) "y." else "ies.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
             } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Save failed (your edits are still kept — safe to retry)", e) }
+                runOnUiThread {
+                    showErrorDialog(this, "Save failed", e)
+                }
             }
         }.start()
     }
@@ -185,6 +236,7 @@ class PlayerDbActivity : AppCompatActivity() {
         super.onDestroy()
         if (isFinishing) {
             try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
+            LevelDbSession.bridge = null
         }
     }
 

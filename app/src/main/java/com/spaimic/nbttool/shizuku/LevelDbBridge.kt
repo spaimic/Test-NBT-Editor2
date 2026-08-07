@@ -37,6 +37,12 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
     }
 
     fun read(rawKey: ByteArray): ByteArray? = db.get(rawKey)
+\n    /** Direct lookup for printable Bedrock keys such as ~local_player, map_* and village_*.
+     * This does not enumerate the database. Use it for lazy/on-demand access. */
+    fun readName(name: String): ByteArray? = db.get(name.toByteArray(Charsets.UTF_8))
+
+    /** Returns whether a printable key exists, without scanning the database. */
+    fun containsName(name: String): Boolean = readName(name) != null
 
     fun write(rawKey: ByteArray, value: ByteArray) = db.put(rawKey, value)
 
