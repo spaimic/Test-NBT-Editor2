@@ -28,7 +28,6 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private lateinit var mapView: MapView
     private lateinit var coordText: TextView
-    private var dbBackupReady = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,16 +70,30 @@ class MapViewerActivity : AppCompatActivity() {
         loadAndScan()
     }
 
+    private var chunkIndex: com.spaimic.nbttool.chunk.ChunkIndex? = null
+    private val requestedChunks = HashSet<Pair<Int, Int>>()
+    private val loadedChunks = HashSet<Pair<Int, Int>>()
+    private val loadingChunks = HashSet<Pair<Int, Int>>()
+    private val mapExecutor = java.util.concurrent.Executors.newFixedThreadPool(4)
+    private val markerLock = Any()
+    private val loadedEntityMarkers = ArrayList<MapView.MarkerDraw>()
+    private val loadedBlockEntityMarkers = ArrayList<MapView.MarkerDraw>()
+    private var backupCreated = false
+
     private fun loadAndScan() {
         Thread {
             try {
                 LevelDbSession.reset()
-                dbBackupReady = false
+                // IMPORTANT: do not copy the entire db/ just to open the map.
+                // A backup is created lazily immediately before the first destructive edit.
                 val bridge = LevelDbBridge.open(worldDir)
                 LevelDbSession.bridge = bridge
                 LevelDbSession.worldDir = worldDir
-                val keys = bridge.listKeys()
+
+                val keys = bridge.listKeys() // keys only; values are NOT read here
                 for (k in keys) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
+                val index = com.spaimic.nbttool.chunk.ChunkIndex.fromKeys(keys)
+                chunkIndex = index
 
                 val playerPos = LevelDbSession.keyBytesByName["~local_player"]?.let { rawKey ->
                     try {
@@ -90,34 +103,87 @@ class MapViewerActivity : AppCompatActivity() {
                         val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
                         val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
                         if (x != null && z != null) x.toInt() to z.toInt() else null
-                    } catch (e: Exception) {
-                        null // fine — the map just falls back to bounding-box centering
-                    }
+                    } catch (_: Exception) { null }
                 }
 
-                val scanResult = ChunkScanner.scanOverworld(bridge)
-                val entityMarkerDraws = scanResult.entityMarkers.map {
-                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                val center = playerPos ?: index.chunkPositions.takeIf { it.isNotEmpty() }?.let {
+                    val xs = it.map { p -> p.first }.sorted()
+                    val zs = it.map { p -> p.second }.sorted()
+                    xs[xs.size / 2] * 16 + 8 to zs[zs.size / 2] * 16 + 8
                 }
-                val blockEntityMarkerDraws = scanResult.blockEntityMarkers.map {
-                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
-                }
+
                 runOnUiThread {
-                    mapView.preferredCenterBlock = playerPos
-                    mapView.chunkData = scanResult.grid
-                    mapView.entityMarkers = entityMarkerDraws
-                    mapView.blockEntityMarkers = blockEntityMarkerDraws
-                    reportScanStats(scanResult.stats)
+                    mapView.preferredCenterBlock = center
+                    mapView.clearChunkData()
+                    mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
+                    coordText.text = "Loading visible chunks…"
+                    mapView.refreshVisibleChunks()
                 }
             } catch (e: OutOfMemoryError) {
-                runOnUiThread {
-                    showErrorDialog(this, "Ran out of memory scanning this world",
-                        Exception("The map view couldn't hold this world's chunk data in memory. Very large/heavily-explored worlds may be too big for this first version of the map viewer — the rest of the app (level.dat, player data, structures) still works fine via the ☰ menu options.", e))
-                }
+                runOnUiThread { showErrorDialog(this, "Out of memory opening world", Exception("The map index could not be created.", e)) }
             } catch (e: Throwable) {
-                runOnUiThread { showErrorDialog(this, "Failed to load world map", e) }
+                runOnUiThread { showErrorDialog(this, "Failed to open world map", e) }
             }
         }.start()
+    }
+
+
+    private fun requestVisibleChunks(positions: Set<Pair<Int, Int>>) {
+        val bridge = LevelDbSession.bridge ?: return
+        val index = chunkIndex ?: return
+        val todo = ArrayList<Pair<Int, Int>>()
+
+        synchronized(loadingChunks) {
+            for (pos in positions) {
+                if (!index.hasChunk(pos.first, pos.second)) continue
+                if (loadedChunks.contains(pos) || loadingChunks.contains(pos)) continue
+                loadingChunks.add(pos)
+                todo.add(pos)
+            }
+        }
+        if (todo.isEmpty()) return
+
+        mapView.markLoading(todo.toSet())
+        for (pos in todo) {
+            mapExecutor.execute {
+                try {
+                    val unknown = HashSet<String>()
+                    val reasons = HashMap<String, Int>()
+                    val examples = HashMap<String, String>()
+                    val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunk(
+                        bridge, index, pos.first, pos.second, unknown, reasons, examples
+                    )
+                    runOnUiThread {
+                        synchronized(loadingChunks) {
+                            loadingChunks.remove(pos)
+                            loadedChunks.add(pos)
+                        }
+                        if (loaded != null) {
+                            mapView.setChunkData(mapOf(pos to loaded.grid))
+                            synchronized(markerLock) {
+                                loadedEntityMarkers.addAll(loaded.entityMarkers.map {
+                                    MapView.MarkerDraw(it.worldX, it.worldZ,
+                                        com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                                })
+                                loadedBlockEntityMarkers.addAll(loaded.blockEntityMarkers.map {
+                                    MapView.MarkerDraw(it.worldX, it.worldZ,
+                                        com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                                })
+                                mapView.entityMarkers = loadedEntityMarkers.toList()
+                                mapView.blockEntityMarkers = loadedBlockEntityMarkers.toList()
+                            }
+                        }
+                        mapView.markLoaded(setOf(pos))
+                        coordText.text = "X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
+                    }
+                } catch (e: Throwable) {
+                    runOnUiThread {
+                        synchronized(loadingChunks) { loadingChunks.remove(pos) }
+                        mapView.markLoaded(setOf(pos))
+                    }
+                }
+            }
+        }
     }
 
     private fun reportScanStats(stats: com.spaimic.nbttool.chunk.ScanStats) {
@@ -187,6 +253,17 @@ class MapViewerActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun ensureBackup() {
+        if (backupCreated) return
+        val bridge = LevelDbSession.bridge ?: return
+        try {
+            LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
+            backupCreated = true
+        } catch (e: Exception) {
+            throw IllegalStateException("Could not create the safety backup before editing the world.", e)
+        }
+    }
+
     private fun copyChunk(chunkX: Int, chunkZ: Int) {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
@@ -234,9 +311,10 @@ class MapViewerActivity : AppCompatActivity() {
         targetZ: Int,
         clipboard: ChunkClipboard.Entry
     ) {
+        val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                val bridge = ensureDbBackupAndReopen()
+                ensureBackup()
                 val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ)
                 runOnUiThread {
                     Toast.makeText(
@@ -259,8 +337,8 @@ class MapViewerActivity : AppCompatActivity() {
             .setMessage(
                 "This replaces every block in this chunk with air, from Y 320 down to " +
                     "Y -64, and removes every entity and block entity in it. This can't be " +
-                    "undone. A database backup will be created automatically before the " +
-                    "first destructive edit.\n\nType DELETE to confirm."
+                    "undone (though a backup of the world's database was taken when you " +
+                    "opened this map).\n\nType DELETE to confirm."
             )
             .setView(input)
             .setPositiveButton("Confirm") { _, _ ->
@@ -275,9 +353,10 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun deleteChunk(chunkX: Int, chunkZ: Int) {
+        val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                val bridge = ensureDbBackupAndReopen()
+                ensureBackup()
                 com.spaimic.nbttool.chunk.ChunkDeleter.clearChunkToAir(bridge, chunkX, chunkZ)
                 runOnUiThread { Toast.makeText(this, "Chunk cleared to air.", Toast.LENGTH_SHORT).show() }
                 rescanMap()
@@ -383,7 +462,7 @@ class MapViewerActivity : AppCompatActivity() {
         if (LevelDbSession.bridge == null) return
         Thread {
             try {
-                ensureDbBackupAndReopen()
+                ensureBackup()
                 LevelDbSession.saveAllLoadedEntries()
                 runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
                 rescanMap() // in case a pasted structure or edit changed visible terrain
@@ -394,50 +473,18 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun rescanMap() {
-        val bridge = LevelDbSession.bridge ?: return
-        Thread {
-            try {
-                val scanResult = ChunkScanner.scanOverworld(bridge)
-                val entityMarkerDraws = scanResult.entityMarkers.map {
-                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
-                }
-                val blockEntityMarkerDraws = scanResult.blockEntityMarkers.map {
-                    MapView.MarkerDraw(it.worldX, it.worldZ, com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
-                }
-                runOnUiThread {
-                    mapView.chunkData = scanResult.grid
-                    mapView.entityMarkers = entityMarkerDraws
-                    mapView.blockEntityMarkers = blockEntityMarkerDraws
-                }
-            } catch (e: Throwable) {
-                runOnUiThread { showErrorDialog(this, "Failed to refresh the map", e) }
-            }
-        }.start()
-    }
-
-
-    /**
-     * Backups used to be made while opening the Map Viewer, which meant a 50 MB
-     * world was copied before the map could even start scanning. Create the
-     * safety backup lazily on the first write instead. We close the LevelDB
-     * handle before copying so the backup is taken from a stable on-disk state,
-     * then reopen it and rebuild the raw-key index.
-     */
-    private fun ensureDbBackupAndReopen(): LevelDbBridge {
-        val current = LevelDbSession.bridge ?: throw IllegalStateException("World database is not open")
-        if (dbBackupReady) return current
-
-        try { current.close() } catch (_: Exception) {}
-        LevelDbSession.bridge = null
-        LevelDbBridge.backup(worldDir, LocalWorldStore.backupsDir(this))
-
-        val reopened = LevelDbBridge.open(worldDir)
-        LevelDbSession.bridge = reopened
-        LevelDbSession.worldDir = worldDir
-        LevelDbSession.keyBytesByName.clear()
-        for (k in reopened.listKeys()) LevelDbSession.keyBytesByName[k.displayName] = k.rawKey
-        dbBackupReady = true
-        return reopened
+        synchronized(loadingChunks) {
+            loadedChunks.clear()
+            loadingChunks.clear()
+        }
+        synchronized(markerLock) {
+            loadedEntityMarkers.clear()
+            loadedBlockEntityMarkers.clear()
+        }
+        mapView.clearChunkData()
+        mapView.entityMarkers = emptyList()
+        mapView.blockEntityMarkers = emptyList()
+        mapView.refreshVisibleChunks()
     }
 
     private fun openLevelDatEditor() {

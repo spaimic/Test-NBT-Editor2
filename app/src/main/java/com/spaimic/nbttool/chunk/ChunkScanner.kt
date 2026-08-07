@@ -5,10 +5,13 @@ import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import kotlin.math.abs
 
-/** Compact 16x16 map tile. Index = x * 16 + z. */
-data class ChunkMapData(val colors: IntArray, val surfaceY: IntArray)
+/** One rendered map column: the color to show, and the real block Y of its surface. */
+data class ColumnInfo(val color: Int, val surfaceY: Int)
 
+/** One entity's position + identifier, for drawing a marker on the map. */
 data class EntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val identifier: String)
+
+/** One block entity's position + id, for drawing a marker on the map. */
 data class BlockEntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val id: String)
 
 data class ScanStats(
@@ -23,132 +26,206 @@ data class ScanStats(
 )
 
 data class ScanResult(
-    val grid: Map<Pair<Int, Int>, ChunkMapData>,
+    val grid: Map<Pair<Int, Int>, Array<Array<ColumnInfo>>>,
     val stats: ScanStats,
     val entityMarkers: List<EntityMarker>,
     val blockEntityMarkers: List<BlockEntityMarker>
 )
 
+/**
+ * Lightweight index of an Overworld LevelDB.
+ *
+ * Building this index reads KEYS only. Values are read later, only for chunks
+ * that are inside the MapView viewport. This is the important distinction from
+ * the old scanner, which read every key/value pair and decoded every chunk before
+ * the map could appear.
+ */
+class ChunkIndex private constructor(
+    val chunkPositions: Set<Pair<Int, Int>>,
+    internal val subchunks: Map<Pair<Int, Int>, List<Pair<Int, ByteArray>>>,
+    internal val blockEntityKeys: Map<Pair<Int, Int>, ByteArray>,
+    internal val digpKeys: Map<Pair<Int, Int>, ByteArray>,
+    internal val actorKeys: Map<String, ByteArray>
+) {
+    fun hasChunk(x: Int, z: Int): Boolean = (x to z) in chunkPositions
+    fun subchunkCount(x: Int, z: Int): Int = subchunks[x to z]?.size ?: 0
+
+    companion object {
+        fun fromKeys(keys: List<LevelDbBridge.KeyEntry>): ChunkIndex {
+            val positions = HashSet<Pair<Int, Int>>()
+            val subs = HashMap<Pair<Int, Int>, MutableList<Pair<Int, ByteArray>>>()
+            val blockEntities = HashMap<Pair<Int, Int>, ByteArray>()
+            val digp = HashMap<Pair<Int, Int>, ByteArray>()
+            val actors = HashMap<String, ByteArray>()
+
+            for (entry in keys) {
+                val key = entry.rawKey
+                val info = ChunkKeys.parse(key)
+                if (info != null && info.dimension == 0) {
+                    val pos = info.chunkX to info.chunkZ
+                    positions.add(pos)
+                    when (info.tag) {
+                        ChunkKeys.TAG_SUBCHUNK_PREFIX -> {
+                            info.subChunkY?.let { y ->
+                                subs.getOrPut(pos) { ArrayList() }.add(y to key.copyOf())
+                            }
+                        }
+                        ChunkKeys.TAG_BLOCK_ENTITY -> blockEntities[pos] = key.copyOf()
+                    }
+                } else if (EntityKeys.isOverworldDigpKey(key)) {
+                    digp[EntityKeys.digpChunkXZ(key)] = key.copyOf()
+                } else if (EntityKeys.isActorPrefixKey(key)) {
+                    actors[EntityKeys.actorIdHex(key)] = key.copyOf()
+                }
+            }
+
+            // Highest Y first. We use the ordering to avoid decoding more subchunks
+            // than necessary for the top-down surface map.
+            for (list in subs.values) list.sortByDescending { it.first }
+            return ChunkIndex(positions, subs, blockEntities, digp, actors)
+        }
+    }
+}
+
 object ChunkScanner {
 
+    /**
+     * Kept for compatibility with older callers. The Map Viewer no longer uses this
+     * for initial loading because it would defeat lazy viewport loading.
+     */
     fun scanOverworld(bridge: LevelDbBridge): ScanResult {
-        // Keep all subchunk values grouped by chunk. We then process each chunk
-        // from its highest subchunk downward and stop as soon as all 256 columns
-        // have a surface. This fixes the old "only highest subchunk" bug while
-        // avoiding a full 3-D String array for every chunk.
-        val subchunksByChunk = HashMap<Pair<Int, Int>, MutableList<Pair<Int, ByteArray>>>()
-        val loadedChunks = HashSet<Pair<Int, Int>>()
-        val blockEntityValueByChunk = HashMap<Pair<Int, Int>, ByteArray>()
-        val digpValueByChunk = HashMap<Pair<Int, Int>, ByteArray>()
-        val actorValueByIdHex = HashMap<String, ByteArray>()
+        val index = ChunkIndex.fromKeys(bridge.listKeys())
+        val filtered = dropOutliers(index.chunkPositions)
+        val result = HashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
+        val entities = ArrayList<EntityMarker>()
+        val blockEntities = ArrayList<BlockEntityMarker>()
+        var parsed = 0
+        var missing = 0
+        val unknown = HashSet<String>()
+        val reasons = HashMap<String, Int>()
+        val examples = HashMap<String, String>()
+        for (pos in filtered) {
+            val loaded = loadChunk(bridge, index, pos.first, pos.second, unknown, reasons, examples)
+            if (loaded != null) {
+                result[pos] = loaded.grid
+                parsed++
+                entities.addAll(loaded.entityMarkers)
+                blockEntities.addAll(loaded.blockEntityMarkers)
+            } else {
+                result[pos] = emptyGrid()
+                missing++
+            }
+        }
+        val stats = ScanStats(index.chunkPositions.size, index.chunkPositions.size - filtered.size, missing, reasons.values.sum(),
+            parsed, unknown, reasons.entries.sortedByDescending { it.value }.take(8).map { it.key to it.value }, examples)
+        return ScanResult(result, stats, entities, blockEntities)
+    }
 
-        bridge.forEachRawEntry { key, value ->
-            val info = ChunkKeys.parse(key)
-            if (info != null && info.dimension == 0) {
-                val pos = info.chunkX to info.chunkZ
-                loadedChunks.add(pos)
-                when (info.tag) {
-                    ChunkKeys.TAG_SUBCHUNK_PREFIX -> if (info.subChunkY != null) {
-                        subchunksByChunk.getOrPut(pos) { ArrayList() }.add(info.subChunkY to value)
-                    }
-                    ChunkKeys.TAG_BLOCK_ENTITY -> blockEntityValueByChunk[pos] = value
+    data class LoadedChunk(
+        val grid: Array<Array<ColumnInfo>>,
+        val entityMarkers: List<EntityMarker>,
+        val blockEntityMarkers: List<BlockEntityMarker>
+    )
+
+    /**
+     * Reads one visible chunk only. Subchunks are decoded highest-to-lowest until
+     * all 256 X/Z columns have a non-air surface.
+     */
+    fun loadChunk(
+        bridge: LevelDbBridge,
+        index: ChunkIndex,
+        chunkX: Int,
+        chunkZ: Int,
+        unknownBlockNames: MutableSet<String> = HashSet(),
+        failureReasonCounts: MutableMap<String, Int> = HashMap(),
+        failureReasonExamples: MutableMap<String, String> = HashMap()
+    ): LoadedChunk? {
+        val pos = chunkX to chunkZ
+        if (!index.hasChunk(chunkX, chunkZ)) return null
+
+        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
+        val found = Array(16) { BooleanArray(16) }
+        var remaining = 256
+        var hadSuccessfulSubchunk = false
+
+        for ((subY, rawKey) in index.subchunks[pos].orEmpty()) {
+            if (remaining == 0) break
+            val bytes = bridge.read(rawKey) ?: continue
+            when (val parsed = SubChunkParser.parse(bytes)) {
+                is SubChunkParser.ParseResult.Failure -> {
+                    failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
+                    failureReasonExamples.putIfAbsent(parsed.reason, parsed.hexSample)
                 }
-            } else if (EntityKeys.isOverworldDigpKey(key)) {
-                digpValueByChunk[EntityKeys.digpChunkXZ(key)] = value
-            } else if (EntityKeys.isActorPrefixKey(key)) {
-                actorValueByIdHex[EntityKeys.actorIdHex(key)] = value
+                is SubChunkParser.ParseResult.Success -> {
+                    hadSuccessfulSubchunk = true
+                    val blocks = parsed.blocks
+                    for (x in 0 until 16) {
+                        for (z in 0 until 16) {
+                            if (found[x][z]) continue
+                            for (y in 15 downTo 0) {
+                                val name = blocks[x][z][y]
+                                if (name != "minecraft:air") {
+                                    if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                    grid[x][z] = ColumnInfo(BlockColors.colorFor(name), subY * 16 + y)
+                                    found[x][z] = true
+                                    remaining--
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        val filtered = dropOutliers(loadedChunks)
-        val outliersDropped = loadedChunks.size - filtered.size
+        if (!hadSuccessfulSubchunk) return null
 
-        var noSubchunkFound = 0
-        var parsedOk = 0
-        var parseFailures = 0
-        val unknownBlockNames = HashSet<String>()
-        val failureReasonCounts = HashMap<String, Int>()
-        val failureReasonExamples = HashMap<String, String>()
-        val result = HashMap<Pair<Int, Int>, ChunkMapData>(filtered.size)
-        val entityMarkers = ArrayList<EntityMarker>()
-        val blockEntityMarkers = ArrayList<BlockEntityMarker>()
-
-        for (pos in filtered) {
-            val colors = IntArray(256) { BlockColors.fallbackUnparsed }
-            val surfaceY = IntArray(256)
-            val filled = BooleanArray(256)
-            var filledCount = 0
-            var chunkParsed = false
-            val subchunks = subchunksByChunk[pos]
-
-            if (subchunks.isNullOrEmpty()) {
-                noSubchunkFound++
-            } else {
-                subchunks.sortByDescending { it.first }
-                for ((subY, bytes) in subchunks) {
-                    if (filledCount == 256) break
-                    when (val parseResult = SubChunkParser.fillTopSurface(bytes, subY, colors, surfaceY, filled, unknownBlockNames)) {
-                        is SubChunkParser.ParseResult.Failure -> {
-                            parseFailures++
-                            failureReasonCounts[parseResult.reason] = (failureReasonCounts[parseResult.reason] ?: 0) + 1
-                            failureReasonExamples.getOrPut(parseResult.reason) { parseResult.hexSample }
-                        }
-                        is SubChunkParser.ParseResult.Success -> {
-                            if (parseResult.newlyFilled > 0) chunkParsed = true
-                            filledCount += parseResult.newlyFilled
-                        }
-                    }
-                }
-                if (chunkParsed) parsedOk++
-            }
-
-            // Air-only columns are left with a neutral fallback. This can happen
-            // in chunks containing an empty vertical column, but it should never
-            // be confused with a completely unparsed chunk.
-            result[pos] = ChunkMapData(colors, surfaceY)
-
-            blockEntityValueByChunk[pos]?.let { bytes ->
-                try {
+        // Load markers only for this visible chunk. They are deliberately not part
+        // of the global initial scan.
+        val blockMarkers = ArrayList<BlockEntityMarker>()
+        index.blockEntityKeys[pos]?.let { key ->
+            try {
+                val bytes = bridge.read(key)
+                if (bytes != null) {
                     for (compound in NbtIO.readConcatenatedCompounds(bytes)) {
                         val id = (compound.entries["id"] as? NbtTag.Str)?.value ?: continue
                         val x = (compound.entries["x"] as? NbtTag.Int)?.value ?: continue
                         val y = (compound.entries["y"] as? NbtTag.Int)?.value ?: continue
                         val z = (compound.entries["z"] as? NbtTag.Int)?.value ?: continue
-                        blockEntityMarkers.add(BlockEntityMarker(x, y, z, id))
+                        blockMarkers.add(BlockEntityMarker(x, y, z, id))
                     }
-                } catch (_: Exception) { }
-            }
-
-            digpValueByChunk[pos]?.let { digpValue ->
-                for (actorId in EntityKeys.splitActorIds(digpValue)) {
-                    val idHex = actorId.joinToString("") { "%02x".format(it) }
-                    val bytes = actorValueByIdHex[idHex] ?: continue
-                    try {
-                        val compound = NbtIO.readRootCompoundNoHeader(bytes)
-                        val identifier = (compound.entries["identifier"] as? NbtTag.Str)?.value ?: continue
-                        val posTag = compound.entries["Pos"] as? NbtTag.ListTag ?: continue
-                        val px = (posTag.items.getOrNull(0) as? NbtTag.Float)?.value ?: continue
-                        val py = (posTag.items.getOrNull(1) as? NbtTag.Float)?.value ?: continue
-                        val pz = (posTag.items.getOrNull(2) as? NbtTag.Float)?.value ?: continue
-                        entityMarkers.add(EntityMarker(px.toInt(), py.toInt(), pz.toInt(), identifier))
-                    } catch (_: Exception) { }
                 }
-            }
+            } catch (_: Exception) {}
         }
 
-        val topReasons = failureReasonCounts.entries.sortedByDescending { it.value }.take(8).map { it.key to it.value }
-        val stats = ScanStats(
-            loadedChunks.size,
-            outliersDropped,
-            noSubchunkFound,
-            parseFailures,
-            parsedOk,
-            unknownBlockNames,
-            topReasons,
-            failureReasonExamples
-        )
-        return ScanResult(result, stats, entityMarkers, blockEntityMarkers)
+        val entityMarkers = ArrayList<EntityMarker>()
+        index.digpKeys[pos]?.let { digpKey ->
+            try {
+                val digpValue = bridge.read(digpKey)
+                if (digpValue != null) {
+                    for (actorId in EntityKeys.splitActorIds(digpValue)) {
+                        val idHex = actorId.joinToString("") { "%02x".format(it) }
+                        val actorKey = index.actorKeys[idHex] ?: continue
+                        val bytes = bridge.read(actorKey) ?: continue
+                        try {
+                            val compound = NbtIO.readRootCompoundNoHeader(bytes)
+                            val identifier = (compound.entries["identifier"] as? NbtTag.Str)?.value ?: continue
+                            val posTag = compound.entries["Pos"] as? NbtTag.ListTag ?: continue
+                            val px = (posTag.items.getOrNull(0) as? NbtTag.Float)?.value ?: continue
+                            val py = (posTag.items.getOrNull(1) as? NbtTag.Float)?.value ?: continue
+                            val pz = (posTag.items.getOrNull(2) as? NbtTag.Float)?.value ?: continue
+                            entityMarkers.add(EntityMarker(px.toInt(), py.toInt(), pz.toInt(), identifier))
+                        } catch (_: Exception) {}
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        return LoadedChunk(grid, entityMarkers, blockMarkers)
     }
+
+    private fun emptyGrid() =
+        Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
 
     private fun dropOutliers(positions: Set<Pair<Int, Int>>): Set<Pair<Int, Int>> {
         if (positions.size <= 2) return positions
@@ -157,6 +234,8 @@ object ChunkScanner {
         val medianX = xs[xs.size / 2]
         val medianZ = zs[zs.size / 2]
         val maxChunkDistance = 2000
-        return positions.filter { (x, z) -> abs(x - medianX) <= maxChunkDistance && abs(z - medianZ) <= maxChunkDistance }.toSet()
+        return positions.filter { (x, z) ->
+            abs(x - medianX) <= maxChunkDistance && abs(z - medianZ) <= maxChunkDistance
+        }.toSet()
     }
 }
