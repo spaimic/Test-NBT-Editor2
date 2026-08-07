@@ -151,7 +151,7 @@ class MapViewerActivity : AppCompatActivity() {
 
         synchronized(loadingChunks) {
             for (pos in positions) {
-                if (index != null && !index.hasChunk(pos.first, pos.second)) continue
+                // Do not require a global chunk index here: visible chunks are queried directly from LevelDB.
                 if (loadedChunks.contains(pos) || loadingChunks.contains(pos)) continue
                 loadingChunks.add(pos)
                 todo.add(pos)
