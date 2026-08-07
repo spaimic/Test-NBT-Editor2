@@ -30,7 +30,8 @@ class PlayerDbActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
+        val initialWorldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
+        worldDir = initialWorldDir
         title = "Player / Map / Village data"
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -50,7 +51,7 @@ class PlayerDbActivity : AppCompatActivity() {
 
         listView.setOnItemClickListener { _, _, position, _ -> openEntry(shownDisplayNames[position]) }
 
-        openDbAndListKeys(worldDir)
+        openDbAndListKeys(initialWorldDir)
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
