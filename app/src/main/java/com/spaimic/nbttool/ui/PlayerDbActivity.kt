@@ -185,7 +185,7 @@ class PlayerDbActivity : AppCompatActivity() {
                         ?: displayName.toByteArray(Charsets.UTF_8)
 
                     val bytes = bridge.read(rawKey)
-                        ?: throw IllegalStateException("Key "$displayName" was not found")
+                        ?: throw IllegalStateException("Key \"$displayName\" was not found")
 
                     LevelDbSession.loadedEntries[displayName] =
                         NbtIO.readRootCompoundNoHeader(bytes)
@@ -200,7 +200,7 @@ class PlayerDbActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 isLoading = false
                 runOnUiThread {
-                    showErrorDialog(this, "Couldn't parse "$displayName"", e)
+                    showErrorDialog(this, "Couldn't parse \"$displayName\"", e)
                 }
             }
         }.start()
