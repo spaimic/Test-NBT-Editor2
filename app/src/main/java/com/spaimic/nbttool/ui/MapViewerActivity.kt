@@ -374,51 +374,109 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun showMenu() {
-        // Building the menu itself must perform ZERO LevelDB enumeration or value reads.
-        // Availability/counts are intentionally discovered only after the user taps an item.
-        val options = listOf(
-            "Local Player (~local_player)",
-            "Multiplayer Players",
-            "MCStructures",
-            "Map Data (map_*)",
-            "Village Data",
-            "Ticking Areas",
-            (if (mapView.showEntityIcons) "Hide" else "Show") + " Entity Icons",
-            (if (mapView.showTileEntityIcons) "Hide" else "Show") + " Tile Entity Icons",
-            "World settings (level.dat)",
-            "Advanced: browse non-chunk DB keys"
-        )
+    private var showMapDataInMenu = true
 
-        AlertDialog.Builder(this)
-            .setItems(options.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> openLocalPlayerLazily()
-                    1 -> showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_") }
-                    2 -> showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") }
-                    3 -> showKeyPickerLazily("Map Data") { it.startsWith("map_") }
-                    4 -> showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_") }
-                    5 -> showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") }
-                    6 -> {
-                        mapView.showEntityIcons = !mapView.showEntityIcons
-                        mapView.invalidate()
-                    }
-                    7 -> {
-                        mapView.showTileEntityIcons = !mapView.showTileEntityIcons
-                        mapView.invalidate()
-                    }
-                    8 -> openLevelDatEditor()
-                    9 -> openAllKeysBrowser()
+    private fun showMenu() {
+        // Only expose the LevelDB namespaces that have a useful dedicated editor.
+        // The full/extra browser remains available separately for unusual records.
+        val menuLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 12, 24, 12)
+        }
+
+        fun addAction(text: String, action: () -> Unit) {
+            val button = Button(this).apply {
+                this.text = text
+                setOnClickListener {
+                    menuDialog?.dismiss()
+                    action()
                 }
             }
-            .show()
+            menuLayout.addView(button, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
+
+        val mapCheck = CheckBox(this).apply {
+            text = "Show Map Data (map_*)"
+            isChecked = showMapDataInMenu
+            setOnCheckedChangeListener { _, checked -> showMapDataInMenu = checked }
+        }
+        menuLayout.addView(mapCheck)
+
+        addAction("Local Player (~local_player)") { openLocalPlayerLazily() }
+        addAction("Multiplayer Players (player_*)") {
+            showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_") && !it.startsWith("player_server_") }
+        }
+        addAction("Server Players (player_server_*)") {
+            showKeyPickerLazily("Server Players") { it.startsWith("player_server_") }
+        }
+        addAction("MCStructures (structuretemplate_*)") {
+            showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") }
+        }
+        if (showMapDataInMenu) {
+            addAction("Map Data (map_*)") {
+                showKeyPickerLazily("Map Data") { it.startsWith("map_") }
+            }
+        }
+        addAction("Village Data (VILLAGE_Overworld_*)") {
+            showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_Overworld_") }
+        }
+        addAction("Ticking Areas (tickingarea_*)") {
+            showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") }
+        }
+        addAction("Nether NBT") { openExactDbEntryLazily("Nether") }
+        addAction("Overworld NBT") { openExactDbEntryLazily("Overworld") }
+        addAction("The End NBT") { openExactDbEntryLazily("TheEnd") }
+        addAction("AutonomousEntities") { openExactDbEntryLazily("AutonomousEntities") }
+        addAction("LevelChunkMetaDataDictionary") { openExactDbEntryLazily("LevelChunkMetaDataDictionary") }
+        addAction("WorldClocks") { openExactDbEntryLazily("WorldClocks") }
+        addAction("mobevents") { openExactDbEntryLazily("mobevents") }
+        addAction("portals") { openExactDbEntryLazily("portals") }
+        addAction("schedulerWT") { openExactDbEntryLazily("schedulerWT") }
+        addAction("scoreboard") { openExactDbEntryLazily("scoreboard") }
+        addAction((if (mapView.showEntityIcons) "Hide" else "Show") + " Entity Icons") {
+            mapView.showEntityIcons = !mapView.showEntityIcons
+            mapView.invalidate()
+        }
+        addAction((if (mapView.showTileEntityIcons) "Hide" else "Show") + " Tile Entity Icons") {
+            mapView.showTileEntityIcons = !mapView.showTileEntityIcons
+            mapView.invalidate()
+        }
+        addAction("World settings (level.dat)") { openLevelDatEditor() }
+        addAction("Advanced: Browse Extra DB Keys") { openAllKeysBrowser() }
+
+        menuDialog = AlertDialog.Builder(this)
+            .setTitle("World Data")
+            .setView(menuLayout)
+            .setNegativeButton("Close", null)
+            .create()
+        menuDialog?.show()
+    }
+
+    private var menuDialog: AlertDialog? = null
+
+    private fun openExactDbEntryLazily(displayName: String) {
+        Thread {
+            try {
+                val bridge = LevelDbSession.ensureOpen(worldDir)
+                val rawKey = displayName.toByteArray(Charsets.UTF_8)
+                val bytes = bridge.read(rawKey)
+                    ?: throw IllegalStateException("No $displayName data exists in this world")
+                LevelDbSession.keyBytesByName[displayName] = rawKey
+                LevelDbSession.loadedEntries[displayName] = NbtIO.readRootCompoundNoHeader(bytes)
+                runOnUiThread { openEntry(displayName) }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Couldn't load $displayName", e) }
+            }
+        }.start()
     }
 
     private fun openLocalPlayerLazily() {
         Thread {
             try {
-                val bridge = LevelDbSession.bridge
-                    ?: throw IllegalStateException("World database isn't open")
+                val bridge = LevelDbSession.ensureOpen(worldDir)
                 val rawKey = "~local_player".toByteArray(Charsets.UTF_8)
                 val bytes = bridge.read(rawKey)
                     ?: throw IllegalStateException("No ~local_player data exists in this world")
@@ -455,13 +513,13 @@ class MapViewerActivity : AppCompatActivity() {
         Thread {
             try {
                 // Use LevelDB's sorted-key seeks instead of scanning the entire DB.
-                // Village records use uppercase VILLAGE_ prefixes in Bedrock, and
-                // tickingarea records use the lowercase tickingarea_ prefix.
+                // Prefixes are deliberately limited to the dedicated lazy editors exposed by the menu.
                 val prefixes = when (titleText) {
                     "Multiplayer Players" -> listOf("player_")
+                    "Server Players" -> listOf("player_server_")
                     "MCStructures" -> listOf("structuretemplate_")
                     "Map Data" -> listOf("map_")
-                    "Village Data" -> listOf("VILLAGE_")
+                    "Village Data" -> listOf("VILLAGE_Overworld_")
                     "Ticking Areas" -> listOf("tickingarea_")
                     else -> emptyList()
                 }
@@ -512,7 +570,7 @@ class MapViewerActivity : AppCompatActivity() {
             try {
                 if (!LevelDbSession.loadedEntries.containsKey(displayName)) {
                     val rawKey = LevelDbSession.keyBytesByName[displayName]!!
-                    val bytes = LevelDbSession.bridge!!.read(rawKey) ?: throw IllegalStateException("key vanished from DB")
+                    val bytes = LevelDbSession.ensureOpen(worldDir).read(rawKey) ?: throw IllegalStateException("key vanished from DB")
                     LevelDbSession.loadedEntries[displayName] = NbtIO.readRootCompoundNoHeader(bytes)
                 }
                 runOnUiThread {

@@ -3,6 +3,8 @@ package com.spaimic.nbttool.ui
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
@@ -34,25 +36,38 @@ class PlayerDbActivity : AppCompatActivity() {
     private var isLoading = false
     private var worldDir: File? = null
     private var allKeysLoaded = false
+    private val keepAliveHandler = Handler(Looper.getMainLooper())
+    private val keepAliveRunnable = object : Runnable {
+        override fun run() {
+            val dir = worldDir
+            if (dir != null) {
+                Thread {
+                    try { LevelDbSession.ensureOpen(dir).containsName("~local_player") }
+                    catch (_: Throwable) { /* next tick will reopen if necessary */ }
+                }.start()
+            }
+            if (!isFinishing) keepAliveHandler.postDelayed(this, 10_000L)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         val initialWorldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
         worldDir = initialWorldDir
-        title = "LevelDB — lazy access"
+        title = "Advanced: Browse Extra DB Keys"
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
         val info = TextView(this).apply {
-            text = "LevelDB data loads only when you open it. The full database is not scanned at startup."
+            text = "Extra LevelDB records only. Dedicated world data, players, structures, maps, villages, and chunk/entity records are handled elsewhere."
             setPadding(20, 18, 20, 12)
         }
 
         browseButton = Button(this).apply {
-            text = "Browse LevelDB keys (chunk records hidden)"
+            text = "Browse Extra DB Keys"
             setOnClickListener {
                 if (!allKeysLoaded) loadAllKeysInBackground()
             }
@@ -109,10 +124,7 @@ class PlayerDbActivity : AppCompatActivity() {
 
         Thread {
             try {
-                LevelDbSession.reset()
-                val bridge = LevelDbBridge.open(dir)
-                LevelDbSession.bridge = bridge
-                LevelDbSession.worldDir = dir
+                val bridge = LevelDbSession.ensureOpen(dir)
 
                 val names = ArrayList<String>()
                 if (bridge.containsName("~local_player")) {
@@ -146,12 +158,12 @@ class PlayerDbActivity : AppCompatActivity() {
      * coordinate/tag chunk formats are filtered out.
      */
     private fun loadAllKeysInBackground() {
-        val bridge = LevelDbSession.bridge ?: return
+        val bridge = LevelDbSession.ensureOpen(worldDir ?: return)
         if (isLoading) return
 
         isLoading = true
         browseButton.isEnabled = false
-        browseButton.text = "Loading non-chunk LevelDB keys…"
+        browseButton.text = "Loading Extra DB Keys…"
 
         Thread {
             try {
@@ -169,14 +181,14 @@ class PlayerDbActivity : AppCompatActivity() {
                         android.R.layout.simple_list_item_1,
                         shownDisplayNames
                     )
-                    browseButton.text = "Non-chunk keys loaded (${names.size})"
+                    browseButton.text = "Extra DB keys loaded (${names.size})"
                     isLoading = false
                 }
             } catch (e: Exception) {
                 isLoading = false
                 runOnUiThread {
                     browseButton.isEnabled = true
-                    browseButton.text = "Browse LevelDB keys (chunk records hidden)"
+                    browseButton.text = "Browse Extra DB Keys"
                     showErrorDialog(this, "Couldn't load LevelDB keys", e)
                 }
             }
@@ -190,8 +202,13 @@ class PlayerDbActivity : AppCompatActivity() {
      */
     private fun exportAllKeyNames() {
         if (isLoading) return
-        if (LevelDbSession.bridge == null) {
-            Toast.makeText(this, "LevelDB is not open yet.", Toast.LENGTH_SHORT).show()
+        val dir = worldDir
+        if (dir == null) {
+            Toast.makeText(this, "World path is missing.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try { LevelDbSession.ensureOpen(dir) } catch (e: Exception) {
+            showErrorDialog(this, "LevelDB isn't available", e)
             return
         }
 
@@ -211,7 +228,7 @@ class PlayerDbActivity : AppCompatActivity() {
     }
 
     private fun exportKeyNamesToUri(uri: Uri) {
-        val bridge = LevelDbSession.bridge ?: return
+        val bridge = LevelDbSession.ensureOpen(worldDir ?: return)
         if (isLoading) return
 
         isLoading = true
@@ -266,8 +283,7 @@ class PlayerDbActivity : AppCompatActivity() {
 
         Thread {
             try {
-                val bridge = LevelDbSession.bridge
-                    ?: throw IllegalStateException("LevelDB is not open")
+                val bridge = LevelDbSession.ensureOpen(worldDir ?: throw IllegalStateException("World path is missing"))
 
                 if (!LevelDbSession.loadedEntries.containsKey(displayName)) {
                     val rawKey = LevelDbSession.keyBytesByName[displayName]
@@ -321,12 +337,22 @@ class PlayerDbActivity : AppCompatActivity() {
         }.start()
     }
 
+    override fun onResume() {
+        super.onResume()
+        keepAliveHandler.removeCallbacks(keepAliveRunnable)
+        keepAliveHandler.postDelayed(keepAliveRunnable, 10_000L)
+    }
+
+    override fun onPause() {
+        keepAliveHandler.removeCallbacks(keepAliveRunnable)
+        super.onPause()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        if (isFinishing) {
-            try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
-            LevelDbSession.bridge = null
-        }
+        // Do not close the shared LevelDB here. The map viewer and other editors
+        // may still be using the same session, and ensureOpen() can recover a stale handle.
+
     }
 
     companion object {

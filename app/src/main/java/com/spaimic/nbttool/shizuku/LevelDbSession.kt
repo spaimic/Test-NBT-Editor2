@@ -18,6 +18,27 @@ object LevelDbSession {
     /** display name -> parsed (and possibly since-edited) compound */
     val loadedEntries = LinkedHashMap<String, NbtTag.Compound>()
 
+
+    /** Returns the active DB, reopening it if a previous activity closed or lost it. */
+    @Synchronized
+    fun ensureOpen(dir: File): LevelDbBridge {
+        val current = bridge
+        if (current != null) {
+            try {
+                // A tiny metadata lookup verifies that the handle is still usable.
+                current.containsName("~local_player")
+                worldDir = dir
+                return current
+            } catch (_: Throwable) {
+                try { current.close() } catch (_: Throwable) {}
+                bridge = null
+            }
+        }
+        val reopened = LevelDbBridge.open(dir)
+        bridge = reopened
+        worldDir = dir
+        return reopened
+    }
     fun reset() {
         try { bridge?.close() } catch (_: Exception) { /* already closed or never fully opened */ }
         bridge = null
