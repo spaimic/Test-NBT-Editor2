@@ -1,6 +1,5 @@
 package com.spaimic.nbttool.ui
 
-import android.app.AlertDialog
 import android.graphics.BitmapFactory
 import android.os.Bundle
 import android.view.ViewGroup
