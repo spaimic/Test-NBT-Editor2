@@ -28,11 +28,12 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private lateinit var mapView: MapView
     private lateinit var coordText: TextView
+    private var currentDimension = 0 // 0 Overworld, 1 Nether, 2 The End
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
-        title = LocalWorldStore.levelName(worldDir)
+        title = "${LocalWorldStore.levelName(worldDir)} — Overworld"
 
         val root = FrameLayout(this)
         mapView = MapView(this)
@@ -86,6 +87,20 @@ class MapViewerActivity : AppCompatActivity() {
                 rightMargin = 24
             }
         )
+
+        val dimensionButton = Button(this).apply {
+            text = "⋮"
+            textSize = 22f
+            setOnClickListener { showDimensionMenu() }
+        }
+        root.addView(
+            dimensionButton,
+            FrameLayout.LayoutParams(76, 72).apply {
+                gravity = Gravity.TOP or Gravity.END
+                topMargin = 104
+                rightMargin = 24
+            }
+        )
         setContentView(root)
 
         mapView.onTap = { x, y, z ->
@@ -133,7 +148,7 @@ class MapViewerActivity : AppCompatActivity() {
                     mapView.preferredCenterBlock = playerPos ?: (0 to 0)
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
-                    coordText.text = "Loading visible chunks…"
+                    coordText.text = "${dimensionName()} • Loading visible chunks…"
                     // IMPORTANT: do not enumerate LevelDB here. The database can contain
                     // thousands of chunk records plus map_*, village, player, structure,
                     // entity and other records. Every non-map feature discovers/reads its
@@ -150,6 +165,7 @@ class MapViewerActivity : AppCompatActivity() {
 
     private fun requestVisibleChunks(positions: Set<Pair<Int, Int>>) {
         val bridge = LevelDbSession.bridge ?: return
+        val dimensionForRequest = currentDimension
         val todo = ArrayList<Pair<Int, Int>>()
 
         synchronized(loadingChunks) {
@@ -172,9 +188,13 @@ class MapViewerActivity : AppCompatActivity() {
                     // Viewport loading deliberately uses direct LevelDB seeks.
                     // We never need a complete chunk index just to draw what is on screen.
                     val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
-                        bridge, pos.first, pos.second, unknown, reasons, examples
+                        bridge, pos.first, pos.second, unknown, reasons, examples, dimensionForRequest
                     )
                     runOnUiThread {
+                        if (currentDimension != dimensionForRequest) {
+                            synchronized(loadingChunks) { loadingChunks.remove(pos) }
+                            return@runOnUiThread
+                        }
                         synchronized(loadingChunks) {
                             loadingChunks.remove(pos)
                             loadedChunks.add(pos)
@@ -195,7 +215,7 @@ class MapViewerActivity : AppCompatActivity() {
                             }
                         }
                         mapView.markLoaded(setOf(pos))
-                        coordText.text = "X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
+                        coordText.text = "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
                     }
                 } catch (e: Throwable) {
                     runOnUiThread {
@@ -396,6 +416,51 @@ class MapViewerActivity : AppCompatActivity() {
                 runOnUiThread { showErrorDialog(this, "Failed to delete chunk", e) }
             }
         }.start()
+    }
+
+    private fun dimensionName(): String = when (currentDimension) {
+        1 -> "Nether"
+        2 -> "The End"
+        else -> "Overworld"
+    }
+
+    private fun showDimensionMenu() {
+        val names = arrayOf("Overworld", "Nether", "The End")
+        AlertDialog.Builder(this)
+            .setTitle("Switch Map Dimension")
+            .setSingleChoiceItems(names, currentDimension) { dialog, which ->
+                if (which != currentDimension) {
+                    currentDimension = which
+                    dialog.dismiss()
+                    switchMapDimension()
+                } else {
+                    dialog.dismiss()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun switchMapDimension() {
+        synchronized(loadingChunks) {
+            loadedChunks.clear()
+            loadingChunks.clear()
+        }
+        synchronized(markerLock) {
+            loadedEntityMarkers.clear()
+            loadedBlockEntityMarkers.clear()
+        }
+        mapView.clearChunkData()
+        mapView.entityMarkers = emptyList()
+        mapView.blockEntityMarkers = emptyList()
+        mapView.preferredCenterBlock = if (currentDimension == 0) {
+            mapView.preferredCenterBlock ?: (0 to 0)
+        } else {
+            0 to 0
+        }
+        title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
+        coordText.text = "${dimensionName()} • Loading visible chunks…"
+        mapView.refreshVisibleChunks()
     }
 
     private fun showMenu() {

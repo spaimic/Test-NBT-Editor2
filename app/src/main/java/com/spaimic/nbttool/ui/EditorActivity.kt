@@ -28,6 +28,7 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private lateinit var levelDatFile: File
     private var levelDat: NbtIO.LevelDat? = null
+    private var hasUnsavedChanges = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -73,8 +74,8 @@ class EditorActivity : AppCompatActivity() {
                 NbtJsonFileOps.launchExport(this, NbtJsonFileOps.sanitizeFileName(worldDir.name + "_level"))
                 return true
             }
-            MENU_UNDO -> { if (NbtHistory.undo(levelDat?.root ?: return true)) adapter.refresh(); return true }
-            MENU_REDO -> { if (NbtHistory.redo(levelDat?.root ?: return true)) adapter.refresh(); return true }
+            MENU_UNDO -> { if (NbtHistory.undo(levelDat?.root ?: return true)) { hasUnsavedChanges = true; adapter.refresh() }; return true }
+            MENU_REDO -> { if (NbtHistory.redo(levelDat?.root ?: return true)) { hasUnsavedChanges = true; adapter.refresh() }; return true }
             MENU_SEARCH -> { adapter.showGlobalSearch(); return true }
             MENU_IMPORT_JSON -> {
                 NbtJsonFileOps.launchImportPicker(this)
@@ -106,6 +107,7 @@ class EditorActivity : AppCompatActivity() {
                     dat.root.entries.clear()
                     dat.root.entries.putAll(imported.entries)
                     adapter.refresh()
+                    hasUnsavedChanges = true
                     Toast.makeText(this, "Imported. Tap Save to write it to level.dat.", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     showErrorDialog(this, "Import failed — nothing was changed", e)
@@ -130,7 +132,7 @@ class EditorActivity : AppCompatActivity() {
 
     private fun showTree() {
         val dat = levelDat ?: return
-        adapter = NbtTreeAdapter(this, dat.root) { row -> onLeafTapped(row) }
+        adapter = NbtTreeAdapter(this, dat.root, { row -> onLeafTapped(row) }) { hasUnsavedChanges = true }
         recycler.adapter = adapter
     }
 
@@ -165,6 +167,7 @@ class EditorActivity : AppCompatActivity() {
                     }
                     NbtHistory.recordBefore(levelDat?.root ?: return@setPositiveButton)
                     row.setValue(newTag)
+                    hasUnsavedChanges = true
                     adapter.refresh()
                 } catch (e: NumberFormatException) {
                     Toast.makeText(this, "Invalid value for ${NbtTag.typeName(tag.id)}", Toast.LENGTH_SHORT).show()
@@ -182,12 +185,48 @@ class EditorActivity : AppCompatActivity() {
 
             val bytes = NbtIO.writeLevelDat(dat)
             levelDatFile.writeBytes(bytes)
+            hasUnsavedChanges = false
             Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             showErrorDialog(this, "Save failed", e)
         }
     }
 
+
+    override fun onBackPressed() {
+        if (!hasUnsavedChanges) {
+            super.onBackPressed()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Unsaved changes")
+            .setMessage("You have unsaved changes. What would you like to do?")
+            .setPositiveButton("Save") { _, _ ->
+                saveAndFinishSafely()
+            }
+            .setNegativeButton("Discard") { _, _ ->
+                super.onBackPressed()
+            }
+            .setNeutralButton("Cancel", null)
+            .show()
+    }
+
+    private fun saveAndFinishSafely() {
+        Thread {
+            try {
+                val dat = levelDat ?: throw IllegalStateException("Nothing is loaded")
+                val backupFile = File(LocalWorldStore.backupsDir(this), "level_${worldDir.name}_${System.currentTimeMillis()}.dat.bak")
+                levelDatFile.copyTo(backupFile, overwrite = true)
+                levelDatFile.writeBytes(NbtIO.writeLevelDat(dat))
+                runOnUiThread {
+                    hasUnsavedChanges = false
+                    super@EditorActivity.onBackPressed()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { showErrorDialog(this, "Save failed — changes were not discarded", e) }
+            }
+        }.start()
+    }
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"

@@ -46,7 +46,8 @@ data class NbtRow(
 class NbtTreeAdapter(
     private val context: Context,
     private val root: NbtTag.Compound,
-    private val onLeafTapped: (NbtRow) -> Unit
+    private val onLeafTapped: (NbtRow) -> Unit,
+    private val onChanged: () -> Unit = {}
 ) : RecyclerView.Adapter<NbtTreeAdapter.VH>() {
 
     private val expanded = HashSet<String>()
@@ -255,6 +256,7 @@ class NbtTreeAdapter(
             is NbtContainer.InList -> c.list.items.removeAt(c.index)
         }
         refresh()
+        onChanged()
     }
 
     private fun promptRename(container: NbtContainer.InCompound) {
@@ -276,6 +278,7 @@ class NbtTreeAdapter(
                     container.compound.entries.putAll(rebuilt)
                 }
                 refresh()
+                onChanged()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -337,6 +340,7 @@ class NbtTreeAdapter(
                         NbtHistory.recordBefore(root)
                         target.entries[keyInput.text.toString().ifBlank { "value" }] = copy
                         refresh()
+                        onChanged()
                     }
                     .setNegativeButton("Cancel", null)
                     .show()
@@ -344,6 +348,7 @@ class NbtTreeAdapter(
             is NbtTag.ListTag -> {
                 if (target.items.isEmpty()) {
                     // an empty list has no established element type yet — adopt the pasted tag's type
+                    NbtHistory.recordBefore(root)
                     row.setValue(NbtTag.ListTag(copy.id, mutableListOf(copy)))
                 } else if (target.elementTypeId != copy.id) {
                     Toast.makeText(
@@ -357,6 +362,7 @@ class NbtTreeAdapter(
                     target.items.add(copy)
                 }
                 refresh()
+                onChanged()
             }
             else -> {}
         }
@@ -406,6 +412,7 @@ class NbtTreeAdapter(
                         NbtHistory.recordBefore(root)
                         target.items.add(newTag)
                         refresh()
+                        onChanged()
                     }
                     else -> {}
                 }

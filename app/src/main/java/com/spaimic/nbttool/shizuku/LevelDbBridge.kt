@@ -142,12 +142,9 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
         }
     }
 
-    /**
-     * Reads all Overworld subchunk records for one chunk using a single LevelDB
-     * iterator seek. This is much faster than probing every possible Y with db.get().
-     */
-    fun readOverworldSubchunks(chunkX: Int, chunkZ: Int): List<Pair<Int, ByteArray>> {
-        val prefix = ByteArray(9)
+    /** Reads all subchunk records for one chunk in the selected dimension using one LevelDB seek. */
+    fun readSubchunks(chunkX: Int, chunkZ: Int, dimension: Int = 0): List<Pair<Int, ByteArray>> {
+        val prefix = if (dimension == 0) ByteArray(9) else ByteArray(13)
         fun putI32LE(offset: Int, v: Int) {
             prefix[offset] = (v and 0xFF).toByte()
             prefix[offset + 1] = ((v ushr 8) and 0xFF).toByte()
@@ -156,7 +153,8 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
         }
         putI32LE(0, chunkX)
         putI32LE(4, chunkZ)
-        prefix[8] = 0x2F
+        if (dimension != 0) putI32LE(8, dimension)
+        prefix[prefix.lastIndex] = 0x2F
 
         val result = ArrayList<Pair<Int, ByteArray>>()
         db.iterator().use { iterator ->
@@ -164,21 +162,17 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
             while (iterator.hasNext()) {
                 val entry = iterator.next()
                 val key = entry.key
-                if (key.size != 10) break
-                var matches = true
-                for (i in prefix.indices) {
-                    if (key[i] != prefix[i]) {
-                        matches = false
-                        break
-                    }
-                }
-                if (!matches) break
-                result += (key[9].toInt()) to entry.value
+                if (key.size != prefix.size + 1) break
+                if (!key.copyOfRange(0, prefix.size).contentEquals(prefix)) break
+                result += key.last().toInt() to entry.value
             }
         }
         result.sortByDescending { it.first }
         return result
     }
+
+    fun readOverworldSubchunks(chunkX: Int, chunkZ: Int): List<Pair<Int, ByteArray>> =
+        readSubchunks(chunkX, chunkZ, 0)
 
     fun close() = db.close()
 

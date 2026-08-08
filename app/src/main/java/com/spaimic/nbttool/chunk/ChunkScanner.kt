@@ -179,9 +179,10 @@ object ChunkScanner {
         chunkZ: Int,
         unknownBlockNames: MutableSet<String> = HashSet(),
         failureReasonCounts: MutableMap<String, Int> = HashMap(),
-        failureReasonExamples: MutableMap<String, String> = HashMap()
+        failureReasonExamples: MutableMap<String, String> = HashMap(),
+        dimension: Int = 0
     ): LoadedChunk? {
-        val subchunks = bridge.readOverworldSubchunks(chunkX, chunkZ)
+        val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
         if (subchunks.isEmpty()) return null
 
         val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
@@ -189,7 +190,7 @@ object ChunkScanner {
         var remaining = 256
         var hadSuccessfulSubchunk = false
         val biomeData = try {
-            bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ))?.let { BiomeMapParser.parse(it) }
+            bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, dimension))?.let { BiomeMapParser.parse(it) }
         } catch (_: Exception) { null }
 
         for ((subY, bytes) in subchunks) {
@@ -227,7 +228,7 @@ object ChunkScanner {
         // index, so use the deterministic Bedrock keys for this one chunk.
         val blockMarkers = ArrayList<BlockEntityMarker>()
         try {
-            val bytes = bridge.read(ChunkKeys.blockEntityKey(chunkX, chunkZ))
+            val bytes = bridge.read(ChunkKeys.blockEntityKey(chunkX, chunkZ, dimension))
             if (bytes != null) {
                 for (compound in NbtIO.readConcatenatedCompounds(bytes)) {
                     val id = (compound.entries["id"] as? NbtTag.Str)?.value ?: continue
@@ -241,7 +242,7 @@ object ChunkScanner {
 
         val entityMarkers = ArrayList<EntityMarker>()
         try {
-            val digp = bridge.read(EntityKeys.digpKey(chunkX, chunkZ))
+            val digp = bridge.read(EntityKeys.digpKey(chunkX, chunkZ, dimension))
             if (digp != null) {
                 for (actorId in EntityKeys.splitActorIds(digp)) {
                     try {
