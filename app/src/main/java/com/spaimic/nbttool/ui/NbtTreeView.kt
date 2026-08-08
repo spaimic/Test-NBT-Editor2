@@ -131,11 +131,33 @@ class NbtTreeAdapter(
      * keeps navigation data from the source tree instead of from the current
      * UI state.
      */
+    /** A lossless path component. String keys are never encoded into a slash-delimited
+     * string, so unusual NBT names containing '/', '[', or ']' remain unambiguous. */
+    private sealed class PathPart {
+        data class Key(val value: String) : PathPart()
+        data class Index(val value: Int) : PathPart()
+    }
+
     private data class SearchMatch(
-        val path: String,
+        val path: List<PathPart>,
+        val displayPath: String,
         val label: String,
-        val ancestors: List<String>
+        val ancestors: List<List<PathPart>>
     )
+
+    private fun pathEquals(a: List<PathPart>, b: List<PathPart>): Boolean = a == b
+
+    private fun displayPath(path: List<PathPart>): String = buildString {
+        path.forEachIndexed { i, part ->
+            when (part) {
+                is PathPart.Key -> {
+                    if (i > 0) append('/')
+                    append(part.value)
+                }
+                is PathPart.Index -> append('[').append(part.value).append(']')
+            }
+        }
+    }
 
     fun showGlobalSearch() {
         val input = EditText(context).apply { hint = "Tag name or value" }
@@ -149,55 +171,48 @@ class NbtTreeAdapter(
 
                 val matches = ArrayList<SearchMatch>()
 
-                fun walk(tag: NbtTag, path: String, ancestors: List<String>) {
+                fun walk(tag: NbtTag, path: List<PathPart>, ancestors: List<List<PathPart>>) {
                     when (tag) {
                         is NbtTag.Compound -> {
                             for ((key, child) in tag.entries) {
-                                val p = if (path.isEmpty()) key else "$path/$key"
-                                val isMatch =
-                                    key.contains(query, true) ||
+                                val childPath = path + PathPart.Key(key)
+                                val isMatch = key.contains(query, true) ||
                                     summaryOf(child).contains(query, true)
-
                                 if (isMatch) {
                                     matches += SearchMatch(
-                                        path = p,
-                                        label = "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}",
+                                        path = childPath,
+                                        displayPath = displayPath(childPath),
+                                        label = "${displayPath(childPath)}  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}",
                                         ancestors = ancestors
                                     )
                                 }
-
                                 if (child is NbtTag.Compound || child is NbtTag.ListTag) {
-                                    walk(child, p, ancestors + p)
+                                    walk(child, childPath, ancestors + listOf(childPath))
                                 }
                             }
                         }
-
                         is NbtTag.ListTag -> {
                             tag.items.forEachIndexed { i, child ->
-                                val p = "$path[$i]"
+                                val childPath = path + PathPart.Index(i)
                                 val isMatch = summaryOf(child).contains(query, true)
-
                                 if (isMatch) {
                                     matches += SearchMatch(
-                                        path = p,
-                                        label = "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}",
+                                        path = childPath,
+                                        displayPath = displayPath(childPath),
+                                        label = "${displayPath(childPath)}  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}",
                                         ancestors = ancestors
                                     )
                                 }
-
                                 if (child is NbtTag.Compound || child is NbtTag.ListTag) {
-                                    walk(child, p, ancestors + p)
+                                    walk(child, childPath, ancestors + listOf(childPath))
                                 }
                             }
                         }
-
                         else -> Unit
                     }
                 }
 
-                // Search from the actual root, not from the currently-visible
-                // flattened rows. This guarantees collapsed branches are searchable.
-                walk(root, "", emptyList())
+                walk(root, emptyList(), emptyList())
 
                 if (matches.isEmpty()) {
                     AlertDialog.Builder(context)
@@ -215,8 +230,6 @@ class NbtTreeAdapter(
                 AlertDialog.Builder(context)
                     .setTitle(message)
                     .setItems(shown.map { it.label }.toTypedArray()) { _, which ->
-                        // The selected SearchMatch contains everything required to
-                        // navigate. Do not derive anything from RecyclerView positions.
                         jumpToSearchMatch(shown[which])
                     }
                     .setPositiveButton("Close", null)
@@ -227,42 +240,63 @@ class NbtTreeAdapter(
     }
 
     /**
-     * Navigates to a search result using its stable NBT path.
-     *
-     * 1. Expand the exact ancestor paths recorded during the search.
-     * 2. Rebuild the flattened tree.
-     * 3. Find the target by its stable path, never by an old adapter position.
-     * 4. Post the scroll until RecyclerView has applied the new dataset/layout.
+     * Navigate by the actual NBT path, not by a stale RecyclerView position.
+     * The operation deliberately has several phases because notifyDataSetChanged()
+     * does not synchronously rebuild/layout RecyclerView children.
      */
     private fun jumpToSearchMatch(match: SearchMatch) {
-        // Keep only valid container ancestors. The source-tree traversal already
-        // records these in order from the root toward the target.
-        expanded.addAll(match.ancestors)
+        // Expand every container on the path. Do not rely on the old visible rows.
+        for (ancestor in match.ancestors) {
+            val pathString = displayPath(ancestor)
+            // rows use the same canonical display path internally.
+            expanded.add(pathString)
+        }
 
+        // rows currently use canonical strings. Rebuild after all expansions are set.
         rebuild()
         notifyDataSetChanged()
         resizeForContent()
 
-        fun scrollToTarget() {
-            val rv = attachedRecyclerView ?: return
-            val index = rows.indexOfFirst { it.first == match.path }
-            if (index < 0) return
-
-            rv.post {
-                // Re-check after the posted layout pass. This prevents stale
-                // positions if RecyclerView has not consumed notifyDataSetChanged yet.
-                val currentIndex = rows.indexOfFirst { it.first == match.path }
-                if (currentIndex >= 0) {
-                    rv.layoutManager?.scrollToPosition(currentIndex)
-                }
-            }
+        val rv = attachedRecyclerView
+        if (rv == null) {
+            Toast.makeText(context, "Cannot navigate: NBT tree is not attached.", Toast.LENGTH_LONG).show()
+            return
         }
 
-        // One immediate attempt plus a second posted attempt handles both the
-        // adapter update and the RecyclerView layout pass.
-        scrollToTarget()
-        attachedRecyclerView?.postDelayed({ scrollToTarget() }, 80L)
+        // Repeatedly resolve the target after layout. This is intentionally not
+        // based on an adapter position captured before the tree was expanded.
+        var attempts = 0
+        fun resolveAndScroll() {
+            attempts++
+            rebuild()
+            val targetPath = displayPath(match.path)
+            val index = rows.indexOfFirst { it.first == targetPath }
+            if (index >= 0) {
+                notifyDataSetChanged()
+                rv.post {
+                    rv.layoutManager?.scrollToPositionWithOffset(index, 80)
+                    rv.post {
+                        rv.layoutManager?.scrollToPositionWithOffset(index, 80)
+                        highlightPath = targetPath
+                        notifyDataSetChanged()
+                    }
+                }
+                return
+            }
+            if (attempts < 8) {
+                rv.postDelayed({ resolveAndScroll() }, 50L)
+            } else {
+                Toast.makeText(
+                    context,
+                    "Could not locate search result after expanding:\n$targetPath",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        rv.post { resolveAndScroll() }
     }
+
+    private var highlightPath: String? = null
 
     inner class VH(val row: LinearLayout, val icon: ImageView, val text: TextView) : RecyclerView.ViewHolder(row)
 
@@ -290,6 +324,13 @@ class NbtTreeAdapter(
         holder.icon.setImageResource(NbtIcons.iconFor(row.tag))
         holder.text.text = "${row.label}: ${NbtTag.typeName(row.tag.id)} = $summary"
         holder.row.setPadding(24 + row.depth * 48, 20, 24, 20)
+        if (path == highlightPath) {
+            holder.row.alpha = 1.0f
+            holder.row.setBackgroundColor(0x66FFCC33)
+        } else {
+            holder.row.alpha = 1.0f
+            holder.row.setBackgroundColor(android.graphics.Color.TRANSPARENT)
+        }
 
         val isContainer = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag
         holder.row.setOnClickListener {
