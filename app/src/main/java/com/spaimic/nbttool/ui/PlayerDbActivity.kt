@@ -2,7 +2,6 @@ package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.view.ViewGroup
 import android.widget.*
@@ -11,8 +10,6 @@ import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import java.io.File
-import java.io.BufferedWriter
-import java.io.OutputStreamWriter
 
 /**
  * Lazy LevelDB browser.
@@ -30,7 +27,6 @@ class PlayerDbActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
     private lateinit var browseButton: Button
-    private lateinit var exportKeysButton: Button
     private var shownDisplayNames: List<String> = emptyList()
     private var isLoading = false
     private var worldDir: File? = null
@@ -57,11 +53,6 @@ class PlayerDbActivity : AppCompatActivity() {
             setOnClickListener { showAdvancedMenu() }
         }
 
-        exportKeysButton = Button(this).apply {
-            text = "DEBUG: Export ALL LevelDB key names (.txt)"
-            setOnClickListener { exportAllKeyNames() }
-        }
-
         listView = ListView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f
@@ -70,7 +61,6 @@ class PlayerDbActivity : AppCompatActivity() {
 
         root.addView(info)
         root.addView(browseButton)
-        root.addView(exportKeysButton)
         root.addView(listView)
         setContentView(root)
 
@@ -140,51 +130,73 @@ class PlayerDbActivity : AppCompatActivity() {
      * keys from other LevelDB namespaces are intentionally retained; only the
      * coordinate/tag chunk formats are filtered out.
      */
+    private val advancedCategories = arrayOf(
+        "~local_player",
+        "player_*",
+        "player_server_*",
+        "structuretemplate_*",
+        "map_*",
+        "VILLAGE_Overworld_*",
+        "Nether",
+        "Overworld",
+        "TheEnd",
+        "AutonomousEntities",
+        "WorldClocks",
+        "mobevents",
+        "portals",
+        "schedulerWT",
+        "scoreboard",
+        "tickingarea_*"
+    )
+
+    // Every currently supported extra-key category is visible by default.
+    private val hiddenAdvancedCategories = mutableSetOf<String>()
+
     private fun showAdvancedMenu() {
-        val options = arrayOf(
-            "~local_player",
-            "player_*",
-            "player_server_*",
-            "structuretemplate_*",
-            "map_*",
-            "VILLAGE_Overworld_*",
-            "Nether",
-            "Overworld",
-            "TheEnd",
-            "AutonomousEntities",
-            "LevelChunkMetaDataDictionary",
-            "WorldClocks",
-            "mobevents",
-            "portals",
-            "schedulerWT",
-            "scoreboard",
-            "tickingarea_*"
-        )
+        val checked = advancedCategories.map { !hiddenAdvancedCategories.contains(it) }.toBooleanArray()
 
         AlertDialog.Builder(this)
             .setTitle("Advanced: Browse Extra DB Keys")
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> openDirectKey("~local_player")
-                    1 -> showKeyPickerLazily("Player Data", { it.startsWith("player_") && !it.startsWith("player_server_") })
-                    2 -> showKeyPickerLazily("Server Player Data", { it.startsWith("player_server_") })
-                    3 -> showKeyPickerLazily("MCStructure Data", { it.startsWith("structuretemplate_") })
-                    4 -> showMapDataMenu()
-                    5 -> showKeyPickerLazily("Village Data (VILLAGE_Overworld_*)", { it.startsWith("VILLAGE_Overworld_") })
-                    6 -> openDirectKey("Nether")
-                    7 -> openDirectKey("Overworld")
-                    8 -> openDirectKey("TheEnd")
-                    9 -> openDirectKey("AutonomousEntities")
-                    10 -> openDirectKey("LevelChunkMetaDataDictionary")
-                    11 -> openDirectKey("WorldClocks")
-                    12 -> openDirectKey("mobevents")
-                    13 -> openDirectKey("portals")
-                    14 -> openDirectKey("schedulerWT")
-                    15 -> openDirectKey("scoreboard")
-                    16 -> showKeyPickerLazily("Ticking Areas (tickingarea_*)", { it.startsWith("tickingarea_") })
-                }
+            .setMultiChoiceItems(advancedCategories, checked) { _, which, isChecked ->
+                val category = advancedCategories[which]
+                if (isChecked) hiddenAdvancedCategories.remove(category)
+                else hiddenAdvancedCategories.add(category)
             }
+            .setPositiveButton("Open Visible") { _, _ ->
+                showVisibleAdvancedCategories()
+            }
+            .setNegativeButton("Close", null)
             .show()
+    }
+
+    private fun showVisibleAdvancedCategories() {
+        val visible = advancedCategories.filterNot { hiddenAdvancedCategories.contains(it) }
+        if (visible.isEmpty()) {
+            Toast.makeText(this, "All extra DB key categories are hidden.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Advanced: Browse Extra DB Keys")
+            .setItems(visible.toTypedArray()) { _, which ->
+                openAdvancedCategory(visible[which])
+            }
+            .setNegativeButton("Manage Visibility") { _, _ -> showAdvancedMenu() }
+            .show()
+    }
+
+    private fun openAdvancedCategory(category: String) {
+        when (category) {
+            "~local_player" -> openDirectKey("~local_player")
+            "player_*" -> showKeyPickerLazily("Player Data", { it.startsWith("player_") && !it.startsWith("player_server_") })
+            "player_server_*" -> showKeyPickerLazily("Server Player Data", { it.startsWith("player_server_") })
+            "structuretemplate_*" -> showKeyPickerLazily("MCStructure Data", { it.startsWith("structuretemplate_") })
+            "map_*" -> showMapDataMenu()
+            "VILLAGE_Overworld_*" -> showKeyPickerLazily("Village Data (VILLAGE_Overworld_*)", { it.startsWith("VILLAGE_Overworld_") })
+            "Nether", "Overworld", "TheEnd", "AutonomousEntities", "WorldClocks",
+            "mobevents", "portals", "schedulerWT", "scoreboard" -> openDirectKey(category)
+            "tickingarea_*" -> showKeyPickerLazily("Ticking Areas (tickingarea_*)", { it.startsWith("tickingarea_") })
+        }
     }
 
     private fun showMapDataMenu() {
@@ -303,79 +315,6 @@ class PlayerDbActivity : AppCompatActivity() {
     }
 
     /**
-     * Temporary debugging feature. Creates a text document containing every
-     * LevelDB key name, one per line. Values are NEVER read, decoded, or exported.
-     */
-    private fun exportAllKeyNames() {
-        if (isLoading) return
-        if (LevelDbSession.bridge == null) {
-            Toast.makeText(this, "LevelDB is not open yet.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "text/plain"
-            putExtra(Intent.EXTRA_TITLE, "leveldb_key_names.txt")
-        }
-        startActivityForResult(intent, REQUEST_EXPORT_KEY_NAMES)
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_EXPORT_KEY_NAMES || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
-        exportKeyNamesToUri(uri)
-    }
-
-    private fun exportKeyNamesToUri(uri: Uri) {
-        val bridge = LevelDbSession.bridge ?: return
-        if (isLoading) return
-
-        isLoading = true
-        exportKeysButton.isEnabled = false
-        exportKeysButton.text = "DEBUG: Exporting key names…"
-
-        Thread {
-            var count = 0
-            try {
-                val resolver = contentResolver
-                val output = resolver.openOutputStream(uri)
-                    ?: throw IllegalStateException("Couldn't open the selected file")
-
-                output.use { stream ->
-                    BufferedWriter(OutputStreamWriter(stream, Charsets.UTF_8), 64 * 1024).use { writer ->
-                        // Key-only scan: entry.value is never accessed.
-                        bridge.forEachRawKey { rawKey ->
-                            writer.write(bridge.decodeKeyName(rawKey))
-                            writer.newLine()
-                            count++
-                        }
-                    }
-                }
-
-                runOnUiThread {
-                    isLoading = false
-                    exportKeysButton.isEnabled = true
-                    exportKeysButton.text = "DEBUG: Export ALL LevelDB key names (.txt)"
-                    Toast.makeText(
-                        this,
-                        "Exported $count key names.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
-            } catch (e: Exception) {
-                isLoading = false
-                runOnUiThread {
-                    exportKeysButton.isEnabled = true
-                    exportKeysButton.text = "DEBUG: Export ALL LevelDB key names (.txt)"
-                    showErrorDialog(this, "Couldn't export LevelDB key names", e)
-                }
-            }
-        }.start()
-    }
-
-    /**
      * Values are loaded only after the user taps a key.
      */
     private fun openEntry(displayName: String) {
@@ -450,6 +389,5 @@ class PlayerDbActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
         private const val MENU_SAVE = 1
-        private const val REQUEST_EXPORT_KEY_NAMES = 2001
     }
 }
