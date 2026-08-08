@@ -85,32 +85,47 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
 
     private fun refreshWorldList() {
         Thread {
-            var dirs = ShizukuShell.listWorldDirs(ShizukuShell.WORLDS_PATH_STANDARD)
-            var basePath = ShizukuShell.WORLDS_PATH_STANDARD
-            if (dirs.isEmpty()) {
-                dirs = ShizukuShell.listWorldDirs(ShizukuShell.WORLDS_PATH_LEGACY)
-                basePath = ShizukuShell.WORLDS_PATH_LEGACY
-            }
-            val withLevelDat = dirs.filter { ShizukuShell.hasLevelDat(it, basePath) }
-            val fetched = mutableListOf<Pair<String, Pair<WorldRow, Long>>>()
-            withLevelDat.forEach { dir ->
-                val row = dir to readWorldRow(basePath, dir)
-                fetched += row
+            try {
+                var dirs = ShizukuShell.listWorldDirs(ShizukuShell.WORLDS_PATH_STANDARD)
+                var basePath = ShizukuShell.WORLDS_PATH_STANDARD
+                if (dirs.isEmpty()) {
+                    dirs = ShizukuShell.listWorldDirs(ShizukuShell.WORLDS_PATH_LEGACY)
+                    basePath = ShizukuShell.WORLDS_PATH_LEGACY
+                }
+
+                val withLevelDat = dirs.filter { ShizukuShell.hasLevelDat(it, basePath) }
+                val fetched = mutableListOf<Pair<String, Pair<WorldRow, Long>>>()
+
+                withLevelDat.forEach { dir ->
+                    try {
+                        val row = dir to readWorldRow(basePath, dir)
+                        fetched += row
+                    } catch (_: Exception) {
+                        // Keep loading the remaining worlds even if one world is unreadable.
+                        fetched += dir to (WorldRow(dir, "", "", null) to 0L)
+                    }
+                    runOnUiThread {
+                        loadingWorldCount = fetched.size
+                        updateLoadingDialog()
+                    }
+                }
+
+                fetched.sortByDescending { it.second.second }
                 runOnUiThread {
-                    loadingWorldCount = fetched.size
-                    updateLoadingDialog()
+                    worldDirs = fetched.map { it.first }
+                    rows = fetched.map { it.second.first }
+                    worldsBasePath = basePath
+                    listView.adapter = WorldRowAdapter(this, rows)
+                    if (rows.isEmpty()) {
+                        Toast.makeText(this, "No worlds with level.dat found under $basePath", Toast.LENGTH_LONG).show()
+                    }
+                    hideLoadingDialog()
                 }
-            }
-            fetched.sortByDescending { it.second.second }
-            runOnUiThread {
-                worldDirs = fetched.map { it.first }
-                rows = fetched.map { it.second.first }
-                worldsBasePath = basePath
-                if (worldDirs.isEmpty()) {
-                    Toast.makeText(this, "No worlds with level.dat found under $basePath", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                runOnUiThread {
+                    hideLoadingDialog()
+                    Toast.makeText(this, "Couldn't load Minecraft worlds: ${e.message ?: "unknown error"}", Toast.LENGTH_LONG).show()
                 }
-                listView.adapter = WorldRowAdapter(this, rows)
-                hideLoadingDialog()
             }
         }.start()
     }
@@ -120,26 +135,33 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
         loadingDots = 1
 
         loadingTextView = TextView(this).apply {
-            textSize = 18f
+            textSize = 17f
             gravity = Gravity.CENTER
-            setPadding(48, 40, 48, 40)
+            setPadding(48, 28, 48, 28)
         }
-        loadingDialog = android.app.Dialog(this).apply {
-            setContentView(loadingTextView)
-            setCancelable(false)
+
+        val builder = android.app.AlertDialog.Builder(this)
+            .setView(loadingTextView)
+            .setCancelable(false)
+
+        loadingDialog = builder.create().apply {
+            setOnShowListener {
+                // Keep this a normal compact dialog rather than a full-screen window.
+                window?.setLayout(
+                    (resources.displayMetrics.widthPixels * 0.78f).toInt(),
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                )
+            }
             show()
         }
-        loadingDialog?.window?.setLayout(
-            ViewGroup.LayoutParams.WRAP_CONTENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        )
+
         loadingHandler.removeCallbacks(loadingRunnable)
-        loadingHandler.post(loadingRunnable)
+        loadingHandler.postDelayed(loadingRunnable, 1000L)
         updateLoadingDialog()
     }
 
     private fun updateLoadingDialog() {
-        if (loadingDialog == null) return
+        if (loadingDialog == null || !loadingDialog!!.isShowing) return
         val dots = ".".repeat(loadingDots.coerceIn(1, 3))
         loadingTextView?.text = "Loading worlds$dots\n$loadingWorldCount worlds loaded"
         loadingDots = if (loadingDots >= 3) 1 else loadingDots + 1
