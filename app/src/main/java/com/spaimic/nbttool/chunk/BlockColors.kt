@@ -86,6 +86,33 @@ object BlockColors {
     private val DEEPSLATE = rgb(100, 100, 100)
     private val RAW_IRON = rgb(216, 175, 147)
     private val GLOW_LICHEN = rgb(127, 167, 150)
+    // Bedrock Edition base map colors (MCBE 1.21.3 reference palette).
+    // These are intentionally kept separate from the older Java-style fallback
+    // palette above.  The renderer should prefer these values whenever a block
+    // has a known Bedrock map color.
+    private val BEDROCK_GRASS = rgb(146, 188, 88)
+    private val BEDROCK_OAK_LEAVES = rgb(63, 92, 24)
+    private val BEDROCK_BIRCH_LEAVES = rgb(69, 90, 46)
+    private val BEDROCK_SPRUCE_LEAVES = rgb(52, 82, 52)
+    private val BEDROCK_CHERRY_LEAVES = rgb(242, 127, 165)
+    private val BEDROCK_MANGROVE_LEAVES = rgb(63, 92, 24)
+    private val BEDROCK_WATER = rgb(30, 90, 245)
+    private val BEDROCK_SHORT_GRASS = rgb(146, 188, 88)
+    private val BEDROCK_FERN = rgb(146, 188, 88)
+    private val BEDROCK_VINE = rgb(78, 113, 30)
+    private val BEDROCK_STONE = rgb(112, 112, 112)
+    private val BEDROCK_DEEPSLATE = rgb(100, 100, 100)
+    private val BEDROCK_CHERRY_WOOD = rgb(209, 177, 161)
+    private val BEDROCK_CHERRY_LOG = rgb(209, 177, 161)
+    private val BEDROCK_CHERRY_STRIPPED = rgb(160, 77, 78)
+    private val BEDROCK_BIRCH_WOOD = rgb(247, 233, 163)
+    private val BEDROCK_SPRUCE_WOOD = rgb(129, 86, 49)
+    private val BEDROCK_JUNGLE_WOOD = rgb(151, 109, 77)
+    private val BEDROCK_ACACIA_WOOD = rgb(216, 127, 51)
+    private val BEDROCK_DARK_OAK_WOOD = rgb(102, 76, 51)
+    private val BEDROCK_MANGROVE_WOOD = rgb(153, 51, 51)
+    private val BEDROCK_BAMBOO = rgb(229, 229, 51)
+    private val BEDROCK_SCULK = rgb(13, 18, 23)
 
     // dye-color name -> its wool/concrete-family map color and terracotta-family map color
     private val DYE_WOOL = mapOf(
@@ -113,6 +140,108 @@ object BlockColors {
     val fallbackSolid: Int = rgb(120, 120, 120)   // a recognized-solid but not-in-the-table block
     val fallbackUnloaded: Int = rgb(55, 55, 55)   // no chunk data at all
     val fallbackUnparsed: Int = rgb(90, 90, 90)   // chunk exists but its subchunk format wasn't decodable
+
+    private val bedrockExact: Map<String, Int> = mapOf(
+        "grass_block" to BEDROCK_GRASS,
+        "short_grass" to BEDROCK_SHORT_GRASS,
+        "fern" to BEDROCK_FERN,
+        "large_fern" to PLANT,
+        "oak_leaves" to BEDROCK_OAK_LEAVES,
+        "birch_leaves" to BEDROCK_BIRCH_LEAVES,
+        "spruce_leaves" to BEDROCK_SPRUCE_LEAVES,
+        "jungle_leaves" to BEDROCK_OAK_LEAVES,
+        "acacia_leaves" to BEDROCK_OAK_LEAVES,
+        "dark_oak_leaves" to BEDROCK_OAK_LEAVES,
+        "mangrove_leaves" to BEDROCK_MANGROVE_LEAVES,
+        "cherry_leaves" to BEDROCK_CHERRY_LEAVES,
+        "azalea_leaves" to PLANT,
+        "azalea_leaves_flowered" to PLANT,
+        "water" to BEDROCK_WATER,
+        "flowing_water" to BEDROCK_WATER,
+        "vine" to BEDROCK_VINE,
+        "stone" to BEDROCK_STONE,
+        "cobblestone" to BEDROCK_STONE,
+        "andesite" to BEDROCK_STONE,
+        "polished_andesite" to BEDROCK_STONE,
+        "deepslate" to BEDROCK_DEEPSLATE,
+        "cobbled_deepslate" to BEDROCK_DEEPSLATE,
+        "polished_deepslate" to BEDROCK_DEEPSLATE,
+        "deepslate_bricks" to BEDROCK_DEEPSLATE,
+        "deepslate_tiles" to BEDROCK_DEEPSLATE,
+        "cherry_wood" to BEDROCK_CHERRY_WOOD,
+        "cherry_log" to BEDROCK_CHERRY_LOG,
+        "stripped_cherry_wood" to BEDROCK_CHERRY_STRIPPED,
+        "stripped_cherry_log" to BEDROCK_CHERRY_LOG,
+        "birch_wood" to BEDROCK_BIRCH_WOOD,
+        "birch_log" to BEDROCK_BIRCH_WOOD,
+        "stripped_birch_wood" to BEDROCK_BIRCH_WOOD,
+        "stripped_birch_log" to BEDROCK_BIRCH_WOOD,
+        "spruce_wood" to BEDROCK_SPRUCE_WOOD,
+        "spruce_log" to BEDROCK_SPRUCE_WOOD,
+        "stripped_spruce_wood" to BEDROCK_SPRUCE_WOOD,
+        "stripped_spruce_log" to BEDROCK_SPRUCE_WOOD,
+        "jungle_wood" to BEDROCK_JUNGLE_WOOD,
+        "jungle_log" to BEDROCK_JUNGLE_WOOD,
+        "stripped_jungle_wood" to BEDROCK_JUNGLE_WOOD,
+        "stripped_jungle_log" to BEDROCK_JUNGLE_WOOD,
+        "acacia_wood" to BEDROCK_ACACIA_WOOD,
+        "acacia_log" to BEDROCK_ACACIA_WOOD,
+        "stripped_acacia_wood" to BEDROCK_ACACIA_WOOD,
+        "stripped_acacia_log" to BEDROCK_ACACIA_WOOD,
+        "dark_oak_wood" to BEDROCK_DARK_OAK_WOOD,
+        "dark_oak_log" to BEDROCK_DARK_OAK_WOOD,
+        "stripped_dark_oak_wood" to BEDROCK_DARK_OAK_WOOD,
+        "stripped_dark_oak_log" to BEDROCK_DARK_OAK_WOOD,
+        "mangrove_wood" to BEDROCK_MANGROVE_WOOD,
+        "mangrove_log" to BEDROCK_MANGROVE_WOOD,
+        "stripped_mangrove_log" to BEDROCK_MANGROVE_WOOD,
+        "bamboo" to PLANT,
+        "bamboo_block" to BEDROCK_BAMBOO,
+        "stripped_bamboo_block" to BEDROCK_BAMBOO,
+        "bamboo_planks" to BEDROCK_BAMBOO,
+        "moss_block" to rgb(102, 127, 51),
+        "moss_carpet" to rgb(102, 127, 51),
+        "sculk" to BEDROCK_SCULK,
+        "sculk_catalyst" to BEDROCK_SCULK,
+        "sculk_sensor" to BEDROCK_SCULK,
+        "sculk_shrieker" to BEDROCK_SCULK,
+        "glow_lichen" to rgb(127, 167, 150),
+        "sand" to rgb(247, 233, 163),
+        "snow" to Color.WHITE,
+        "snow_layer" to Color.WHITE,
+        "powder_snow" to Color.WHITE,
+        "ice" to rgb(160, 160, 255),
+        "packed_ice" to rgb(160, 160, 255),
+        "blue_ice" to rgb(160, 160, 255),
+        "lava" to Color.RED,
+        "flowing_lava" to Color.RED,
+        "netherrack" to rgb(112, 2, 0),
+        "crimson_nylium" to rgb(189, 48, 49),
+        "warped_nylium" to rgb(22, 126, 134),
+        "warped_wart_block" to rgb(20, 180, 133),
+        "prismarine" to rgb(76, 127, 153),
+        "diamond_block" to rgb(92, 219, 213),
+        "emerald_block" to rgb(0, 217, 58),
+        "gold_block" to rgb(250, 238, 77),
+        "iron_block" to rgb(167, 167, 167),
+        "raw_iron_block" to rgb(216, 175, 147),
+        "quartz_block" to rgb(255, 252, 245),
+        "calcite" to rgb(209, 177, 161),
+        "tuff" to rgb(57, 41, 35),
+        "tuff_bricks" to rgb(57, 41, 35),
+        "mud" to rgb(87, 92, 92),
+        "mud_bricks" to rgb(135, 107, 98),
+        "cherry_planks" to BEDROCK_CHERRY_WOOD,
+        "cherry_stairs" to BEDROCK_CHERRY_WOOD,
+        "cherry_slab" to BEDROCK_CHERRY_WOOD,
+        "cherry_fence" to BEDROCK_CHERRY_WOOD,
+        "cherry_fence_gate" to BEDROCK_CHERRY_WOOD,
+        "cherry_door" to BEDROCK_CHERRY_WOOD,
+        "cherry_trapdoor" to BEDROCK_CHERRY_WOOD,
+        "cherry_hanging_sign" to rgb(160, 77, 78),
+        "cherry_standing_sign" to BEDROCK_CHERRY_WOOD,
+        "cherry_wall_sign" to BEDROCK_CHERRY_WOOD
+    )
 
     private val explicit: Map<String, Int> = mapOf(
         // terrain / ground
@@ -201,6 +330,25 @@ object BlockColors {
         "daylight_detector" to WOOD, "rail" to METAL, "golden_rail" to GOLD, "detector_rail" to METAL, "activator_rail" to METAL
     )
 
+    // Bedrock map-color entries with #000000/0 are not painted as a visible map
+    // surface. Treat them as transparent so the renderer continues downward to the
+    // next block. This is critical for glass panes, buttons, rails, torches, etc.
+    private val transparentNames = setOf(
+        "air", "cave_air", "void_air", "glass", "glass_pane", "tinted_glass",
+        "white_stained_glass_pane", "orange_stained_glass_pane", "magenta_stained_glass_pane",
+        "light_blue_stained_glass_pane", "yellow_stained_glass_pane", "lime_stained_glass_pane",
+        "pink_stained_glass_pane", "gray_stained_glass_pane", "light_gray_stained_glass_pane",
+        "cyan_stained_glass_pane", "purple_stained_glass_pane", "blue_stained_glass_pane",
+        "brown_stained_glass_pane", "green_stained_glass_pane", "red_stained_glass_pane",
+        "black_stained_glass_pane", "torch", "soul_torch", "redstone_torch", "lever",
+        "stone_button", "wooden_button", "tripwire_hook", "rail", "golden_rail",
+        "detector_rail", "activator_rail", "end_rod", "frame", "glow_frame", "barrier",
+        "structure_void", "light_block", "skull", "portal"
+    )
+
+    fun isMapTransparent(blockNameWithNamespace: String): Boolean =
+        blockNameWithNamespace.substringAfter(':') in transparentNames
+
     private val cache = HashMap<String, Int>()
 
     fun colorFor(blockNameWithNamespace: String): Int =
@@ -212,6 +360,7 @@ object BlockColors {
     private fun resolve(name: String): Int = resolveOrNull(name) ?: fallbackSolid
 
     private fun resolveOrNull(name: String): Int? {
+        bedrockExact[name]?.let { return it }
         explicit[name]?.let { return it }
 
         // colored product families: <dye_color>_<family>

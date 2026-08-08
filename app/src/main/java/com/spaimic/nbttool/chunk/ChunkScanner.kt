@@ -202,7 +202,7 @@ object ChunkScanner {
                         if (found[x][z]) continue
                         for (y in 15 downTo 0) {
                             val name = parsed.blocks[x][z][y]
-                            if (name != "minecraft:air") {
+                            if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
                                 if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                 grid[x][z] = ColumnInfo(BlockColors.colorFor(name), subY * 16 + y)
                                 found[x][z] = true
