@@ -49,7 +49,7 @@ class PlayerDbActivity : AppCompatActivity() {
         }
 
         browseButton = Button(this).apply {
-            text = "Browse Extra DB Keys"
+            text = "Show/Hide Categories"
             setOnClickListener { showAdvancedMenu() }
         }
 
@@ -65,7 +65,8 @@ class PlayerDbActivity : AppCompatActivity() {
         setContentView(root)
 
         listView.setOnItemClickListener { _, _, position, _ ->
-            openEntry(shownDisplayNames[position])
+            val category = shownDisplayNames[position]
+            openAdvancedCategory(category)
         }
 
         openDbLazily(initialWorldDir)
@@ -107,7 +108,7 @@ class PlayerDbActivity : AppCompatActivity() {
                 }
 
                 runOnUiThread {
-                    shownDisplayNames = names
+                    shownDisplayNames = advancedCategories.filterNot { hiddenAdvancedCategories.contains(it) }
                     listView.adapter = ArrayAdapter(
                         this,
                         android.R.layout.simple_list_item_1,
@@ -152,37 +153,33 @@ class PlayerDbActivity : AppCompatActivity() {
     // Every currently supported extra-key category is visible by default.
     private val hiddenAdvancedCategories = mutableSetOf<String>()
 
+    /**
+     * Visibility manager only. The main Advanced screen itself always shows
+     * every currently enabled category; this dialog is only for hiding/showing
+     * categories.
+     */
     private fun showAdvancedMenu() {
         val checked = advancedCategories.map { !hiddenAdvancedCategories.contains(it) }.toBooleanArray()
 
         AlertDialog.Builder(this)
-            .setTitle("Advanced: Browse Extra DB Keys")
+            .setTitle("Show/Hide Extra DB Categories")
             .setMultiChoiceItems(advancedCategories, checked) { _, which, isChecked ->
                 val category = advancedCategories[which]
                 if (isChecked) hiddenAdvancedCategories.remove(category)
                 else hiddenAdvancedCategories.add(category)
             }
-            .setPositiveButton("Open Visible") { _, _ ->
-                showVisibleAdvancedCategories()
-            }
-            .setNegativeButton("Close", null)
+            .setPositiveButton("Apply") { _, _ -> refreshCategoryList() }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 
-    private fun showVisibleAdvancedCategories() {
-        val visible = advancedCategories.filterNot { hiddenAdvancedCategories.contains(it) }
-        if (visible.isEmpty()) {
-            Toast.makeText(this, "All extra DB key categories are hidden.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        AlertDialog.Builder(this)
-            .setTitle("Advanced: Browse Extra DB Keys")
-            .setItems(visible.toTypedArray()) { _, which ->
-                openAdvancedCategory(visible[which])
-            }
-            .setNegativeButton("Manage Visibility") { _, _ -> showAdvancedMenu() }
-            .show()
+    private fun refreshCategoryList() {
+        shownDisplayNames = advancedCategories.filterNot { hiddenAdvancedCategories.contains(it) }
+        listView.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_list_item_1,
+            shownDisplayNames
+        )
     }
 
     private fun openAdvancedCategory(category: String) {
