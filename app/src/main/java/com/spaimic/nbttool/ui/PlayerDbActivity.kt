@@ -188,27 +188,13 @@ class PlayerDbActivity : AppCompatActivity() {
             "player_*" -> showKeyPickerLazily("Player Data", { it.startsWith("player_") && !it.startsWith("player_server_") })
             "player_server_*" -> showKeyPickerLazily("Server Player Data", { it.startsWith("player_server_") })
             "structuretemplate_*" -> showKeyPickerLazily("MCStructure Data", { it.startsWith("structuretemplate_") })
-            "map_*" -> showMapDataMenu()
+            "map_*" -> showKeyPickerLazily("Map Data (map_*)", { it.startsWith("map_") })
             "VILLAGE_Overworld_*" -> showKeyPickerLazily("Village Data (VILLAGE_Overworld_*)", { it.startsWith("VILLAGE_Overworld_") })
             "Nether", "Overworld", "TheEnd", "AutonomousEntities", "WorldClocks",
             "mobevents", "portals", "schedulerWT", "scoreboard" -> openDirectKey(category)
             "tickingarea_*" -> showKeyPickerLazily("Ticking Areas (tickingarea_*)", { it.startsWith("tickingarea_") })
         }
     }
-
-    private fun showMapDataMenu() {
-        AlertDialog.Builder(this)
-            .setTitle("map_*")
-            .setItems(arrayOf("Show map_* keys", "Hide map_* keys")) { _, which ->
-                if (which == 0) {
-                    showKeyPickerLazily("Map Data (map_*)", { it.startsWith("map_") })
-                } else {
-                    Toast.makeText(this, "map_* keys are hidden.", Toast.LENGTH_SHORT).show()
-                }
-            }
-            .show()
-    }
-
 
     /**
      * Lazily discovers keys for one known LevelDB prefix.
@@ -375,13 +361,6 @@ class PlayerDbActivity : AppCompatActivity() {
         }.start()
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (isFinishing) {
-            try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
-            LevelDbSession.bridge = null
-        }
-    }
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"

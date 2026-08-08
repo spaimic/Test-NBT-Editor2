@@ -598,12 +598,6 @@ class MapViewerActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        if (isFinishing) {
-            try { LevelDbSession.bridge?.close() } catch (_: Exception) {}
-        }
-    }
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
