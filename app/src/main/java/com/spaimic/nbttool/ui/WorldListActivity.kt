@@ -55,7 +55,7 @@ class WorldListActivity : AppCompatActivity() {
             .map { dir -> dir to LocalWorldStore.worldInfo(dir) }
             .sortedByDescending { it.second.lastPlayedEpoch }
         worldDirs = infoPairs.map { it.first }
-        val rows = infoPairs.map { (_, info) -> WorldRow(info.name, info.dateLine, info.timeLine) }
+        val rows = infoPairs.map { (_, info) -> WorldRow(info.name, info.dateLine, info.timeLine, LocalWorldStore.worldIconFile(dir)?.absolutePath) }
         listView.adapter = WorldRowAdapter(this, rows)
     }
 

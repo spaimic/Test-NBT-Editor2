@@ -12,6 +12,7 @@ import android.widget.Toast
 import androidx.recyclerview.widget.RecyclerView
 import com.spaimic.nbttool.clipboard.NbtClipboard
 import com.spaimic.nbttool.nbt.NbtIcons
+import com.spaimic.nbttool.nbt.NbtHistory
 import com.spaimic.nbttool.nbt.NbtTag
 
 /** Where a row's tag actually lives — a named slot in a compound, or an indexed slot in a list. */
@@ -117,6 +118,49 @@ class NbtTreeAdapter(
         resizeForContent()
     }
 
+    fun showGlobalSearch() {
+        val input = EditText(context).apply { hint = "Tag name or value" }
+        AlertDialog.Builder(context)
+            .setTitle("Global NBT Search")
+            .setView(input)
+            .setPositiveButton("Search") { _, _ ->
+                val query = input.text.toString().trim()
+                if (query.isEmpty()) return@setPositiveButton
+                val matches = ArrayList<String>()
+                fun walk(tag: NbtTag, path: String) {
+                    when (tag) {
+                        is NbtTag.Compound -> {
+                            for ((key, child) in tag.entries) {
+                                val p = if (path.isEmpty()) key else "$path/$key"
+                                if (key.contains(query, true) || summaryOf(child).contains(query, true))
+                                    matches += "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}"
+                                walk(child, p)
+                            }
+                        }
+                        is NbtTag.ListTag -> tag.items.forEachIndexed { i, child ->
+                            val p = "$path[$i]"
+                            if (summaryOf(child).contains(query, true))
+                                matches += "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}"
+                            walk(child, p)
+                        }
+                        else -> {}
+                    }
+                }
+                walk(root, "")
+                val shown = matches.take(500)
+                val message = if (matches.isEmpty()) "No matching tags found." else
+                    "Found ${matches.size} match${if (matches.size == 1) "" else "es"}" +
+                    (if (matches.size > 500) " (showing first 500)" else "")
+                AlertDialog.Builder(context)
+                    .setTitle(message)
+                    .setItems(shown.toTypedArray(), null)
+                    .setPositiveButton("OK", null)
+                    .show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     inner class VH(val row: LinearLayout, val icon: ImageView, val text: TextView) : RecyclerView.ViewHolder(row)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -203,6 +247,7 @@ class NbtTreeAdapter(
     }
 
     private fun deleteRow(row: NbtRow) {
+        NbtHistory.recordBefore(root)
         when (val c = row.container) {
             is NbtContainer.InCompound -> c.compound.entries.remove(c.key)
             is NbtContainer.InList -> c.list.items.removeAt(c.index)
@@ -218,6 +263,7 @@ class NbtTreeAdapter(
             .setPositiveButton("Rename") { _, _ ->
                 val newKey = input.text.toString().ifBlank { container.key }
                 if (newKey != container.key) {
+                    NbtHistory.recordBefore(root)
                     // rebuild in place (LinkedHashMap.put on an existing key wouldn't move it,
                     // but remove+put would jump it to the end) so key order stays intact
                     val rebuilt = LinkedHashMap<String, NbtTag>()
@@ -286,6 +332,7 @@ class NbtTreeAdapter(
                     .setTitle("Key name for pasted value")
                     .setView(keyInput)
                     .setPositiveButton("Paste") { _, _ ->
+                        NbtHistory.recordBefore(root)
                         target.entries[keyInput.text.toString().ifBlank { "value" }] = copy
                         refresh()
                     }
@@ -304,6 +351,7 @@ class NbtTreeAdapter(
                     ).show()
                     return
                 } else {
+                    NbtHistory.recordBefore(root)
                     target.items.add(copy)
                 }
                 refresh()
@@ -345,6 +393,7 @@ class NbtTreeAdapter(
                             .setTitle("Key name")
                             .setView(keyInput)
                             .setPositiveButton("Add") { _, _ ->
+                                NbtHistory.recordBefore(root)
                                 target.entries[keyInput.text.toString().ifBlank { "new_key" }] = newTag
                                 refresh()
                             }
@@ -352,6 +401,7 @@ class NbtTreeAdapter(
                             .show()
                     }
                     is NbtTag.ListTag -> {
+                        NbtHistory.recordBefore(root)
                         target.items.add(newTag)
                         refresh()
                     }

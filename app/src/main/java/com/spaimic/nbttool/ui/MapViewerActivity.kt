@@ -235,43 +235,79 @@ class MapViewerActivity : AppCompatActivity() {
     private fun showChunkDialog(worldX: Int, worldZ: Int) {
         val chunkX = Math.floorDiv(worldX, 16)
         val chunkZ = Math.floorDiv(worldZ, 16)
-        val clipboard = ChunkClipboard.load(this)
-        val pasteLabel = if (clipboard != null) {
-            "Paste Chunk (${clipboard.chunkX}, ${clipboard.chunkZ}) Here"
-        } else {
-            "Paste Chunk"
-        }
-        val options = arrayOf(
+        val clipboardEntries = ChunkClipboard.list(this)
+        val options = arrayListOf(
+            "Chunk Information",
             "Show Entities",
             "Show Block Entities",
             "Copy Chunk",
-            pasteLabel,
+            "Paste Chunk",
             "Delete Chunk"
         )
-
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
-            .setItems(options) { _, which ->
+            .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> {
+                    0 -> showChunkInformation(chunkX, chunkZ)
+                    1 -> {
                         val i = Intent(this, EntityListActivity::class.java)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         startActivity(i)
                     }
-                    1 -> {
+                    2 -> {
                         val i = Intent(this, BlockEntityListActivity::class.java)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         startActivity(i)
                     }
-                    2 -> copyChunk(chunkX, chunkZ)
-                    3 -> if (clipboard != null) promptPasteChunk(chunkX, chunkZ, clipboard)
-                         else Toast.makeText(this, "Chunk clipboard is empty.", Toast.LENGTH_SHORT).show()
-                    4 -> promptDeleteChunk(chunkX, chunkZ)
+                    3 -> copyChunk(chunkX, chunkZ)
+                    4 -> chooseChunkToPaste(chunkX, chunkZ)
+                    5 -> promptDeleteChunk(chunkX, chunkZ)
                 }
+            }.show()
+    }
+
+    private fun showChunkInformation(chunkX: Int, chunkZ: Int) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        Thread {
+            try {
+                var rawRecords = 0
+                var subchunks = 0
+                var entities = 0
+                var blockEntities = 0
+                bridge.forEachRawEntry { key, value ->
+                    val info = com.spaimic.nbttool.chunk.ChunkKeys.parse(key)
+                    if (info != null && info.chunkX == chunkX && info.chunkZ == chunkZ && info.dimension == 0) {
+                        rawRecords++
+                        if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX) subchunks++
+                        if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_BLOCK_ENTITY) blockEntities++
+                    } else if (com.spaimic.nbttool.chunk.EntityKeys.isOverworldDigpKey(key)) {
+                        val (x, z) = com.spaimic.nbttool.chunk.EntityKeys.digpChunkXZ(key)
+                        if (x == chunkX && z == chunkZ) {
+                            entities += com.spaimic.nbttool.chunk.EntityKeys.splitActorIds(value).size
+                        }
+                    }
+                }
+                val message = "Chunk: ($chunkX, $chunkZ)\n" +
+                    "Block range: X ${chunkX * 16}..${chunkX * 16 + 15}, Z ${chunkZ * 16}..${chunkZ * 16 + 15}\n" +
+                    "Raw chunk records: $rawRecords\n" +
+                    "Subchunks: $subchunks\n" +
+                    "Entities: $entities\n" +
+                    "Block-entity records: $blockEntities\n" +
+                    "Dimension: Overworld"
+                runOnUiThread {
+                    AlertDialog.Builder(this).setTitle("Chunk Information").setMessage(message)
+                        .setPositiveButton("OK", null).show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to inspect chunk", e) }
             }
-            .show()
+        }.start()
     }
 
     private fun copyChunk(chunkX: Int, chunkZ: Int) {
@@ -279,16 +315,13 @@ class MapViewerActivity : AppCompatActivity() {
         Thread {
             try {
                 val copied = ChunkTransfer.copy(bridge, chunkX, chunkZ)
-                ChunkClipboard.save(
+                val preview = mapView.captureChunkPreviewPng(chunkX, chunkZ)
+                val id = ChunkClipboard.save(
                     this,
-                    ChunkClipboard.Entry(copied.chunkX, copied.chunkZ, copied.records)
+                    ChunkClipboard.newEntry(copied.chunkX, copied.chunkZ, copied.records, preview)
                 )
                 runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "Copied chunk ($chunkX, $chunkZ) to the chunk clipboard.",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this, "Copied chunk ($chunkX, $chunkZ) to the chunk clipboard.", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 runOnUiThread { showErrorDialog(this, "Failed to copy chunk", e) }
@@ -296,42 +329,33 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun promptPasteChunk(
-        targetX: Int,
-        targetZ: Int,
-        clipboard: ChunkClipboard.Entry
-    ) {
+    private fun chooseChunkToPaste(targetX: Int, targetZ: Int) {
+        val entries = ChunkClipboard.list(this)
+        if (entries.isEmpty()) {
+            Toast.makeText(this, "Chunk clipboard is empty.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = entries.map { "(${it.chunkX}, ${it.chunkZ}) — ${it.records.size} records" }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Paste chunk here?")
-            .setMessage(
-                "This will overwrite chunk ($targetX, $targetZ) with the literal data " +
-                    "copied from chunk (${clipboard.chunkX}, ${clipboard.chunkZ}). " +
-                    "Blocks, block entities, and entities in the destination chunk will be replaced. " +
-                    "This cannot be undone."
-            )
-            .setPositiveButton("Paste") { _, _ ->
-                pasteChunk(targetX, targetZ, clipboard)
-            }
-            .setNegativeButton("Cancel", null)
+            .setTitle("Choose chunk to paste")
+            .setItems(labels) { _, which -> promptPasteChunk(targetX, targetZ, entries[which]) }
             .show()
     }
 
-    private fun pasteChunk(
-        targetX: Int,
-        targetZ: Int,
-        clipboard: ChunkClipboard.Entry
-    ) {
+    private fun promptPasteChunk(targetX: Int, targetZ: Int, clipboard: ChunkClipboard.Entry) {
+        AlertDialog.Builder(this)
+            .setTitle("Paste chunk here?")
+            .setMessage("Overwrite chunk ($targetX, $targetZ) with literal data from (${clipboard.chunkX}, ${clipboard.chunkZ})? Blocks, block entities, and entities will be replaced.")
+            .setPositiveButton("Paste") { _, _ -> pasteChunk(targetX, targetZ, clipboard) }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    private fun pasteChunk(targetX: Int, targetZ: Int, clipboard: ChunkClipboard.Entry) {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
                 val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ)
-                runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        "Pasted chunk to ($targetX, $targetZ) — $written records written.",
-                        Toast.LENGTH_LONG
-                    ).show()
-                }
+                runOnUiThread { Toast.makeText(this, "Pasted chunk to ($targetX, $targetZ) — $written records written.", Toast.LENGTH_LONG).show() }
                 rescanMap()
             } catch (e: Exception) {
                 runOnUiThread { showErrorDialog(this, "Failed to paste chunk", e) }
@@ -390,6 +414,8 @@ class MapViewerActivity : AppCompatActivity() {
             "Overworld NBT Data",
             "Nether NBT Data",
             "The End NBT Data",
+            "NBT Tag Clipboard",
+            "Chunk Clipboard",
             "Advanced: Browse Extra DB Keys"
         )
 
@@ -413,7 +439,9 @@ class MapViewerActivity : AppCompatActivity() {
                     8 -> showExactKey("Overworld NBT Data", "Overworld")
                     9 -> showExactKey("Nether NBT Data", "Nether")
                     10 -> showExactKey("The End NBT Data", "TheEnd")
-                    11 -> openAllKeysBrowser()
+                    11 -> startActivity(Intent(this, ClipboardActivity::class.java))
+                    12 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
+                    13 -> openAllKeysBrowser()
                 }
             }
             .show()

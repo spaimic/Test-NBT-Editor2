@@ -341,6 +341,17 @@ class MapView(context: Context) : View(context) {
     fun currentCameraBlockX(): Int = floor(cameraX).toInt()
     fun currentCameraBlockZ(): Int = floor(cameraZ).toInt()
 
+    fun captureChunkPreviewPng(chunkX: Int, chunkZ: Int): ByteArray? {
+        val grid = chunks[chunkX to chunkZ] ?: return null
+        val source = bitmapForChunk(chunkX to chunkZ, grid)
+        val preview = Bitmap.createScaledBitmap(source, 128, 128, false)
+        return java.io.ByteArrayOutputStream().use { out ->
+            preview.compress(Bitmap.CompressFormat.PNG, 100, out)
+            preview.recycle()
+            out.toByteArray()
+        }
+    }
+
     fun refreshVisibleChunks() {
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()

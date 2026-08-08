@@ -91,9 +91,16 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
         val dat = NbtIO.readLevelDat(File(localPath).readBytes())
         val name = (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir
         val (date, time) = LocalWorldStore.lastPlayedDateTime(dat)
-        WorldRow(name, date, time) to LocalWorldStore.lastPlayedEpoch(dat)
+        val iconDir = File(getExternalFilesDir(null), "world_icons").apply { mkdirs() }
+        val safe = worldDir.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val iconPath = File(iconDir, "$safe.jpeg")
+        val icon = try {
+            ShizukuShell.pullFile("$basePath/$worldDir/world_icon.jpeg", iconPath.absolutePath)
+            iconPath.takeIf { it.isFile && it.length() > 0L }?.absolutePath
+        } catch (_: Exception) { null }
+        WorldRow(name, date, time, icon) to LocalWorldStore.lastPlayedEpoch(dat)
     } catch (e: Exception) {
-        WorldRow(worldDir, "", "") to 0L
+        WorldRow(worldDir, "", "", null) to 0L
     }
 
     private fun promptImport(remoteWorldDir: String, suggestedName: String) {

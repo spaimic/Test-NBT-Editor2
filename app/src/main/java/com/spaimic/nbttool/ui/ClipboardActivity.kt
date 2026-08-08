@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.clipboard.NbtClipboard
 import com.spaimic.nbttool.nbt.NbtTag
+import com.spaimic.nbttool.nbt.NbtJson
 
 /**
  * Shows every NBT snippet you've copied. Tapping one marks it "selected" — the
@@ -43,8 +44,9 @@ class ClipboardActivity : AppCompatActivity() {
         val labels = names.map { name ->
             val tag = NbtClipboard.load(this, name)
             val typeLabel = tag?.let { NbtTag.typeName(it.id) } ?: "?"
+            val contents = tag?.let { NbtJson.toJson(it).toString() } ?: "(unreadable)"
             val marker = if (name == NbtClipboard.selectedName) "✓ " else "   "
-            "$marker$name — $typeLabel"
+            "$marker$name — $typeLabel\n${contents.take(1000)}${if (contents.length > 1000) "…" else ""}"
         }
         listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
         if (names.isEmpty()) {

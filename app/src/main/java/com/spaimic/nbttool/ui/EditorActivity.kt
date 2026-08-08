@@ -11,6 +11,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtJson
 import com.spaimic.nbttool.nbt.NbtTag
+import com.spaimic.nbttool.nbt.NbtHistory
 import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
 
@@ -59,6 +60,9 @@ class EditorActivity : AppCompatActivity() {
         menu.add(0, MENU_SAVE, 0, "Save")
         menu.add(0, MENU_EXPORT_JSON, 0, "Export JSON")
         menu.add(0, MENU_IMPORT_JSON, 0, "Import JSON")
+        menu.add(0, MENU_UNDO, 0, "Undo")
+        menu.add(0, MENU_REDO, 0, "Redo")
+        menu.add(0, MENU_SEARCH, 0, "Global NBT Search")
         return true
     }
 
@@ -69,6 +73,9 @@ class EditorActivity : AppCompatActivity() {
                 NbtJsonFileOps.launchExport(this, NbtJsonFileOps.sanitizeFileName(worldDir.name + "_level"))
                 return true
             }
+            MENU_UNDO -> { if (NbtHistory.undo(levelDat?.root ?: return true)) adapter.refresh(); return true }
+            MENU_REDO -> { if (NbtHistory.redo(levelDat?.root ?: return true)) adapter.refresh(); return true }
+            MENU_SEARCH -> { adapter.showGlobalSearch(); return true }
             MENU_IMPORT_JSON -> {
                 NbtJsonFileOps.launchImportPicker(this)
                 return true
@@ -95,6 +102,7 @@ class EditorActivity : AppCompatActivity() {
                 try {
                     val json = NbtJsonFileOps.readText(this, uri)
                     val imported = NbtJson.importCompoundFromJsonString(json) // throws before anything is touched
+                    NbtHistory.recordBefore(dat.root)
                     dat.root.entries.clear()
                     dat.root.entries.putAll(imported.entries)
                     adapter.refresh()
@@ -155,6 +163,7 @@ class EditorActivity : AppCompatActivity() {
                         is NbtTag.Str -> NbtTag.Str(input.text.toString())
                         else -> tag
                     }
+                    NbtHistory.recordBefore(dat.root)
                     row.setValue(newTag)
                     adapter.refresh()
                 } catch (e: NumberFormatException) {
@@ -185,5 +194,8 @@ class EditorActivity : AppCompatActivity() {
         private const val MENU_SAVE = 1
         private const val MENU_EXPORT_JSON = 2
         private const val MENU_IMPORT_JSON = 3
+        private const val MENU_UNDO = 4
+        private const val MENU_REDO = 5
+        private const val MENU_SEARCH = 6
     }
 }

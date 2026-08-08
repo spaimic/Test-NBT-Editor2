@@ -58,6 +58,11 @@ object LocalWorldStore {
         } catch (_: Exception) { worldDir.name }
     }
 
+    fun worldIconFile(worldDir: File): File? {
+        val icon = File(worldDir, "world_icon.jpeg")
+        return icon.takeIf { it.isFile && it.length() > 0L }
+    }
+
     fun writeDisplayName(worldDir: File, displayName: String) {
         val value = displayName.ifBlank { levelName(worldDir) }
         File(worldDir, DISPLAY_NAME_FILE).writeText(value, Charsets.UTF_8)

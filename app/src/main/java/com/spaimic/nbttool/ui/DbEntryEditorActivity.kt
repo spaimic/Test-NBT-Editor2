@@ -12,6 +12,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.spaimic.nbttool.nbt.NbtJson
 import com.spaimic.nbttool.nbt.NbtTag
+import com.spaimic.nbttool.nbt.NbtHistory
 import com.spaimic.nbttool.shizuku.LevelDbSession
 
 /**
@@ -75,6 +76,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
                         is NbtTag.Str -> NbtTag.Str(input.text.toString())
                         else -> tag
                     }
+                    NbtHistory.recordBefore(compound)
                     row.setValue(newTag)
                     onSaved()
                 } catch (e: NumberFormatException) {
@@ -89,6 +91,9 @@ class DbEntryEditorActivity : AppCompatActivity() {
         menu.add(0, MENU_SAVE, 0, "Save")
         menu.add(0, MENU_EXPORT_JSON, 0, "Export JSON")
         menu.add(0, MENU_IMPORT_JSON, 0, "Import JSON")
+        menu.add(0, MENU_UNDO, 0, "Undo")
+        menu.add(0, MENU_REDO, 0, "Redo")
+        menu.add(0, MENU_SEARCH, 0, "Global NBT Search")
         return true
     }
 
@@ -105,6 +110,9 @@ class DbEntryEditorActivity : AppCompatActivity() {
                 NbtJsonFileOps.launchExport(this, NbtJsonFileOps.sanitizeFileName(displayName))
                 return true
             }
+            MENU_UNDO -> { if (NbtHistory.undo(compound)) adapter.refresh(); return true }
+            MENU_REDO -> { if (NbtHistory.redo(compound)) adapter.refresh(); return true }
+            MENU_SEARCH -> { adapter.showGlobalSearch(); return true }
             MENU_IMPORT_JSON -> {
                 NbtJsonFileOps.launchImportPicker(this)
                 return true
@@ -130,6 +138,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
                 try {
                     val json = NbtJsonFileOps.readText(this, uri)
                     val imported = NbtJson.importCompoundFromJsonString(json) // throws before anything is touched
+                    NbtHistory.recordBefore(compound)
                     compound.entries.clear()
                     compound.entries.putAll(imported.entries)
                     adapter.refresh()
@@ -146,5 +155,8 @@ class DbEntryEditorActivity : AppCompatActivity() {
         private const val MENU_SAVE = 1
         private const val MENU_EXPORT_JSON = 2
         private const val MENU_IMPORT_JSON = 3
+        private const val MENU_UNDO = 4
+        private const val MENU_REDO = 5
+        private const val MENU_SEARCH = 6
     }
 }
