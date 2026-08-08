@@ -3,10 +3,12 @@ package com.spaimic.nbttool.ui
 import android.content.Intent
 import android.os.Bundle
 import android.widget.*
+import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.chunk.ChunkKeys
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
+import com.spaimic.nbttool.chunk.TileEntityIcons
 import com.spaimic.nbttool.shizuku.BlockEntitySession
 import com.spaimic.nbttool.shizuku.LevelDbSession
 
@@ -85,14 +87,35 @@ class BlockEntityListActivity : AppCompatActivity() {
     }
 
     private fun refresh() {
-        val labels = BlockEntitySession.compounds.map { c ->
+        val rows = BlockEntitySession.compounds.map { c ->
             val id = (c.entries["id"] as? NbtTag.Str)?.value ?: "Unknown"
             val x = (c.entries["x"] as? NbtTag.Int)?.value
             val y = (c.entries["y"] as? NbtTag.Int)?.value
             val z = (c.entries["z"] as? NbtTag.Int)?.value
-            if (x != null && y != null && z != null) "$id ($x, $y, $z)" else id
+            val label = if (x != null && y != null && z != null) "$id ($x, $y, $z)" else id
+            label to TileEntityIcons.iconFor(this, id)
         }
-        listView.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
+        listView.adapter = object : ArrayAdapter<Pair<String, Int>>(this, 0, rows) {
+            override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                val item = getItem(position)!!
+                val icon = ImageView(context).apply {
+                    setImageResource(item.second)
+                    layoutParams = LinearLayout.LayoutParams(72, 72).apply { rightMargin = 24 }
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                }
+                val text = TextView(context).apply {
+                    text = item.first
+                    textSize = 16f
+                }
+                return LinearLayout(context).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                    setPadding(32, 24, 32, 24)
+                    addView(icon)
+                    addView(text)
+                }
+            }
+        }
     }
 
     private fun showNoBlockEntitiesDialog() {

@@ -9,6 +9,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import android.graphics.Typeface
 import androidx.recyclerview.widget.RecyclerView
 import com.spaimic.nbttool.clipboard.NbtClipboard
 import com.spaimic.nbttool.nbt.NbtIcons
@@ -169,6 +170,7 @@ class NbtTreeAdapter(
         }
         val text = TextView(parent.context).apply {
             textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
         }
         val row = LinearLayout(parent.context).apply {
             orientation = LinearLayout.HORIZONTAL
