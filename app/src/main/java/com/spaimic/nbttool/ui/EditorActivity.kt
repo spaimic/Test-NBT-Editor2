@@ -163,6 +163,7 @@ class EditorActivity : AppCompatActivity() {
                         is NbtTag.Str -> NbtTag.Str(input.text.toString())
                         else -> tag
                     }
+                    val dat = levelDat ?: return@setPositiveButton
                     NbtHistory.recordBefore(dat.root)
                     row.setValue(newTag)
                     adapter.refresh()
