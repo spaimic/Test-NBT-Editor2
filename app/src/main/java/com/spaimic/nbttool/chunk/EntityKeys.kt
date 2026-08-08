@@ -44,7 +44,7 @@ object EntityKeys {
 
     /** True if this is a digp key for the requested Bedrock dimension. */
     fun isDigpKeyForDimension(key: ByteArray, dimension: Int): Boolean =
-        key.size == if (dimension == 0) 12 else 16 &&
+        key.size == (if (dimension == 0) 12 else 16) &&
             key[0] == 'd'.code.toByte() && key[1] == 'i'.code.toByte() &&
             key[2] == 'g'.code.toByte() && key[3] == 'p'.code.toByte() &&
             (dimension == 0 || readI32(key, 12) == dimension)
