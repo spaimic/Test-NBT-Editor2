@@ -40,11 +40,11 @@ object ChunkKeys {
                 return Info(x, z, 0, tag, subY)
             }
         }
-        // Dimension records are exactly 13 or 14 bytes. Bedrock uses -1 for the Nether and 1 for The End.
+        // Dimension records are exactly 13 or 14 bytes. Bedrock uses 1 for the Nether and 2 for The End.
         if (key.size == 13 || key.size == 14) {
             val x = readI32(key, 0); val z = readI32(key, 4); val dim = readI32(key, 8)
             val tag = key[12].toInt() and 0xFF
-            if (tag in KNOWN_TAGS && (dim == -1 || dim == 1)) {
+            if (tag in KNOWN_TAGS && (dim == 1 || dim == 2)) {
                 val subY = if (key.size == 14) key[13].toInt() else null
                 if (tag == TAG_SUBCHUNK_PREFIX && subY == null) return null
                 return Info(x, z, dim, tag, subY)

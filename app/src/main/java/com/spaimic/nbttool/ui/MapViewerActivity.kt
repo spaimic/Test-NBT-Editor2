@@ -424,10 +424,10 @@ class MapViewerActivity : AppCompatActivity() {
         else -> "Overworld"
     }
 
-    /** Bedrock LevelDB chunk-key dimension IDs: Overworld=0, Nether=-1, The End=1. */
+    /** Bedrock LevelDB chunk-key dimension IDs: Overworld=0, Nether=1, The End=2. */
     private fun selectedDbDimension(): Int = when (currentDimension) {
-        1 -> -1
-        2 -> 1
+        1 -> 1
+        2 -> 2
         else -> 0
     }
 
@@ -460,11 +460,10 @@ class MapViewerActivity : AppCompatActivity() {
         mapView.clearChunkData()
         mapView.entityMarkers = emptyList()
         mapView.blockEntityMarkers = emptyList()
-        mapView.preferredCenterBlock = if (currentDimension == 0) {
-            mapView.preferredCenterBlock ?: (0 to 0)
-        } else {
-            0 to 0
-        }
+        // Keep the current camera position when changing dimensions. Do not
+        // teleport the user to (0, 0); the same world coordinates are useful
+        // when comparing the three dimensions.
+        mapView.preferredCenterBlock = mapView.preferredCenterBlock ?: (0 to 0)
         title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
         coordText.text = "${dimensionName()} • Loading visible chunks…"
         mapView.refreshVisibleChunks()
