@@ -29,11 +29,12 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var mapView: MapView
     private lateinit var coordText: TextView
     private var currentDimension = 0 // UI: 0 Overworld, 1 Nether, 2 The End
+    private var playerOverworldPosition: Pair<Int, Int>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
-        title = "${LocalWorldStore.levelName(worldDir)} — Overworld"
+        title = "${LocalWorldStore.levelName(worldDir)} — Loading…"
 
         val root = FrameLayout(this)
         mapView = MapView(this)
@@ -144,8 +145,20 @@ class MapViewerActivity : AppCompatActivity() {
                     if (x != null && z != null) x.toInt() to z.toInt() else null
                 } catch (_: Exception) { null }
 
+                val playerDimension = try { readPlayerDimension(bridge) } catch (_: Exception) { 0 }
+                val rawPlayerPos = playerPos ?: (0 to 0)
+                playerOverworldPosition = if (playerDimension == 1) {
+                    rawPlayerPos.first * 8 to rawPlayerPos.second * 8
+                } else {
+                    rawPlayerPos
+                }
+
                 runOnUiThread {
-                    mapView.preferredCenterBlock = playerPos ?: (0 to 0)
+                    currentDimension = playerDimension
+                    mapView.preferredCenterBlock = when (currentDimension) {
+                        1 -> Math.floorDiv(playerOverworldPosition!!.first, 8) to Math.floorDiv(playerOverworldPosition!!.second, 8)
+                        else -> rawPlayerPos
+                    }
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
                     coordText.text = "${dimensionName()} • Loading visible chunks…"
@@ -420,6 +433,43 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
+    /** Reads the player's current Bedrock dimension from ~local_player. Different
+     * versions have used slightly different names, so prefer the canonical key and
+     * accept the common variants as a compatibility fallback. */
+    private fun readPlayerDimension(bridge: LevelDbBridge): Int {
+        val raw = bridge.read("~local_player".toByteArray(Charsets.US_ASCII)) ?: return 0
+        val compound = NbtIO.readRootCompoundNoHeader(raw) ?: return 0
+
+        fun numeric(tag: NbtTag): Int? = when (tag) {
+            is NbtTag.Byte -> tag.value.toInt()
+            is NbtTag.Short -> tag.value.toInt()
+            is NbtTag.Int -> tag.value
+            is NbtTag.Long -> tag.value.toInt()
+            else -> null
+        }
+
+        fun findDimension(tag: NbtTag): Int? {
+            if (tag is NbtTag.Compound) {
+                for (key in listOf("DimensionId", "Dimension", "dimension")) {
+                    val candidate = tag.entries[key]?.let(::numeric)
+                    if (candidate == 1 || candidate == 2) return candidate
+                }
+                for (child in tag.entries.values) {
+                    val found = findDimension(child)
+                    if (found == 1 || found == 2) return found
+                }
+            } else if (tag is NbtTag.ListTag) {
+                for (child in tag.items) {
+                    val found = findDimension(child)
+                    if (found == 1 || found == 2) return found
+                }
+            }
+            return null
+        }
+
+        return findDimension(compound) ?: 0
+    }
+
     private fun dimensionName(): String = when (currentDimension) {
         1 -> "Nether"
         2 -> "The End"
@@ -462,10 +512,17 @@ class MapViewerActivity : AppCompatActivity() {
         mapView.clearChunkData()
         mapView.entityMarkers = emptyList()
         mapView.blockEntityMarkers = emptyList()
-        // Keep the current camera position when changing dimensions. Do not
-        // teleport the user to (0, 0); the same world coordinates are useful
-        // when comparing the three dimensions.
-        mapView.preferredCenterBlock = mapView.preferredCenterBlock ?: (0 to 0)
+        // Bedrock's Nether portal coordinate relationship is 8:1. When entering
+        // the Nether from the Overworld, anchor the map at the corresponding Nether
+        // coordinates instead of leaving the camera at the Overworld position.
+        val current = mapView.preferredCenterBlock ?: (0 to 0)
+        mapView.preferredCenterBlock = if (currentDimension == 1) {
+            (Math.floorDiv(current.first, 8) to Math.floorDiv(current.second, 8))
+        } else if (currentDimension == 0) {
+            playerOverworldPosition ?: current
+        } else {
+            current
+        }
         title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
         coordText.text = "${dimensionName()} • Loading visible chunks…"
         mapView.refreshVisibleChunks()

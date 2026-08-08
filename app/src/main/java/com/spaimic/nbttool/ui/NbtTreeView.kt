@@ -128,21 +128,25 @@ class NbtTreeAdapter(
             .setPositiveButton("Search") { _, _ ->
                 val query = input.text.toString().trim()
                 if (query.isEmpty()) return@setPositiveButton
-                val matches = ArrayList<String>()
+                data class Match(val path: String, val label: String)
+                val matches = ArrayList<Match>()
+
                 fun walk(tag: NbtTag, path: String) {
                     when (tag) {
                         is NbtTag.Compound -> {
                             for ((key, child) in tag.entries) {
                                 val p = if (path.isEmpty()) key else "$path/$key"
-                                if (key.contains(query, true) || summaryOf(child).contains(query, true))
-                                    matches += "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}"
+                                if (key.contains(query, true) || summaryOf(child).contains(query, true)) {
+                                    matches += Match(p, "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}")
+                                }
                                 walk(child, p)
                             }
                         }
                         is NbtTag.ListTag -> tag.items.forEachIndexed { i, child ->
                             val p = "$path[$i]"
-                            if (summaryOf(child).contains(query, true))
-                                matches += "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}"
+                            if (summaryOf(child).contains(query, true)) {
+                                matches += Match(p, "$p  —  ${NbtTag.typeName(child.id)} = ${summaryOf(child)}")
+                            }
                             walk(child, p)
                         }
                         else -> {}
@@ -150,17 +154,55 @@ class NbtTreeAdapter(
                 }
                 walk(root, "")
                 val shown = matches.take(500)
-                val message = if (matches.isEmpty()) "No matching tags found." else
-                    "Found ${matches.size} match${if (matches.size == 1) "" else "es"}" +
+                if (matches.isEmpty()) {
+                    AlertDialog.Builder(context)
+                        .setTitle("Global NBT Search")
+                        .setMessage("No matching tags found.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                    return@setPositiveButton
+                }
+
+                val message = "Found ${matches.size} match${if (matches.size == 1) "" else "es"}" +
                     (if (matches.size > 500) " (showing first 500)" else "")
                 AlertDialog.Builder(context)
                     .setTitle(message)
-                    .setItems(shown.toTypedArray(), null)
-                    .setPositiveButton("OK", null)
+                    .setItems(shown.map { it.label }.toTypedArray()) { dialog, which ->
+                        dialog.dismiss()
+                        jumpToPath(shown[which].path)
+                    }
+                    .setPositiveButton("Close", null)
                     .show()
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    /** Expands every ancestor of a search result and scrolls directly to it. */
+    private fun jumpToPath(targetPath: String) {
+        val segments = ArrayList<String>()
+        var current = ""
+        // Compound keys are separated by '/', while list indexes are part of a
+        // segment (e.g. Inventory[3]/tag). This mirrors the paths produced by walk().
+        for (part in targetPath.split('/')) {
+            current = if (current.isEmpty()) part else "$current/$part"
+            segments += current
+        }
+        // Expand only container paths. If a segment points at a primitive, adding it
+        // to expanded is harmless and lets the normal row path lookup find the target.
+        expanded.addAll(segments.dropLast(1))
+        rebuild()
+        notifyDataSetChanged()
+        resizeForContent()
+        val index = rows.indexOfFirst { it.first == targetPath }
+        if (index >= 0) {
+            attachedRecyclerView?.post { attachedRecyclerView?.smoothScrollToPosition(index) }
+        } else {
+            // A list index can itself be the final target. If the exact path was not
+            // visible because of an unusual key containing '/', fall back to prefix.
+            val fallback = rows.indexOfFirst { it.first.endsWith(targetPath) }
+            if (fallback >= 0) attachedRecyclerView?.post { attachedRecyclerView?.smoothScrollToPosition(fallback) }
+        }
     }
 
     inner class VH(val row: LinearLayout, val icon: ImageView, val text: TextView) : RecyclerView.ViewHolder(row)
