@@ -188,6 +188,9 @@ object ChunkScanner {
         val found = Array(16) { BooleanArray(16) }
         var remaining = 256
         var hadSuccessfulSubchunk = false
+        val biomeData = try {
+            bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ))?.let { BiomeMapParser.parse(it) }
+        } catch (_: Exception) { null }
 
         for ((subY, bytes) in subchunks) {
             if (remaining == 0) break
@@ -204,7 +207,10 @@ object ChunkScanner {
                             val name = parsed.blocks[x][z][y]
                             if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
                                 if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
-                                grid[x][z] = ColumnInfo(BlockColors.colorFor(name), subY * 16 + y)
+                                val surfaceY = subY * 16 + y
+                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                val baseColor = BlockColors.colorFor(name)
+                                grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY)
                                 found[x][z] = true
                                 remaining--
                                 break
@@ -252,6 +258,7 @@ object ChunkScanner {
             }
         } catch (_: Exception) {}
 
+        MapShading.apply(grid)
         return LoadedChunk(grid, entityMarkers, blockMarkers)
     }
 
@@ -275,6 +282,9 @@ object ChunkScanner {
         val found = Array(16) { BooleanArray(16) }
         var remaining = 256
         var hadSuccessfulSubchunk = false
+        val biomeData = try {
+            bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ))?.let { BiomeMapParser.parse(it) }
+        } catch (_: Exception) { null }
 
         for ((subY, rawKey) in index.subchunks[pos].orEmpty()) {
             if (remaining == 0) break
@@ -294,7 +304,10 @@ object ChunkScanner {
                                 val name = blocks[x][z][y]
                                 if (name != "minecraft:air") {
                                     if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
-                                    grid[x][z] = ColumnInfo(BlockColors.colorFor(name), subY * 16 + y)
+                                    val surfaceY = subY * 16 + y
+                                    val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                    val baseColor = BlockColors.colorFor(name)
+                                    grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY)
                                     found[x][z] = true
                                     remaining--
                                     break

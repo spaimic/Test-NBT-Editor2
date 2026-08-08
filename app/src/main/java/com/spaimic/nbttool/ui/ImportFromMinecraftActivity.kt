@@ -105,7 +105,8 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
                 val localName = LocalWorldStore.uniqueLocalName(this, input.text.toString())
                 Thread {
                     try {
-                        LocalWorldStore.importFromMinecraft(this, worldsBasePath, remoteWorldDir, localName)
+                        val copied = LocalWorldStore.importFromMinecraft(this, worldsBasePath, remoteWorldDir, localName)
+                        LocalWorldStore.writeDisplayName(copied, input.text.toString())
                         runOnUiThread {
                             Toast.makeText(this, "Imported \"$localName\"", Toast.LENGTH_SHORT).show()
                             finish()

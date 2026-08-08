@@ -53,6 +53,19 @@ object ChunkKeys {
         return null
     }
 
+    fun data3DKey(chunkX: Int, chunkZ: Int, dimension: Int = 0): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        fun writeI32LE(v: Int) {
+            out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
+            out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        }
+        writeI32LE(chunkX)
+        writeI32LE(chunkZ)
+        if (dimension != 0) writeI32LE(dimension)
+        out.write(TAG_DATA_3D)
+        return out.toByteArray()
+    }
+
     fun blockEntityKey(chunkX: Int, chunkZ: Int, dimension: Int = 0): ByteArray {
         val out = java.io.ByteArrayOutputStream()
         fun writeI32LE(v: Int) {

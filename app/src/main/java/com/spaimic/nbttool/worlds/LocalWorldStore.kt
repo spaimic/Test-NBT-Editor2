@@ -40,10 +40,28 @@ object LocalWorldStore {
             ?.sortedBy { it.name }
             ?: emptyList()
 
-    /** The name to show for a local world — the folder name the user chose during
-     * import, NOT the internal level.dat "LevelName" tag, which may be completely
-     * different (whatever the world was last named inside Minecraft itself). */
-    fun levelName(worldDir: File): String = worldDir.name
+    private const val DISPLAY_NAME_FILE = ".nbttool_display_name"
+
+    /** Exact display name chosen by the user, including Bedrock formatting codes such as §.
+     * The filesystem folder remains sanitized and is never used as the display name. */
+    fun levelName(worldDir: File): String {
+        val metadata = File(worldDir, DISPLAY_NAME_FILE)
+        if (metadata.isFile) {
+            try {
+                val value = metadata.readText(Charsets.UTF_8)
+                if (value.isNotBlank()) return value
+            } catch (_: Exception) {}
+        }
+        return try {
+            val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
+            (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir.name
+        } catch (_: Exception) { worldDir.name }
+    }
+
+    fun writeDisplayName(worldDir: File, displayName: String) {
+        val value = displayName.ifBlank { levelName(worldDir) }
+        File(worldDir, DISPLAY_NAME_FILE).writeText(value, Charsets.UTF_8)
+    }
 
     data class WorldInfo(val name: String, val dateLine: String, val timeLine: String, val lastPlayedEpoch: Long)
 
@@ -51,9 +69,9 @@ object LocalWorldStore {
     fun worldInfo(worldDir: File): WorldInfo = try {
         val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
         val (date, time) = lastPlayedDateTime(dat)
-        WorldInfo(worldDir.name, date, time, lastPlayedEpoch(dat))
+        WorldInfo(levelName(worldDir), date, time, lastPlayedEpoch(dat))
     } catch (e: Exception) {
-        WorldInfo(worldDir.name, "", "", 0L)
+        WorldInfo(levelName(worldDir), "", "", 0L)
     }
 
     /** Formats the level.dat "LastPlayed" tag (epoch seconds) as separate date/time strings. */
@@ -89,6 +107,7 @@ object LocalWorldStore {
     fun importFromMinecraft(context: Context, worldsPath: String, remoteWorldDir: String, localName: String): File {
         val dest = File(rootDir(context), localName)
         ShizukuShell.pullDir("$worldsPath/$remoteWorldDir", dest.absolutePath)
+        writeDisplayName(dest, localName)
         return dest
     }
 
@@ -122,6 +141,7 @@ object LocalWorldStore {
             dest.deleteRecursively()
             throw IllegalStateException("That file doesn't look like a Bedrock world (no level.dat found inside)")
         }
+        writeDisplayName(dest, localName)
         return dest
     }
 
@@ -130,6 +150,7 @@ object LocalWorldStore {
         val out = File(exportsDir(context), "${worldDir.name}.mcworld")
 
         fun addFile(zos: ZipOutputStream, file: File, basePath: String) {
+            if (file.name == DISPLAY_NAME_FILE) return
             if (file.isDirectory) {
                 file.listFiles()?.forEach { addFile(zos, it, "$basePath${file.name}/") }
             } else {

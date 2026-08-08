@@ -51,7 +51,7 @@ class MapView(context: Context) : View(context) {
         markerBitmapCache.getOrPut(resId) { BitmapFactory.decodeResource(resources, resId) }
 
     private val steveBitmap: Bitmap by lazy { BitmapFactory.decodeResource(resources, R.drawable.steve) }
-    private val tilePaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val tilePaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(80, 20, 20, 20)
         style = Paint.Style.STROKE
@@ -85,8 +85,17 @@ class MapView(context: Context) : View(context) {
     private var lastX = 0f
     private var lastY = 0f
     private var dragging = false
+    private var pinching = false
+    private var hadMultiTouch = false
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+            pinching = true
+            hadMultiTouch = true
+            dragging = false
+            return true
+        }
+
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             val oldZoom = zoom
             val newZoom = (zoom * detector.scaleFactor).coerceIn(minZoom, maxZoom)
@@ -100,6 +109,13 @@ class MapView(context: Context) : View(context) {
             cameraZ = focusWorldZ - (detector.focusY - height / 2f) / zoom
             requestVisible()
             return true
+        }
+
+        override fun onScaleEnd(detector: ScaleGestureDetector) {
+            // Do not synthesize a tap when the pinch ends. The camera position
+            // calculated in onScale is already the final pinch position.
+            pinching = false
+            requestVisible()
         }
     })
 
@@ -277,11 +293,21 @@ class MapView(context: Context) : View(context) {
                 downX = event.x; downY = event.y
                 lastX = event.x; lastY = event.y
                 dragging = false
+                pinching = false
+                hadMultiTouch = false
                 return true
             }
-            MotionEvent.ACTION_POINTER_DOWN -> return true
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                hadMultiTouch = true
+                pinching = true
+                dragging = false
+                return true
+            }
             MotionEvent.ACTION_MOVE -> {
-                if (!scaleDetector.isInProgress) {
+                // Never pan with a two-finger gesture. This was the source of the
+                // camera "jump" after pinch-zoom and made the final position differ
+                // from where the fingers actually stopped.
+                if (!pinching && !scaleDetector.isInProgress && event.pointerCount == 1) {
                     val dx = event.x - lastX
                     val dz = event.y - lastY
                     if (kotlin.math.abs(event.x - downX) > 12 || kotlin.math.abs(event.y - downY) > 12) dragging = true
@@ -292,11 +318,22 @@ class MapView(context: Context) : View(context) {
                 }
                 return true
             }
-            MotionEvent.ACTION_UP -> {
-                if (!dragging && !scaleDetector.isInProgress) handleTap(event.x, event.y)
+            MotionEvent.ACTION_POINTER_UP -> {
+                hadMultiTouch = true
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> return true
+            MotionEvent.ACTION_UP -> {
+                val wasGesture = hadMultiTouch || pinching
+                pinching = false
+                if (!wasGesture && !dragging) handleTap(event.x, event.y)
+                hadMultiTouch = false
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                pinching = false
+                hadMultiTouch = false
+                return true
+            }
         }
         return true
     }

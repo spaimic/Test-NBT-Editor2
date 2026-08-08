@@ -154,6 +154,7 @@ class WorldListActivity : AppCompatActivity() {
                         )
                         val dat = com.spaimic.nbttool.worlds.FlatWorldGenerator.buildNewWorldLevelDat(typedName, defaultLayers)
                         File(worldDir, "level.dat").writeBytes(com.spaimic.nbttool.nbt.NbtIO.writeLevelDat(dat))
+                        LocalWorldStore.writeDisplayName(worldDir, typedName)
                         runOnUiThread {
                             Toast.makeText(this, "Created \"$localName\"", Toast.LENGTH_SHORT).show()
                             refreshWorldList()
@@ -194,6 +195,7 @@ class WorldListActivity : AppCompatActivity() {
                 Thread {
                     try {
                         LocalWorldStore.importFromZip(this, uri, localName)
+                        LocalWorldStore.writeDisplayName(File(LocalWorldStore.rootDir(this), localName), input.text.toString())
                         runOnUiThread {
                             Toast.makeText(this, "Imported \"$localName\"", Toast.LENGTH_SHORT).show()
                             refreshWorldList()
