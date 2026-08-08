@@ -11,13 +11,14 @@ object ChunkClipboard {
         val id: String,
         val chunkX: Int,
         val chunkZ: Int,
+        val dimension: Int,
         val records: List<Record>,
         val previewPng: ByteArray? = null
     )
     data class Record(val key: ByteArray, val value: ByteArray)
 
     private const val MAGIC = 0x5343484B
-    private const val VERSION = 2
+    private const val VERSION = 3
     private const val DIR = "chunk_clipboard"
 
     private fun dir(context: Context) = File(context.filesDir, DIR).apply { mkdirs() }
@@ -30,7 +31,7 @@ object ChunkClipboard {
         val f = file(context, id)
         DataOutputStream(BufferedOutputStream(f.outputStream())).use { out ->
             out.writeInt(MAGIC); out.writeInt(VERSION)
-            out.writeUTF(id); out.writeInt(entry.chunkX); out.writeInt(entry.chunkZ)
+            out.writeUTF(id); out.writeInt(entry.chunkX); out.writeInt(entry.chunkZ); out.writeInt(entry.dimension)
             val preview = entry.previewPng ?: ByteArray(0)
             out.writeInt(preview.size); out.write(preview)
             out.writeInt(entry.records.size)
@@ -43,8 +44,8 @@ object ChunkClipboard {
         return id
     }
 
-    fun newEntry(chunkX: Int, chunkZ: Int, records: List<Record>, previewPng: ByteArray? = null) =
-        Entry(UUID.randomUUID().toString(), chunkX, chunkZ, records, previewPng)
+    fun newEntry(chunkX: Int, chunkZ: Int, dimension: Int, records: List<Record>, previewPng: ByteArray? = null) =
+        Entry(UUID.randomUUID().toString(), chunkX, chunkZ, dimension, records, previewPng)
 
     fun list(context: Context): List<Entry> =
         dir(context).listFiles { f -> f.extension == "chk" }?.mapNotNull { readFile(it) }
@@ -74,7 +75,8 @@ object ChunkClipboard {
             DataInputStream(BufferedInputStream(f.inputStream())).use { input ->
                 if (input.readInt() != MAGIC || input.readInt() != VERSION) return null
                 val id = input.readUTF()
-                val x = input.readInt(); val z = input.readInt()
+                val x = input.readInt(); val z = input.readInt(); val dimension = input.readInt()
+                if (dimension !in 0..2) return null
                 val previewSize = input.readInt()
                 if (previewSize < 0 || previewSize > 2 * 1024 * 1024) return null
                 val preview = ByteArray(previewSize); input.readFully(preview)
@@ -90,7 +92,7 @@ object ChunkClipboard {
                     val value = ByteArray(vs); input.readFully(value)
                     records += Record(key, value)
                 }
-                Entry(id, x, z, records, preview.takeIf { it.isNotEmpty() })
+                Entry(id, x, z, dimension, records, preview.takeIf { it.isNotEmpty() })
             }
         } catch (_: Exception) { null }
     }

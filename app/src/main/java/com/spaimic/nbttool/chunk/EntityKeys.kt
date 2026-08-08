@@ -42,18 +42,21 @@ object EntityKeys {
         return (0 until count).map { i -> digpValue.copyOfRange(i * 8, i * 8 + 8) }
     }
 
-    /** True if this looks like a digp key for the Overworld (dimension 0) — 4-byte
-     * "digp" prefix + 8 bytes of chunk X/Z, no dimension field. */
-    fun isOverworldDigpKey(key: ByteArray): Boolean =
-        key.size == 12 && key[0] == 'd'.code.toByte() && key[1] == 'i'.code.toByte() &&
-            key[2] == 'g'.code.toByte() && key[3] == 'p'.code.toByte()
+    /** True if this is a digp key for the requested Bedrock dimension. */
+    fun isDigpKeyForDimension(key: ByteArray, dimension: Int): Boolean =
+        key.size == if (dimension == 0) 12 else 16 &&
+            key[0] == 'd'.code.toByte() && key[1] == 'i'.code.toByte() &&
+            key[2] == 'g'.code.toByte() && key[3] == 'p'.code.toByte() &&
+            (dimension == 0 || readI32(key, 12) == dimension)
+
+    fun isOverworldDigpKey(key: ByteArray): Boolean = isDigpKeyForDimension(key, 0)
 
     /** Chunk X/Z from an Overworld digp key — call only after [isOverworldDigpKey] returns true. */
     fun digpChunkXZ(key: ByteArray): Pair<Int, Int> {
-        fun readI32(off: Int) = (key[off].toInt() and 0xFF) or ((key[off + 1].toInt() and 0xFF) shl 8) or
-            ((key[off + 2].toInt() and 0xFF) shl 16) or ((key[off + 3].toInt() and 0xFF) shl 24)
-        return readI32(4) to readI32(8)
+        return readI32(key, 4) to readI32(key, 8)
     }
+
+    fun digpDimension(key: ByteArray): Int = if (key.size >= 16) readI32(key, 12) else 0
 
     /** True if this is an actorprefix key — 11-byte ASCII prefix + exactly 8 bytes of actor ID. */
     fun isActorPrefixKey(key: ByteArray): Boolean {
@@ -63,8 +66,14 @@ object EntityKeys {
     }
 
     /** The 8-byte actor ID suffix of an actorprefix key, as a hex string (a usable HashMap key). */
+    fun actorIdBytes(key: ByteArray): ByteArray = key.copyOfRange(11, 19)
+
     fun actorIdHex(key: ByteArray): String =
-        key.copyOfRange(11, 19).joinToString("") { "%02x".format(it) }
+        actorIdBytes(key).joinToString("") { "%02x".format(it) }
+
+    private fun readI32(key: ByteArray, off: Int): Int =
+        (key[off].toInt() and 0xFF) or ((key[off + 1].toInt() and 0xFF) shl 8) or
+            ((key[off + 2].toInt() and 0xFF) shl 16) or ((key[off + 3].toInt() and 0xFF) shl 24)
 
     private fun writeI32LE(out: ByteArrayOutputStream, v: Int) {
         out.write(v and 0xFF)

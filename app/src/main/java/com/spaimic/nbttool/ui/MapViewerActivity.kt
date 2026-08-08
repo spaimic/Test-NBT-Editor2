@@ -334,11 +334,11 @@ class MapViewerActivity : AppCompatActivity() {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                val copied = ChunkTransfer.copy(bridge, chunkX, chunkZ)
+                val copied = ChunkTransfer.copy(bridge, chunkX, chunkZ, selectedDbDimension())
                 val preview = mapView.captureChunkPreviewPng(chunkX, chunkZ)
                 val id = ChunkClipboard.save(
                     this,
-                    ChunkClipboard.newEntry(copied.chunkX, copied.chunkZ, copied.records, preview)
+                    ChunkClipboard.newEntry(copied.chunkX, copied.chunkZ, copied.dimension, copied.records, preview)
                 )
                 runOnUiThread {
                     Toast.makeText(this, "Copied chunk ($chunkX, $chunkZ) to the chunk clipboard.", Toast.LENGTH_SHORT).show()
@@ -355,7 +355,7 @@ class MapViewerActivity : AppCompatActivity() {
             Toast.makeText(this, "Chunk clipboard is empty.", Toast.LENGTH_SHORT).show()
             return
         }
-        val labels = entries.map { "(${it.chunkX}, ${it.chunkZ}) — ${it.records.size} records" }.toTypedArray()
+        val labels = entries.map { "${if (it.dimension == 1) "Nether" else if (it.dimension == 2) "The End" else "Overworld"} (${it.chunkX}, ${it.chunkZ}) — ${it.records.size} records" }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("Choose chunk to paste")
             .setItems(labels) { _, which -> promptPasteChunk(targetX, targetZ, entries[which]) }
@@ -365,7 +365,7 @@ class MapViewerActivity : AppCompatActivity() {
     private fun promptPasteChunk(targetX: Int, targetZ: Int, clipboard: ChunkClipboard.Entry) {
         AlertDialog.Builder(this)
             .setTitle("Paste chunk here?")
-            .setMessage("Overwrite chunk ($targetX, $targetZ) with literal data from (${clipboard.chunkX}, ${clipboard.chunkZ})? Blocks, block entities, and entities will be replaced.")
+            .setMessage("Overwrite chunk ($targetX, $targetZ) with ${if (clipboard.dimension == 1) "Nether" else if (clipboard.dimension == 2) "The End" else "Overworld"} data from (${clipboard.chunkX}, ${clipboard.chunkZ})? Blocks, block entities, and entities will be replaced. The source and destination dimensions must match.")
             .setPositiveButton("Paste") { _, _ -> pasteChunk(targetX, targetZ, clipboard) }
             .setNegativeButton("Cancel", null).show()
     }
@@ -374,7 +374,7 @@ class MapViewerActivity : AppCompatActivity() {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ)
+                val written = ChunkTransfer.paste(bridge, clipboard, targetX, targetZ, selectedDbDimension())
                 runOnUiThread { Toast.makeText(this, "Pasted chunk to ($targetX, $targetZ) — $written records written.", Toast.LENGTH_LONG).show() }
                 rescanMap()
             } catch (e: Exception) {
