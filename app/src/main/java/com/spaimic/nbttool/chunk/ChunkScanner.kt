@@ -210,8 +210,9 @@ object ChunkScanner {
                                 if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                 val surfaceY = subY * 16 + y
                                 val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
-                                val baseColor = BlockColors.colorFor(name)
-                                grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY)
+                                val baseColor = BlockColors.colorForDimension(name, dimension)
+                                val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
+                                grid[x][z] = ColumnInfo(tinted, surfaceY)
                                 found[x][z] = true
                                 remaining--
                                 break
@@ -307,7 +308,7 @@ object ChunkScanner {
                                     if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                     val surfaceY = subY * 16 + y
                                     val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
-                                    val baseColor = BlockColors.colorFor(name)
+                                    val baseColor = BlockColors.colorForDimension(name, 0)
                                     grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY)
                                     found[x][z] = true
                                     remaining--

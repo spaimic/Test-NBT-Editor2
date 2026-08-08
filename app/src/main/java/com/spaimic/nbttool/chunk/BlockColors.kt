@@ -354,6 +354,49 @@ object BlockColors {
     fun colorFor(blockNameWithNamespace: String): Int =
         cache.getOrPut(blockNameWithNamespace) { resolve(blockNameWithNamespace.substringAfter(':')) }
 
+    /** Dimension-aware fallback for Nether and End terrain. These dimensions do not
+     * use the Overworld biome grass/water tinting, and newer Bedrock block IDs can
+     * appear before the generic table above is updated. */
+    fun colorForDimension(blockNameWithNamespace: String, dimension: Int): Int {
+        val name = blockNameWithNamespace.substringAfter(':').lowercase()
+        if (dimension == 0) return colorFor(blockNameWithNamespace)
+        resolveOrNull(name)?.let { return it }
+        if (dimension == 1) {
+            when {
+                name.contains("netherrack") -> return NETHER
+                name.contains("nether_brick") -> return NETHER
+                name.contains("soul_sand") || name.contains("soul_soil") -> return COLOR_BROWN
+                name.contains("crimson") -> return CRIMSON_STEM
+                name.contains("warped") -> return WARPED_STEM
+                name.contains("basalt") -> return STONE
+                name.contains("blackstone") -> return TERRACOTTA_BLACK
+                name.contains("ancient_debris") -> return NETHER
+                name.contains("nether_gold") -> return GOLD
+                name.contains("nether_quartz") -> return QUARTZ
+                name.contains("glowstone") || name.contains("shroomlight") -> return COLOR_ORANGE
+                name.contains("magma") -> return COLOR_RED
+                name == "lava" || name == "flowing_lava" -> return FIRE
+                name.contains("nether_wart") -> return COLOR_RED
+                name.contains("fungus") -> return COLOR_GREEN
+                name.contains("roots") -> return CRIMSON_STEM
+                name.contains("nylium") -> return if (name.startsWith("warped")) WARPED_NYLIUM else CRIMSON_NYLIUM
+            }
+            return fallbackSolid
+        }
+        // The End
+        when {
+            name.contains("end_stone") -> return SAND
+            name.contains("purpur") -> return COLOR_MAGENTA
+            name == "obsidian" || name == "crying_obsidian" -> return COLOR_BLACK
+            name.contains("chorus") -> return COLOR_PURPLE
+            name == "end_rod" -> return QUARTZ
+            name.contains("end_portal") -> return COLOR_BLACK
+            name.contains("bedrock") -> return STONE
+            name.contains("end_gateway") -> return COLOR_PURPLE
+        }
+        return fallbackSolid
+    }
+
     fun isKnown(blockNameWithNamespace: String): Boolean =
         resolveOrNull(blockNameWithNamespace.substringAfter(':')) != null
 
