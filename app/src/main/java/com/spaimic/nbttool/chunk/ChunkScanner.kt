@@ -185,6 +185,14 @@ object ChunkScanner {
         val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
         if (subchunks.isEmpty()) return null
 
+        // The Nether cannot use the Overworld/End "highest block" renderer. Its
+        // roof is itself a solid bedrock surface, while the playable terrain is
+        // distributed through stacked cave layers underneath it. Decode the full
+        // vertical column and use the dedicated layered renderer instead.
+        if (dimension == 1) {
+            return loadNetherChunkDirect(bridge, chunkX, chunkZ, subchunks, unknownBlockNames, failureReasonCounts, failureReasonExamples)
+        }
+
         val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
         val found = Array(16) { BooleanArray(16) }
         var remaining = 256
@@ -261,6 +269,82 @@ object ChunkScanner {
         } catch (_: Exception) {}
 
         MapShading.apply(grid)
+        return LoadedChunk(grid, entityMarkers, blockMarkers)
+    }
+
+    private fun loadNetherChunkDirect(
+        bridge: LevelDbBridge,
+        chunkX: Int,
+        chunkZ: Int,
+        subchunks: List<Pair<Int, ByteArray>>,
+        unknownBlockNames: MutableSet<String>,
+        failureReasonCounts: MutableMap<String, Int>,
+        failureReasonExamples: MutableMap<String, String>
+    ): LoadedChunk? {
+        // The legacy Nether renderer worked with a 0..255 vertical world. Keep the
+        // same coordinate model here; the modern Bedrock subchunk keys are still
+        // decoded individually and the highest positive layers contain the Nether
+        // roof/caverns that this renderer is designed to display.
+        val blocks = Array(16) { Array(16) { Array(256) { "minecraft:air" } } }
+        var hadSuccessfulSubchunk = false
+
+        for ((subY, bytes) in subchunks) {
+            val parsed = SubChunkParser.parse(bytes)
+            when (parsed) {
+                is SubChunkParser.ParseResult.Failure -> {
+                    failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
+                    failureReasonExamples.putIfAbsent(parsed.reason, parsed.hexSample)
+                }
+                is SubChunkParser.ParseResult.Success -> {
+                    hadSuccessfulSubchunk = true
+                    val baseY = subY * 16
+                    for (x in 0 until 16) for (z in 0 until 16) for (innerY in 0 until 16) {
+                        val worldY = baseY + innerY
+                        if (worldY !in 0 until 256) continue
+                        val name = parsed.blocks[x][z][innerY]
+                        blocks[x][z][worldY] = name
+                        if (name != "minecraft:air" && !BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                    }
+                }
+            }
+        }
+        if (!hadSuccessfulSubchunk) return null
+
+        val grid = NetherRenderer.render(blocks)
+
+        val blockMarkers = ArrayList<BlockEntityMarker>()
+        try {
+            val bytes = bridge.read(ChunkKeys.blockEntityKey(chunkX, chunkZ, 1))
+            if (bytes != null) {
+                for (compound in NbtIO.readConcatenatedCompounds(bytes)) {
+                    val id = (compound.entries["id"] as? NbtTag.Str)?.value ?: continue
+                    val x = (compound.entries["x"] as? NbtTag.Int)?.value ?: continue
+                    val y = (compound.entries["y"] as? NbtTag.Int)?.value ?: continue
+                    val z = (compound.entries["z"] as? NbtTag.Int)?.value ?: continue
+                    blockMarkers.add(BlockEntityMarker(x, y, z, id))
+                }
+            }
+        } catch (_: Exception) {}
+
+        val entityMarkers = ArrayList<EntityMarker>()
+        try {
+            val digp = bridge.read(EntityKeys.digpKey(chunkX, chunkZ, 1))
+            if (digp != null) {
+                for (actorId in EntityKeys.splitActorIds(digp)) {
+                    try {
+                        val actor = bridge.read(EntityKeys.actorPrefixKey(actorId)) ?: continue
+                        val compound = NbtIO.readRootCompoundNoHeader(actor)
+                        val identifier = (compound.entries["identifier"] as? NbtTag.Str)?.value ?: continue
+                        val posTag = compound.entries["Pos"] as? NbtTag.ListTag ?: continue
+                        val px = (posTag.items.getOrNull(0) as? NbtTag.Float)?.value ?: continue
+                        val py = (posTag.items.getOrNull(1) as? NbtTag.Float)?.value ?: continue
+                        val pz = (posTag.items.getOrNull(2) as? NbtTag.Float)?.value ?: continue
+                        entityMarkers.add(EntityMarker(px.toInt(), py.toInt(), pz.toInt(), identifier))
+                    } catch (_: Exception) {}
+                }
+            }
+        } catch (_: Exception) {}
+
         return LoadedChunk(grid, entityMarkers, blockMarkers)
     }
 
