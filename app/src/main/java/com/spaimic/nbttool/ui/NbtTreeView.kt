@@ -274,9 +274,9 @@ class NbtTreeAdapter(
             if (index >= 0) {
                 notifyDataSetChanged()
                 rv.post {
-                    rv.layoutManager?.scrollToPositionWithOffset(index, 80)
+                    ((rv.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager))?.scrollToPositionWithOffset(index, 80)
                     rv.post {
-                        rv.layoutManager?.scrollToPositionWithOffset(index, 80)
+                        ((rv.layoutManager as? androidx.recyclerview.widget.LinearLayoutManager))?.scrollToPositionWithOffset(index, 80)
                         highlightPath = targetPath
                         notifyDataSetChanged()
                     }
