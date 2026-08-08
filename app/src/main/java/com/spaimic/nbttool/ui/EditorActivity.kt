@@ -163,7 +163,7 @@ class EditorActivity : AppCompatActivity() {
                         is NbtTag.Str -> NbtTag.Str(input.text.toString())
                         else -> tag
                     }
-                    NbtHistory.recordBefore(dat.root)
+                    NbtHistory.recordBefore(levelDat?.root ?: return@setPositiveButton)
                     row.setValue(newTag)
                     adapter.refresh()
                 } catch (e: NumberFormatException) {
