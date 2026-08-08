@@ -29,7 +29,8 @@ class EntityListActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         val chunkX = intent.getIntExtra(EXTRA_CHUNK_X, 0)
         val chunkZ = intent.getIntExtra(EXTRA_CHUNK_Z, 0)
-        title = "Entities in chunk ($chunkX, $chunkZ)"
+        val dimension = intent.getIntExtra(EXTRA_DIMENSION, 0)
+        title = "Entities in chunk ($chunkX, $chunkZ) — ${dimensionName(dimension)}"
 
         listView = ListView(this)
         setContentView(listView)
@@ -39,10 +40,10 @@ class EntityListActivity : AppCompatActivity() {
             startActivity(i)
         }
 
-        loadEntities(chunkX, chunkZ)
+        loadEntities(chunkX, chunkZ, dimension)
     }
 
-    private fun loadEntities(chunkX: Int, chunkZ: Int) {
+    private fun loadEntities(chunkX: Int, chunkZ: Int, dimension: Int) {
         val bridge = LevelDbSession.bridge
         if (bridge == null) {
             Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
@@ -50,7 +51,7 @@ class EntityListActivity : AppCompatActivity() {
         }
         Thread {
             try {
-                val digpValue = bridge.read(EntityKeys.digpKey(chunkX, chunkZ))
+                val digpValue = bridge.read(EntityKeys.digpKey(chunkX, chunkZ, dimension))
                 if (digpValue == null || digpValue.isEmpty()) {
                     runOnUiThread { showNoEntitiesDialog() }
                     return@Thread
@@ -94,6 +95,13 @@ class EntityListActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_CHUNK_X = "chunk_x"
         const val EXTRA_CHUNK_Z = "chunk_z"
+        const val EXTRA_DIMENSION = "dimension"
+
+        private fun dimensionName(dimension: Int) = when (dimension) {
+            1 -> "Nether"
+            2 -> "The End"
+            else -> "Overworld"
+        }
     }
 
     private class EntityRowAdapter(context: android.content.Context, private val rows: List<EntityRow>) :

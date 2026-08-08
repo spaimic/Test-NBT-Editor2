@@ -71,6 +71,10 @@ object EntityKeys {
     fun actorIdHex(key: ByteArray): String =
         actorIdBytes(key).joinToString("") { "%02x".format(it) }
 
+    /** Hex identity for an already-extracted 8-byte actor ID. */
+    fun actorIdBytesHex(actorId: ByteArray): String =
+        actorId.joinToString("") { "%02x".format(it) }
+
     private fun readI32(key: ByteArray, off: Int): Int =
         (key[off].toInt() and 0xFF) or ((key[off + 1].toInt() and 0xFF) shl 8) or
             ((key[off + 2].toInt() and 0xFF) shl 16) or ((key[off + 3].toInt() and 0xFF) shl 24)

@@ -27,7 +27,8 @@ class BlockEntityListActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         val chunkX = intent.getIntExtra(EXTRA_CHUNK_X, 0)
         val chunkZ = intent.getIntExtra(EXTRA_CHUNK_Z, 0)
-        title = "Block entities in chunk ($chunkX, $chunkZ)"
+        val dimension = intent.getIntExtra(EXTRA_DIMENSION, 0)
+        title = "Block entities in chunk ($chunkX, $chunkZ) — ${dimensionName(dimension)}"
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         listView = ListView(this).apply {
@@ -42,7 +43,7 @@ class BlockEntityListActivity : AppCompatActivity() {
             startActivity(i)
         }
 
-        loadBlockEntities(chunkX, chunkZ)
+        loadBlockEntities(chunkX, chunkZ, dimension)
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
@@ -58,7 +59,7 @@ class BlockEntityListActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
 
-    private fun loadBlockEntities(chunkX: Int, chunkZ: Int) {
+    private fun loadBlockEntities(chunkX: Int, chunkZ: Int, dimension: Int) {
         val bridge = LevelDbSession.bridge
         if (bridge == null) {
             Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
@@ -66,7 +67,7 @@ class BlockEntityListActivity : AppCompatActivity() {
         }
         Thread {
             try {
-                val key = ChunkKeys.blockEntityKey(chunkX, chunkZ)
+                val key = ChunkKeys.blockEntityKey(chunkX, chunkZ, dimension)
                 val bytes = bridge.read(key)
                 BlockEntitySession.reset()
                 BlockEntitySession.rawKey = key
@@ -147,6 +148,13 @@ class BlockEntityListActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_CHUNK_X = "chunk_x"
         const val EXTRA_CHUNK_Z = "chunk_z"
+        const val EXTRA_DIMENSION = "dimension"
         private const val MENU_SAVE = 1
+
+        private fun dimensionName(dimension: Int) = when (dimension) {
+            1 -> "Nether"
+            2 -> "The End"
+            else -> "Overworld"
+        }
     }
 }

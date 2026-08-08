@@ -273,12 +273,14 @@ class MapViewerActivity : AppCompatActivity() {
                         val i = Intent(this, EntityListActivity::class.java)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
+                        i.putExtra(EntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
                     2 -> {
                         val i = Intent(this, BlockEntityListActivity::class.java)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
+                        i.putExtra(BlockEntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
                     3 -> copyChunk(chunkX, chunkZ)
@@ -306,7 +308,7 @@ class MapViewerActivity : AppCompatActivity() {
                         rawRecords++
                         if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX) subchunks++
                         if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_BLOCK_ENTITY) blockEntities++
-                    } else if (com.spaimic.nbttool.chunk.EntityKeys.isOverworldDigpKey(key)) {
+                    } else if (com.spaimic.nbttool.chunk.EntityKeys.isDigpKeyForDimension(key, selectedDbDimension())) {
                         val (x, z) = com.spaimic.nbttool.chunk.EntityKeys.digpChunkXZ(key)
                         if (x == chunkX && z == chunkZ) {
                             entities += com.spaimic.nbttool.chunk.EntityKeys.splitActorIds(value).size

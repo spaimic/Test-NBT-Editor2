@@ -44,7 +44,7 @@ object ChunkTransfer {
                 if (kx == chunkX && kz == chunkZ) {
                     records += ChunkClipboard.Record(key.copyOf(), value.copyOf())
                     for (id in EntityKeys.splitActorIds(value)) {
-                        actorIds[EntityKeys.actorIdHex(id)] = id
+                        actorIds[EntityKeys.actorIdBytesHex(id)] = id
                     }
                 }
             }
