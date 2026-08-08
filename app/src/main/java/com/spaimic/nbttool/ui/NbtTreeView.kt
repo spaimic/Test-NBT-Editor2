@@ -178,30 +178,53 @@ class NbtTreeAdapter(
             .show()
     }
 
-    /** Expands every ancestor of a search result and scrolls directly to it. */
+    /** Expands every container ancestor of a search result and jumps directly to it. */
     private fun jumpToPath(targetPath: String) {
-        val segments = ArrayList<String>()
-        var current = ""
-        // Compound keys are separated by '/', while list indexes are part of a
-        // segment (e.g. Inventory[3]/tag). This mirrors the paths produced by walk().
-        for (part in targetPath.split('/')) {
-            current = if (current.isEmpty()) part else "$current/$part"
-            segments += current
-        }
-        // Expand only container paths. If a segment points at a primitive, adding it
-        // to expanded is harmless and lets the normal row path lookup find the target.
-        expanded.addAll(segments.dropLast(1))
+        // First make the tree visible by expanding every currently-known ancestor.
+        // Using the flattened row paths is important for list elements such as
+        // Inventory[3]: the parent that must be expanded is Inventory, not
+        // Inventory[3] itself.
+        val ancestors = rows.asSequence()
+            .filter { candidate ->
+                candidate.first != targetPath &&
+                    (targetPath.startsWith(candidate.first + "/") ||
+                     targetPath.startsWith(candidate.first + "[")) &&
+                    (candidate.second.tag is NbtTag.Compound || candidate.second.tag is NbtTag.ListTag)
+            }
+            .map { it.first }
+            .toList()
+
+        expanded.addAll(ancestors)
         rebuild()
         notifyDataSetChanged()
         resizeForContent()
+
+        // Rebuild may now contain the target row. Use a posted jump so RecyclerView
+        // has applied the new adapter data before attempting to scroll.
         val index = rows.indexOfFirst { it.first == targetPath }
         if (index >= 0) {
-            attachedRecyclerView?.post { attachedRecyclerView?.smoothScrollToPosition(index) }
-        } else {
-            // A list index can itself be the final target. If the exact path was not
-            // visible because of an unusual key containing '/', fall back to prefix.
-            val fallback = rows.indexOfFirst { it.first.endsWith(targetPath) }
-            if (fallback >= 0) attachedRecyclerView?.post { attachedRecyclerView?.smoothScrollToPosition(fallback) }
+            attachedRecyclerView?.post {
+                attachedRecyclerView?.scrollToPosition(index)
+            }
+            return
+        }
+
+        // If the target itself is a list element, its parent list may not have been
+        // present in the old flattened set. Expand that parent explicitly.
+        val listParent = targetPath.substringBeforeLast('/').let { parent ->
+            if (parent.isNotEmpty()) parent else targetPath.substringBefore('[').takeIf { it != targetPath }
+        }
+        if (!listParent.isNullOrEmpty()) {
+            expanded.add(listParent)
+            rebuild()
+            notifyDataSetChanged()
+            resizeForContent()
+            val retryIndex = rows.indexOfFirst { it.first == targetPath }
+            if (retryIndex >= 0) {
+                attachedRecyclerView?.post {
+                    attachedRecyclerView?.scrollToPosition(retryIndex)
+                }
+            }
         }
     }
 
