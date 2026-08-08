@@ -28,7 +28,7 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private lateinit var mapView: MapView
     private lateinit var coordText: TextView
-    private var currentDimension = 0 // 0 Overworld, 1 Nether, 2 The End
+    private var currentDimension = 0 // UI: 0 Overworld, 1 Nether, 2 The End
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -165,7 +165,7 @@ class MapViewerActivity : AppCompatActivity() {
 
     private fun requestVisibleChunks(positions: Set<Pair<Int, Int>>) {
         val bridge = LevelDbSession.bridge ?: return
-        val dimensionForRequest = currentDimension
+        val dimensionForRequest = selectedDbDimension()
         val todo = ArrayList<Pair<Int, Int>>()
 
         synchronized(loadingChunks) {
@@ -302,7 +302,7 @@ class MapViewerActivity : AppCompatActivity() {
                 var blockEntities = 0
                 bridge.forEachRawEntry { key, value ->
                     val info = com.spaimic.nbttool.chunk.ChunkKeys.parse(key)
-                    if (info != null && info.chunkX == chunkX && info.chunkZ == chunkZ && info.dimension == 0) {
+                    if (info != null && info.chunkX == chunkX && info.chunkZ == chunkZ && info.dimension == selectedDbDimension()) {
                         rawRecords++
                         if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX) subchunks++
                         if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_BLOCK_ENTITY) blockEntities++
@@ -319,7 +319,7 @@ class MapViewerActivity : AppCompatActivity() {
                     "Subchunks: $subchunks\n" +
                     "Entities: $entities\n" +
                     "Block-entity records: $blockEntities\n" +
-                    "Dimension: Overworld"
+                    "Dimension: ${dimensionName()}"
                 runOnUiThread {
                     AlertDialog.Builder(this).setTitle("Chunk Information").setMessage(message)
                         .setPositiveButton("OK", null).show()
@@ -422,6 +422,13 @@ class MapViewerActivity : AppCompatActivity() {
         1 -> "Nether"
         2 -> "The End"
         else -> "Overworld"
+    }
+
+    /** Bedrock LevelDB chunk-key dimension IDs: Overworld=0, Nether=-1, The End=1. */
+    private fun selectedDbDimension(): Int = when (currentDimension) {
+        1 -> -1
+        2 -> 1
+        else -> 0
     }
 
     private fun showDimensionMenu() {
