@@ -90,7 +90,7 @@ class NbtTreeAdapter(
             when (container) {
                 is NbtTag.Compound -> {
                     for ((key, tag) in container.entries) {
-                        val childPath = "$path/$key"
+                        val childPath = if (path.isEmpty()) key else "$path/$key"
                         out.add(childPath to NbtRow(key, tag, depth, NbtContainer.InCompound(container, key)))
                         if (childPath in expanded && (tag is NbtTag.Compound || tag is NbtTag.ListTag)) {
                             walk(tag, childPath, depth + 1)
