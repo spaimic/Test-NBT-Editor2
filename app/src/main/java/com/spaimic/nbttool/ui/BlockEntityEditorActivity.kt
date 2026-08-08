@@ -32,7 +32,7 @@ class BlockEntityEditorActivity : AppCompatActivity() {
             layoutManager = LinearLayoutManager(this@BlockEntityEditorActivity)
             layoutParams = android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        adapter = NbtTreeAdapter(this, compound) { row -> onLeafTapped(row) { adapter.refresh() } }
+        adapter = NbtTreeAdapter(this, compound, { row -> onLeafTapped(row) { adapter.refresh() } })
         recycler.adapter = adapter
         hScroll.addView(recycler)
 
