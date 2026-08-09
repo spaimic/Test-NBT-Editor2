@@ -38,6 +38,7 @@ object NetherRenderer {
             var sumB = 0f
             var layers = 1
             var lastSurfaceY = caveFloorStart
+            var lastSurfaceName = "minecraft:netherrack"
 
             while (caveFloorStart > 0) {
                 val caveCeil = findAirUnder(blocks, x, z, caveFloorStart - 1)
@@ -79,6 +80,8 @@ object NetherRenderer {
                 }
 
                 lastSurfaceY = caveFloor
+                val layerName = blocks[x][z][caveFloor]
+                if (!isAir(layerName)) lastSurfaceName = layerName
                 caveFloorStart = caveFloor
                 layers++
             }
@@ -121,7 +124,7 @@ object NetherRenderer {
                 }
             }
 
-            grid[x][z] = ColumnInfo(Color.rgb(r, g, b), lastSurfaceY.coerceAtLeast(0))
+            grid[x][z] = ColumnInfo(Color.rgb(r, g, b), lastSurfaceY.coerceAtLeast(0), lastSurfaceName)
         }
 
         return grid

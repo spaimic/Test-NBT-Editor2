@@ -397,6 +397,49 @@ object BlockColors {
         return fallbackSolid
     }
 
+    /**
+     * Adds a tiny deterministic palette variation to the flat base map color.
+     *
+     * Blocktopograph's map is visually richer because nearby blocks of the same
+     * material are not rendered as one perfectly uniform RGB value. We do not
+     * have the game's texture atlas inside the editor, so Build 104 approximates
+     * that look with a five-step material palette. The variation is deterministic
+     * from world coordinates, so the same block always gets the same shade at the
+     * same position and the pattern does not reset at chunk boundaries.
+     */
+    fun detailedColor(baseColor: Int, blockNameWithNamespace: String, worldX: Int, worldZ: Int): Int {
+        val name = blockNameWithNamespace.substringAfter(':').lowercase()
+        if (baseColor == fallbackUnloaded || baseColor == fallbackUnparsed) return baseColor
+
+        // Keep special map/marker colors stable. Terrain materials get the full
+        // five-shade treatment; these are deliberately left exact.
+        if (name == "portal" || name.contains("spawner") ||
+            name.contains("chest") || name == "nether_wart") return baseColor
+
+        var h = worldX * -1640531527 + worldZ * 1013904223 + name.hashCode()
+        h = h xor (h ushr 16)
+        h *= 0x7feb352d
+        h = h xor (h ushr 15)
+        h *= 0x846ca68b.toInt()
+        h = h xor (h ushr 16)
+        val variant = (h and 0x7fffffff) % 5
+
+        // Five close shades: noticeably textured at map scale, but still faithful
+        // to the underlying map color. Dark blocks use a slightly narrower range.
+        val factor = when (variant) {
+            0 -> 0.90f
+            1 -> 0.95f
+            2 -> 1.00f
+            3 -> 1.05f
+            else -> 1.10f
+        }
+        return Color.rgb(
+            (Color.red(baseColor) * factor).toInt().coerceIn(0, 255),
+            (Color.green(baseColor) * factor).toInt().coerceIn(0, 255),
+            (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)
+        )
+    }
+
     fun isKnown(blockNameWithNamespace: String): Boolean =
         resolveOrNull(blockNameWithNamespace.substringAfter(':')) != null
 

@@ -6,7 +6,7 @@ import com.spaimic.nbttool.shizuku.LevelDbBridge
 import kotlin.math.abs
 
 /** One rendered map column: the color to show, and the real block Y of its surface. */
-data class ColumnInfo(val color: Int, val surfaceY: Int)
+data class ColumnInfo(val color: Int, val surfaceY: Int, val material: String = "")
 
 /** One entity's position + identifier, for drawing a marker on the map. */
 data class EntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val identifier: String)
@@ -296,7 +296,7 @@ object ChunkScanner {
                                 val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
                                 val baseColor = BlockColors.colorForDimension(name, dimension)
                                 val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
-                                grid[x][z] = ColumnInfo(tinted, surfaceY)
+                                grid[x][z] = ColumnInfo(tinted, surfaceY, name)
                                 found[x][z] = true
                                 remaining--
                                 break
@@ -469,7 +469,7 @@ object ChunkScanner {
                                     val surfaceY = subY * 16 + y
                                     val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
                                     val baseColor = BlockColors.colorForDimension(name, 0)
-                                    grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY)
+                                    grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
                                     found[x][z] = true
                                     remaining--
                                     break

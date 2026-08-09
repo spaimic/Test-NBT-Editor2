@@ -199,7 +199,12 @@ class MapView(context: Context) : View(context) {
         return chunkBitmaps.getOrPut(pos) {
             val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
             val pixels = IntArray(256)
-            for (x in 0 until 16) for (z in 0 until 16) pixels[z * 16 + x] = grid[x][z].color
+            for (x in 0 until 16) for (z in 0 until 16) {
+                val info = grid[x][z]
+                val worldX = pos.first * 16 + x
+                val worldZ = pos.second * 16 + z
+                pixels[z * 16 + x] = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
+            }
             bitmap.setPixels(pixels, 0, 16, 0, 0, 16, 16)
             bitmap
         }
