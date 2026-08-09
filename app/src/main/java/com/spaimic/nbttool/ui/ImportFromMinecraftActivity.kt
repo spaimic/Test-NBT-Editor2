@@ -102,7 +102,7 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
                         fetched += row
                     } catch (_: Exception) {
                         // Keep loading the remaining worlds even if one world is unreadable.
-                        fetched += dir to (WorldRow(dir, "", "", null) to 0L)
+                        fetched += dir to (WorldRow(dir, "", "", "", null) to 0L)
                     }
                     runOnUiThread {
                         loadingWorldCount = fetched.size
@@ -187,9 +187,9 @@ class ImportFromMinecraftActivity : AppCompatActivity() {
             ShizukuShell.pullFile("$basePath/$worldDir/world_icon.jpeg", iconPath.absolutePath)
             iconPath.takeIf { it.isFile && it.length() > 0L }?.absolutePath
         } catch (_: Exception) { null }
-        WorldRow(name, date, time, icon) to LocalWorldStore.lastPlayedEpoch(dat)
+        WorldRow(name, name, date, time, icon) to LocalWorldStore.lastPlayedEpoch(dat)
     } catch (e: Exception) {
-        WorldRow(worldDir, "", "", null) to 0L
+        WorldRow(worldDir, "", "", "", null) to 0L
     }
 
     private fun promptImport(remoteWorldDir: String, suggestedName: String) {

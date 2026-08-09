@@ -14,7 +14,7 @@ import java.io.File
 
 /** One row: a world's display name plus its LastPlayed date/time, so worlds
  * with the same name (e.g. several "New World"s) can still be told apart. */
-data class WorldRow(val name: String, val dateLine: String, val timeLine: String, val iconPath: String? = null)
+data class WorldRow(val name: String, val realName: String, val dateLine: String, val timeLine: String, val iconPath: String? = null)
 
 class WorldRowAdapter(context: Context, private val rows: List<WorldRow>) :
     ArrayAdapter<WorldRow>(context, 0, rows) {
@@ -25,8 +25,20 @@ class WorldRowAdapter(context: Context, private val rows: List<WorldRow>) :
         val nameView = TextView(context).apply {
             text = row.name
             textSize = 16f
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            gravity = Gravity.START
+        }
+        val realNameView = TextView(context).apply {
+            text = row.realName
+            textSize = 12f
+            setTextColor(Color.GRAY)
+            gravity = Gravity.START
+        }
+        val nameColumn = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            addView(nameView)
+            if (row.realName.isNotBlank()) addView(realNameView)
         }
         val iconView = ImageView(context).apply {
             layoutParams = LinearLayout.LayoutParams(72, 72).apply { rightMargin = 20 }
@@ -59,7 +71,7 @@ class WorldRowAdapter(context: Context, private val rows: List<WorldRow>) :
             setPadding(32, 24, 32, 24)
             gravity = Gravity.CENTER_VERTICAL
             addView(iconView)
-            addView(nameView)
+            addView(nameColumn)
             if (row.dateLine.isNotEmpty()) addView(dateTimeColumn)
         }
     }

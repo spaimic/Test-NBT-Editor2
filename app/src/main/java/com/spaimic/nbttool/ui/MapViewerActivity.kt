@@ -161,6 +161,7 @@ class MapViewerActivity : AppCompatActivity() {
                     }
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
+                    title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
                     coordText.text = "${dimensionName()} • Loading visible chunks…"
                     // IMPORTANT: do not enumerate LevelDB here. The database can contain
                     // thousands of chunk records plus map_*, village, player, structure,
@@ -546,6 +547,7 @@ class MapViewerActivity : AppCompatActivity() {
             "The End NBT Data",
             "NBT Tag Clipboard",
             "Chunk Clipboard",
+            "Open LevelDB Key by Name",
             "Advanced: Browse Extra DB Keys"
         )
 
@@ -571,10 +573,80 @@ class MapViewerActivity : AppCompatActivity() {
                     10 -> showExactKey("The End NBT Data", "TheEnd")
                     11 -> startActivity(Intent(this, ClipboardActivity::class.java))
                     12 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
-                    13 -> openAllKeysBrowser()
+                    13 -> promptOpenLevelDbKeyByName()
+                    14 -> openAllKeysBrowser()
                 }
             }
             .show()
+    }
+
+    private fun promptOpenLevelDbKeyByName() {
+        val input = EditText(this).apply {
+            hint = "e.g. ~local_player"
+            singleLine = true
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Open LevelDB Key by Name")
+            .setMessage("Enter the exact LevelDB key name to open.")
+            .setView(input)
+            .setPositiveButton("Open") { _, _ ->
+                val keyName = input.text.toString()
+                if (keyName.isBlank()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Invalid LevelDB Key")
+                        .setMessage("Please enter a LevelDB key name.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                } else {
+                    openLevelDbKeyByName(keyName)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openLevelDbKeyByName(keyName: String) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            showErrorDialog(this, "LevelDB unavailable", IllegalStateException("The world database is not open yet."))
+            return
+        }
+        Thread {
+            try {
+                val rawKey = keyName.toByteArray(Charsets.UTF_8)
+                val bytes = bridge.read(rawKey)
+                if (bytes == null) {
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("LevelDB Key Not Found")
+                            .setMessage("This LevelDB Key doesn't exist.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                    return@Thread
+                }
+                val compound = try {
+                    NbtIO.readRootCompoundNoHeader(bytes)
+                } catch (_: Exception) {
+                    null
+                }
+                if (compound == null) {
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("No NBT Data")
+                            .setMessage("No valid NBT data found")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                    return@Thread
+                }
+                LevelDbSession.keyBytesByName[keyName] = rawKey
+                LevelDbSession.loadedEntries[keyName] = compound
+                runOnUiThread { openEntry(keyName) }
+            } catch (e: Throwable) {
+                runOnUiThread { showErrorDialog(this, "Couldn't open LevelDB key", e) }
+            }
+        }.start()
     }
 
     private fun showExactKey(titleText: String, keyName: String) {

@@ -55,7 +55,7 @@ class WorldListActivity : AppCompatActivity() {
             .map { dir -> dir to LocalWorldStore.worldInfo(dir) }
             .sortedByDescending { it.second.lastPlayedEpoch }
         worldDirs = infoPairs.map { it.first }
-        val rows = infoPairs.map { (dir, info) -> WorldRow(info.name, info.dateLine, info.timeLine, LocalWorldStore.worldIconFile(dir)?.absolutePath) }
+        val rows = infoPairs.map { (dir, info) -> WorldRow(info.name, info.realName, info.dateLine, info.timeLine, LocalWorldStore.worldIconFile(dir)?.absolutePath) }
         listView.adapter = WorldRowAdapter(this, rows)
     }
 
@@ -68,17 +68,41 @@ class WorldListActivity : AppCompatActivity() {
     private fun showWorldMenu(worldDir: File) {
         android.app.AlertDialog.Builder(this)
             .setTitle(LocalWorldStore.levelName(worldDir))
-            .setItems(arrayOf("Open in Minecraft", "Flat World Generator", "Delete")) { _, which ->
+            .setItems(arrayOf("Rename", "Open in Minecraft", "Flat World Generator", "Delete")) { _, which ->
                 when (which) {
-                    0 -> openInMinecraft(worldDir)
-                    1 -> {
+                    0 -> promptRenameWorld(worldDir)
+                    1 -> openInMinecraft(worldDir)
+                    2 -> {
                         val i = Intent(this, FlatWorldGeneratorActivity::class.java)
                         i.putExtra(FlatWorldGeneratorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
                         startActivity(i)
                     }
-                    2 -> confirmDelete(worldDir)
+                    3 -> confirmDelete(worldDir)
                 }
             }
+            .show()
+    }
+
+    private fun promptRenameWorld(worldDir: File) {
+        val input = android.widget.EditText(this).apply {
+            setText(LocalWorldStore.levelName(worldDir))
+            selectAll()
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Rename local world")
+            .setMessage("This changes only the name shown in NBT Editor. The level.dat world name will not be changed.")
+            .setView(input)
+            .setPositiveButton("Rename") { _, _ ->
+                try {
+                    val name = input.text.toString().trim()
+                    if (name.isBlank()) throw IllegalArgumentException("World name cannot be empty")
+                    LocalWorldStore.writeDisplayName(worldDir, name)
+                    refreshWorldList()
+                } catch (e: Exception) {
+                    showErrorDialog(this, "Couldn't rename world", e)
+                }
+            }
+            .setNegativeButton("Cancel", null)
             .show()
     }
 

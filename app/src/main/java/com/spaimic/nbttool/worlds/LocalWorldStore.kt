@@ -44,6 +44,7 @@ object LocalWorldStore {
 
     /** Exact display name chosen by the user, including Bedrock formatting codes such as §.
      * The filesystem folder remains sanitized and is never used as the display name. */
+    /** User-facing local display name. This is deliberately independent from level.dat. */
     fun levelName(worldDir: File): String {
         val metadata = File(worldDir, DISPLAY_NAME_FILE)
         if (metadata.isFile) {
@@ -52,6 +53,11 @@ object LocalWorldStore {
                 if (value.isNotBlank()) return value
             } catch (_: Exception) {}
         }
+        return actualLevelName(worldDir)
+    }
+
+    /** The real Bedrock LevelName stored in level.dat, never changed by local renaming. */
+    fun actualLevelName(worldDir: File): String {
         return try {
             val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
             (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir.name
@@ -68,15 +74,23 @@ object LocalWorldStore {
         File(worldDir, DISPLAY_NAME_FILE).writeText(value, Charsets.UTF_8)
     }
 
-    data class WorldInfo(val name: String, val dateLine: String, val timeLine: String, val lastPlayedEpoch: Long)
+    data class WorldInfo(
+        val name: String,
+        val realName: String,
+        val dateLine: String,
+        val timeLine: String,
+        val lastPlayedEpoch: Long
+    )
 
-    /** name (from the folder, i.e. what was typed at import) + LastPlayed date/time from level.dat. */
+    /** Local display name + the real level.dat name + LastPlayed date/time. */
     fun worldInfo(worldDir: File): WorldInfo = try {
         val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
         val (date, time) = lastPlayedDateTime(dat)
-        WorldInfo(levelName(worldDir), date, time, lastPlayedEpoch(dat))
+        val realName = (dat.root.entries["LevelName"] as? NbtTag.Str)?.value?.takeIf { it.isNotBlank() } ?: worldDir.name
+        WorldInfo(levelName(worldDir), realName, date, time, lastPlayedEpoch(dat))
     } catch (e: Exception) {
-        WorldInfo(levelName(worldDir), "", "", 0L)
+        val fallback = actualLevelName(worldDir)
+        WorldInfo(levelName(worldDir), fallback, "", "", 0L)
     }
 
     /** Formats the level.dat "LastPlayed" tag (epoch seconds) as separate date/time strings. */
