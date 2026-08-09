@@ -285,6 +285,12 @@ class MapView(context: Context) : View(context) {
      * solid shades arranged in clean 3x3 pixel cells. This keeps the richer
      * Blocktopograph-like variation without texture grain or filtering artifacts.
      */
+    /**
+     * Build a 192x192 map tile (12 px/block). Build 114 deliberately uses
+     * clean map colors: a flat world must look flat. Elevation is the only
+     * source of terrain shading, and neighboring chunks are consulted at
+     * borders so a hill does not suddenly change shading at a chunk edge.
+     */
     private fun renderChunkBitmap(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
         val existing = chunkBitmaps[pos]
         if (existing != null && !existing.isRecycled && existing.width == chunkPixels) {
@@ -293,25 +299,39 @@ class MapView(context: Context) : View(context) {
 
         val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.RGB_565)
         val pixels = IntArray(chunkPixels * chunkPixels)
+        val westGrid = chunks[pos.first - 1 to pos.second]
+        val eastGrid = chunks[pos.first + 1 to pos.second]
+        val northGrid = chunks[pos.first to pos.second - 1]
+        val southGrid = chunks[pos.first to pos.second + 1]
 
-        // Build 113: every Minecraft block is represented by one clean, flat
-        // 12x12 map-color tile. Earlier builds varied individual pixels inside
-        // each block; at map scale that produced a grainy "concrete powder"
-        // appearance instead of Blocktopograph-style clean pixels.
-        //
-        // We still allow a tiny deterministic per-BLOCK color adjustment, so
-        // large forests/fields do not become a single perfectly uniform sheet,
-        // but there is NEVER intra-block noise or a checkerboard pattern.
         for (x in 0 until 16) for (z in 0 until 16) {
             val info = grid[x][z]
-            val worldX = pos.first * 16 + x
-            val worldZ = pos.second * 16 + z
+            val west = when {
+                x > 0 -> grid[x - 1][z].surfaceY
+                westGrid != null -> westGrid[15][z].surfaceY
+                else -> info.surfaceY
+            }
+            val east = when {
+                x < 15 -> grid[x + 1][z].surfaceY
+                eastGrid != null -> eastGrid[0][z].surfaceY
+                else -> info.surfaceY
+            }
+            val north = when {
+                z > 0 -> grid[x][z - 1].surfaceY
+                northGrid != null -> northGrid[x][15].surfaceY
+                else -> info.surfaceY
+            }
+            val south = when {
+                z < 15 -> grid[x][z + 1].surfaceY
+                southGrid != null -> southGrid[x][0].surfaceY
+                else -> info.surfaceY
+            }
 
-            val north = if (z > 0) grid[x][z - 1].surfaceY else info.surfaceY
-            val west = if (x > 0) grid[x - 1][z].surfaceY else info.surfaceY
-            val relief = reliefShading(info.surfaceY, west, north)
-            val base = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
-
+            // Build 114: no coordinate-based color variation. Only local height
+            // differences affect the final shade, producing the clean, subtle
+            // relief visible in Blocktopograph while preserving block identity.
+            val relief = reliefShading(info.surfaceY, west, east, north, south)
+            val base = info.color
             val r = (Color.red(base) * relief).toInt().coerceIn(0, 255)
             val g = (Color.green(base) * relief).toInt().coerceIn(0, 255)
             val b = (Color.blue(base) * relief).toInt().coerceIn(0, 255)
@@ -362,20 +382,17 @@ class MapView(context: Context) : View(context) {
         }
     }
 
-    private fun reliefShading(height: Int, heightW: Int, heightN: Int): Float {
-        var samples = 0
-        var heightDiff = 0f
-        if (heightW > 0) {
-            heightDiff += height - heightW
-            samples++
-        }
-        if (heightN > 0) {
-            heightDiff += height - heightN
-            samples++
-        }
-        if (samples == 0) return 1f
-        val boosted = heightDiff * Math.pow(1.05, samples.toDouble()).toFloat()
-        return ((kotlin.math.atan(boosted.toDouble()) / Math.PI).toFloat() * 0.8f) + 1f
+    private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
+        val leftSlope = height - west
+        val rightSlope = height - east
+        val northSlope = height - north
+        val southSlope = height - south
+
+        // A small directional relief, deliberately capped so block colors remain
+        // recognizable. Positive values mean the current column is higher than
+        // its neighbors; negative values mean it is lower.
+        val slope = ((leftSlope - rightSlope) + (northSlope - southSlope)) * 0.035f
+        return (1f + slope.coerceIn(-0.14f, 0.14f)).coerceIn(0.86f, 1.14f)
     }
 
     override fun onDraw(canvas: Canvas) {

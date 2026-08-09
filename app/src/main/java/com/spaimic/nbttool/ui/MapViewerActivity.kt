@@ -227,7 +227,11 @@ class MapViewerActivity : AppCompatActivity() {
                         }
                         synchronized(loadingChunks) {
                             loadingChunks.remove(pos)
-                            loadedChunks.add(pos)
+                            // A null result means the direct LevelDB seek/parser
+                            // did not produce terrain. Do not permanently mark the
+                            // chunk as loaded, otherwise one failed read becomes a
+                            // permanent gray square on the map.
+                            if (loaded != null) loadedChunks.add(pos) else loadedChunks.remove(pos)
                         }
                         if (loaded != null) {
                             // Terrain is available immediately; marker records are

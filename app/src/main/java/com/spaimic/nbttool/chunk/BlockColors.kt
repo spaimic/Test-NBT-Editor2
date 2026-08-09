@@ -447,33 +447,13 @@ object BlockColors {
      * from world coordinates, so the same block always gets the same shade at the
      * same position and the pattern does not reset at chunk boundaries.
      */
-    fun detailedColor(baseColor: Int, blockNameWithNamespace: String, worldX: Int, worldZ: Int): Int {
-        val name = blockNameWithNamespace.substringAfter(':').lowercase()
-        if (baseColor == fallbackUnloaded || baseColor == fallbackUnparsed) return baseColor
-
-        // Map markers/transparent utility blocks must remain exact.
-        if (name == "portal" || name.contains("spawner") ||
-            name.contains("chest") || name == "nether_wart") return baseColor
-
-        // Build 113: variation is applied ONCE to the entire Minecraft block,
-        // never independently to individual pixels. This preserves clean
-        // Blocktopograph-style pixels while retaining subtle terrain richness.
-        var h = worldX * -1640531527 + worldZ * 1013904223 + name.hashCode()
-        h = h xor (h ushr 16)
-        h *= 0x7feb352d
-        h = h xor (h ushr 15)
-        val variant = (h and 0x7fffffff) % 3
-        val factor = when (variant) {
-            0 -> 0.97f
-            1 -> 1.00f
-            else -> 1.03f
-        }
-        return Color.rgb(
-            (Color.red(baseColor) * factor).toInt().coerceIn(0, 255),
-            (Color.green(baseColor) * factor).toInt().coerceIn(0, 255),
-            (Color.blue(baseColor) * factor).toInt().coerceIn(0, 255)
-        )
-    }
+    /**
+     * Build 114: map tiles use the resolved block color directly. Earlier builds
+     * applied coordinate-based variants here, which made even perfectly flat
+     * worlds look mottled. Terrain relief now comes exclusively from surface
+     * height in MapView, so block identity remains visually accurate.
+     */
+    fun detailedColor(baseColor: Int, blockNameWithNamespace: String, worldX: Int, worldZ: Int): Int = baseColor
 
     /** Fast variant path for the map renderer: caller precomputes the normalized
      * material hash and coarse material multiplier once per block. */
