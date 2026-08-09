@@ -293,15 +293,15 @@ class MapView(context: Context) : View(context) {
 
         val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.RGB_565)
         val pixels = IntArray(chunkPixels * chunkPixels)
-        val cleanPattern = intArrayOf(
-            2, 1, 3, 2,
-            1, 0, 2, 3,
-            3, 2, 4, 1,
-            2, 3, 1, 2
-        )
-        val shadeFactors = floatArrayOf(0.92f, 0.96f, 1.00f, 1.04f, 1.08f)
-        val cellSize = 3
 
+        // Build 113: every Minecraft block is represented by one clean, flat
+        // 12x12 map-color tile. Earlier builds varied individual pixels inside
+        // each block; at map scale that produced a grainy "concrete powder"
+        // appearance instead of Blocktopograph-style clean pixels.
+        //
+        // We still allow a tiny deterministic per-BLOCK color adjustment, so
+        // large forests/fields do not become a single perfectly uniform sheet,
+        // but there is NEVER intra-block noise or a checkerboard pattern.
         for (x in 0 until 16) for (z in 0 until 16) {
             val info = grid[x][z]
             val worldX = pos.first * 16 + x
@@ -311,29 +311,15 @@ class MapView(context: Context) : View(context) {
             val west = if (x > 0) grid[x - 1][z].surfaceY else info.surfaceY
             val relief = reliefShading(info.surfaceY, west, north)
             val base = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
-            val baseR = Color.red(base)
-            val baseG = Color.green(base)
-            val baseB = Color.blue(base)
 
-            // Offset the clean 4x4 shade pattern deterministically per block so
-            // forests/large surfaces don't form one repetitive global checker.
-            var h = worldX * -1640531527 + worldZ * 1013904223 + info.material.hashCode()
-            h = h xor (h ushr 16)
-            val offset = (h and 0x7fffffff) % cleanPattern.size
+            val r = (Color.red(base) * relief).toInt().coerceIn(0, 255)
+            val g = (Color.green(base) * relief).toInt().coerceIn(0, 255)
+            val b = (Color.blue(base) * relief).toInt().coerceIn(0, 255)
+            val color = Color.rgb(r, g, b)
 
             for (py in 0 until blockPixels) {
-                val cellY = py / cellSize
-                val dstRow = (z * blockPixels + py) * chunkPixels + x * blockPixels
-                for (px in 0 until blockPixels) {
-                    val cellX = px / cellSize
-                    val patternIndex = (cellY * 4 + cellX + offset) % cleanPattern.size
-                    val shadeIndex = cleanPattern[patternIndex]
-                    val factor = shadeFactors[shadeIndex] * relief
-                    val r = (baseR * factor).toInt().coerceIn(0, 255)
-                    val g = (baseG * factor).toInt().coerceIn(0, 255)
-                    val b = (baseB * factor).toInt().coerceIn(0, 255)
-                    pixels[dstRow + px] = Color.rgb(r, g, b)
-                }
+                val row = (z * blockPixels + py) * chunkPixels + x * blockPixels
+                java.util.Arrays.fill(pixels, row, row + blockPixels, color)
             }
         }
 

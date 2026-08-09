@@ -121,6 +121,20 @@ object BlockColors {
         "light_gray" to COLOR_LIGHT_GRAY, "cyan" to COLOR_CYAN, "purple" to COLOR_PURPLE, "blue" to COLOR_BLUE,
         "brown" to COLOR_BROWN, "green" to COLOR_GREEN, "red" to COLOR_RED, "black" to COLOR_BLACK
     )
+    // Clean, texture-average colors for concrete blocks. Concrete is much
+    // brighter/saturated than terracotta and must not reuse the terracotta
+    // palette (that was one of the causes of pale/gray-looking builds).
+    private val DYE_CONCRETE = mapOf(
+        "white" to rgb(207, 213, 214), "orange" to rgb(224, 97, 0),
+        "magenta" to rgb(169, 48, 159), "light_blue" to rgb(95, 172, 222),
+        "yellow" to rgb(240, 175, 21), "lime" to rgb(126, 189, 41),
+        "pink" to rgb(224, 102, 126), "gray" to rgb(54, 57, 61),
+        "light_gray" to rgb(125, 125, 115), "cyan" to rgb(21, 137, 145),
+        "purple" to rgb(100, 32, 156), "blue" to rgb(44, 46, 143),
+        "brown" to rgb(96, 59, 36), "green" to rgb(73, 91, 36),
+        "red" to rgb(142, 32, 32), "black" to rgb(8, 10, 15)
+    )
+
     private val DYE_TERRACOTTA = mapOf(
         "white" to TERRACOTTA_WHITE, "orange" to TERRACOTTA_ORANGE, "magenta" to TERRACOTTA_MAGENTA,
         "light_blue" to TERRACOTTA_LIGHT_BLUE, "yellow" to TERRACOTTA_YELLOW, "lime" to TERRACOTTA_LIGHT_GREEN,
@@ -279,6 +293,32 @@ object BlockColors {
         "magma" to COLOR_RED, "magma_block" to COLOR_RED, "glowstone" to GOLD, "shroomlight" to COLOR_ORANGE,
         "crimson_nylium" to CRIMSON_NYLIUM, "warped_nylium" to WARPED_NYLIUM, "warped_wart_block" to WARPED_WART_BLOCK,
         "nether_wart_block" to COLOR_RED, "nether_gold_ore" to NETHER, "ancient_debris" to NETHER,
+        // Strongly colored building blocks. Keep these explicit so they do not
+        // fall through to generic material/fallback colors.
+        "pink_concrete" to rgb(224, 102, 126),
+        "pink_concrete_powder" to TERRACOTTA_PINK,
+        "pink_wool" to rgb(238, 141, 172),
+        "pink_terracotta" to TERRACOTTA_PINK,
+        "black_concrete" to rgb(8, 10, 15),
+        "black_concrete_powder" to TERRACOTTA_BLACK,
+        "black_wool" to rgb(25, 25, 25),
+        "black_terracotta" to TERRACOTTA_BLACK,
+        "white_concrete" to rgb(207, 213, 214),
+        "gray_concrete" to rgb(54, 57, 61),
+        "light_gray_concrete" to rgb(125, 125, 115),
+        "red_concrete" to rgb(142, 32, 32),
+        "blue_concrete" to rgb(44, 46, 143),
+        "green_concrete" to rgb(73, 91, 36),
+        "yellow_concrete" to rgb(240, 175, 21),
+        "orange_concrete" to rgb(224, 97, 0),
+        "purple_concrete" to rgb(100, 32, 156),
+        "cyan_concrete" to rgb(21, 137, 145),
+        "lime_concrete" to rgb(126, 189, 41),
+        "brown_concrete" to rgb(96, 59, 36),
+        "magenta_concrete" to rgb(169, 48, 159),
+        "light_blue_concrete" to rgb(95, 172, 222),
+        "netherite_block" to COLOR_BLACK,
+        "netherite" to COLOR_BLACK,
         // liquids
         "water" to WATER, "flowing_water" to WATER, "lava" to FIRE, "flowing_lava" to FIRE,
         // ores (metal/gem-colored)
@@ -411,27 +451,22 @@ object BlockColors {
         val name = blockNameWithNamespace.substringAfter(':').lowercase()
         if (baseColor == fallbackUnloaded || baseColor == fallbackUnparsed) return baseColor
 
-        // Keep special map/marker colors stable. Terrain materials get the full
-        // five-shade treatment; these are deliberately left exact.
+        // Map markers/transparent utility blocks must remain exact.
         if (name == "portal" || name.contains("spawner") ||
             name.contains("chest") || name == "nether_wart") return baseColor
 
+        // Build 113: variation is applied ONCE to the entire Minecraft block,
+        // never independently to individual pixels. This preserves clean
+        // Blocktopograph-style pixels while retaining subtle terrain richness.
         var h = worldX * -1640531527 + worldZ * 1013904223 + name.hashCode()
         h = h xor (h ushr 16)
         h *= 0x7feb352d
         h = h xor (h ushr 15)
-        h *= 0x846ca68b.toInt()
-        h = h xor (h ushr 16)
-        val variant = (h and 0x7fffffff) % 5
-
-        // Five close shades: noticeably textured at map scale, but still faithful
-        // to the underlying map color. Dark blocks use a slightly narrower range.
+        val variant = (h and 0x7fffffff) % 3
         val factor = when (variant) {
-            0 -> 0.90f
-            1 -> 0.95f
-            2 -> 1.00f
-            3 -> 1.05f
-            else -> 1.10f
+            0 -> 0.97f
+            1 -> 1.00f
+            else -> 1.03f
         }
         return Color.rgb(
             (Color.red(baseColor) * factor).toInt().coerceIn(0, 255),
@@ -440,12 +475,6 @@ object BlockColors {
         )
     }
 
-    /**
-     * Returns a small deterministic texture multiplier for one source pixel.
-     * This is intentionally generated from the material and world position,
-     * rather than copied from Blocktopograph assets. It gives large surfaces
-     * subtle variation while remaining stable across chunk boundaries and zoom.
-     */
     /** Fast variant path for the map renderer: caller precomputes the normalized
      * material hash and coarse material multiplier once per block. */
     fun textureVariantFast(materialHash: Int, coarse: Float, worldX: Int, worldZ: Int, px: Int, pz: Int): Float {
@@ -498,7 +527,9 @@ object BlockColors {
         }
         for ((dye, terracotta) in DYE_TERRACOTTA) {
             if (name == "${dye}_terracotta" || name == "${dye}_glazed_terracotta" || name == "${dye}_concrete_powder") return terracotta
-            if (name == "${dye}_concrete") return terracotta
+        }
+        for ((dye, concrete) in DYE_CONCRETE) {
+            if (name == "${dye}_concrete") return concrete
         }
         if (name == "terracotta") return TERRACOTTA_ORANGE
 
