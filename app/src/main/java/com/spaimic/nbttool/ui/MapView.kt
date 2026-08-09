@@ -47,7 +47,7 @@ class MapView(context: Context) : View(context) {
     // Build 107: expensive 512x512 chunk rendering must never run from onDraw().
     // A small pool keeps the UI thread responsive while still rendering a couple
     // of visible chunks in parallel.
-    private val renderExecutor = Executors.newFixedThreadPool(2)
+    private val renderExecutor = Executors.newFixedThreadPool(4)
     private val renderGeneration = AtomicInteger(0)
 
     var entityMarkers: List<MarkerDraw> = emptyList()
@@ -88,10 +88,11 @@ class MapView(context: Context) : View(context) {
     private val minZoom = 3.75f
     private val maxZoom = 32f
 
-    // Build 106: the renderer always keeps a 32x32 source-pixel footprint per
-    // world block. Zoom changes only the camera transform; it never swaps to a
-    // lower-resolution 16x16-per-chunk representation.
-    private val blockPixels = 32
+    // Build 111: use a 12x12 source-pixel footprint per world block. This keeps
+    // the Blocktopograph-style visual detail while cutting per-chunk pixel work
+    // by about 7.1x compared with the previous 32x32 renderer. Zoom changes only
+    // the camera transform; the source resolution stays fixed at every zoom.
+    private val blockPixels = 12
     private val chunkPixels = 16 * blockPixels
 
     // A bounded cache prevents a large world viewport from retaining hundreds
@@ -227,8 +228,8 @@ class MapView(context: Context) : View(context) {
     private fun screenZ(worldZ: Float): Float = height / 2f + (worldZ - cameraZ) * zoom
 
     private fun invalidateBitmapResolutionIfNeeded(oldZoom: Float, newZoom: Float) {
-        // No resolution switch in Build 106. The chunk source bitmap is always
-        // 512x512 (32 pixels per block), regardless of zoom.
+        // Build 111: source resolution is fixed at 12x12 pixels per block for
+        // every zoom level. No regeneration is needed just because the camera zooms.
     }
 
     private fun touchBitmap(pos: Pair<Int, Int>) {
@@ -261,8 +262,8 @@ class MapView(context: Context) : View(context) {
     }
 
     /**
-     * Build a 512x512 logical map tile for every chunk. This method performs the
-     * expensive work and MUST run off the UI thread.
+     * Build a 192x192 map tile for every chunk (12 px/block). This method performs
+     * the expensive work and MUST run off the UI thread.
      */
     private fun renderChunkBitmap(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
         val existing = chunkBitmaps[pos]
@@ -286,13 +287,24 @@ class MapView(context: Context) : View(context) {
             val baseG = Color.green(base)
             val baseB = Color.blue(base)
 
-            // Calculate the 32x32 material pattern once per block instead of
-            // recomputing the material hash/variation for all 1024 pixels.
+            // Calculate the 12x12 material pattern once per block. Normalize the
+            // material and hash it only once; the inner pixel loop uses the fast
+            // arithmetic-only variant path.
+            val materialName = info.material.substringAfter(':').lowercase()
+            val materialHash = materialName.hashCode()
+            val coarse = when {
+                materialName.contains("leaves") || materialName.contains("leaf") -> 0.88f
+                materialName.contains("grass") || materialName.contains("fern") || materialName.contains("vine") -> 0.93f
+                materialName.contains("wood") || materialName.contains("log") || materialName.contains("stem") || materialName.contains("hyphae") -> 0.95f
+                materialName.contains("stone") || materialName.contains("deepslate") || materialName.contains("cobble") -> 0.97f
+                materialName.contains("sand") || materialName.contains("gravel") || materialName.contains("dirt") || materialName.contains("clay") -> 0.96f
+                else -> 0.94f
+            }
             val variants = FloatArray(blockPixels * blockPixels)
             for (py in 0 until blockPixels) {
                 for (px in 0 until blockPixels) {
                     variants[py * blockPixels + px] =
-                        BlockColors.textureVariant(info.material, worldX, worldZ, px, py) * relief
+                        BlockColors.textureVariantFast(materialHash, coarse, worldX, worldZ, px, py) * relief
                 }
             }
 

@@ -119,7 +119,10 @@ class MapViewerActivity : AppCompatActivity() {
     private val requestedChunks = HashSet<Pair<Int, Int>>()
     private val loadedChunks = HashSet<Pair<Int, Int>>()
     private val loadingChunks = HashSet<Pair<Int, Int>>()
-    private val mapExecutor = java.util.concurrent.Executors.newFixedThreadPool(4)
+    private val mapExecutor = java.util.concurrent.Executors.newFixedThreadPool(6)
+    // Marker reads can be slower than terrain decoding; keep them off the terrain
+    // pipeline so icons never delay the first visible map pixels.
+    private val markerExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
     private val markerLock = Any()
     private val loadedEntityMarkers = ArrayList<MapView.MarkerDraw>()
     private val loadedBlockEntityMarkers = ArrayList<MapView.MarkerDraw>()
@@ -195,6 +198,17 @@ class MapViewerActivity : AppCompatActivity() {
         }
         if (todo.isEmpty()) return
 
+        // Prioritize chunks closest to the camera. This makes the map look
+        // effectively instant because the center appears first while outer
+        // chunks continue loading in the background.
+        val centerX = mapView.currentCameraBlockX() / 16f
+        val centerZ = mapView.currentCameraBlockZ() / 16f
+        todo.sortBy {
+            val dx = it.first - centerX
+            val dz = it.second - centerZ
+            dx * dx + dz * dz
+        }
+
         for (pos in todo) {
             mapExecutor.execute {
                 try {
@@ -204,7 +218,7 @@ class MapViewerActivity : AppCompatActivity() {
                     // Viewport loading deliberately uses direct LevelDB seeks.
                     // We never need a complete chunk index just to draw what is on screen.
                     val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
-                        bridge, pos.first, pos.second, unknown, reasons, examples, dimensionForRequest
+                        bridge, pos.first, pos.second, unknown, reasons, examples, dimensionForRequest, includeMarkers = false
                     )
                     runOnUiThread {
                         if (currentDimension != dimensionForRequest) {
@@ -216,18 +230,29 @@ class MapViewerActivity : AppCompatActivity() {
                             loadedChunks.add(pos)
                         }
                         if (loaded != null) {
+                            // Terrain is available immediately; marker records are
+                            // intentionally loaded on a separate tiny executor.
                             mapView.setChunkData(mapOf(pos to loaded.grid))
-                            synchronized(markerLock) {
-                                loadedEntityMarkers.addAll(loaded.entityMarkers.map {
-                                    MapView.MarkerDraw(it.worldX, it.worldZ,
-                                        com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
-                                })
-                                loadedBlockEntityMarkers.addAll(loaded.blockEntityMarkers.map {
-                                    MapView.MarkerDraw(it.worldX, it.worldZ,
-                                        com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
-                                })
-                                mapView.entityMarkers = loadedEntityMarkers.toList()
-                                mapView.blockEntityMarkers = loadedBlockEntityMarkers.toList()
+
+                            markerExecutor.execute {
+                                val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
+                                    bridge, pos.first, pos.second, dimensionForRequest
+                                )
+                                runOnUiThread {
+                                    if (currentDimension != dimensionForRequest) return@runOnUiThread
+                                    synchronized(markerLock) {
+                                        loadedEntityMarkers.addAll(markers.entityMarkers.map {
+                                            MapView.MarkerDraw(it.worldX, it.worldZ,
+                                                com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                                        })
+                                        loadedBlockEntityMarkers.addAll(markers.blockEntityMarkers.map {
+                                            MapView.MarkerDraw(it.worldX, it.worldZ,
+                                                com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                                        })
+                                        mapView.entityMarkers = loadedEntityMarkers.toList()
+                                        mapView.blockEntityMarkers = loadedBlockEntityMarkers.toList()
+                                    }
+                                }
                             }
                         }
                         coordText.text = "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"

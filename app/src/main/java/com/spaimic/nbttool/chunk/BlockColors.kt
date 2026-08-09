@@ -446,6 +446,19 @@ object BlockColors {
      * rather than copied from Blocktopograph assets. It gives large surfaces
      * subtle variation while remaining stable across chunk boundaries and zoom.
      */
+    /** Fast variant path for the map renderer: caller precomputes the normalized
+     * material hash and coarse material multiplier once per block. */
+    fun textureVariantFast(materialHash: Int, coarse: Float, worldX: Int, worldZ: Int, px: Int, pz: Int): Float {
+        var h = worldX * 374761393 + worldZ * 668265263 + px * 1274126177 + pz * 1442695041 + materialHash
+        h = h xor (h ushr 13)
+        h *= -1640531527
+        h = h xor (h ushr 16)
+        val n = (h and 0x7fffffff) % 11
+        val delta = (n - 5) * 0.012f
+        val directional = if (((px shr 3) + (pz shr 3)) and 1 == 0) 0.008f else -0.004f
+        return (1f + delta + directional) * (0.96f + (coarse - 0.94f) * 0.18f)
+    }
+
     fun textureVariant(material: String, worldX: Int, worldZ: Int, px: Int, pz: Int): Float {
         val name = material.substringAfter(':').lowercase()
         val coarse = when {
