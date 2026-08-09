@@ -583,7 +583,7 @@ class MapViewerActivity : AppCompatActivity() {
     private fun promptOpenLevelDbKeyByName() {
         val input = EditText(this).apply {
             hint = "e.g. ~local_player"
-            singleLine = true
+            setSingleLine(true)
         }
         AlertDialog.Builder(this)
             .setTitle("Open LevelDB Key by Name")
