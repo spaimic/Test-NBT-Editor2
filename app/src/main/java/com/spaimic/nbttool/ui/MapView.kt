@@ -18,6 +18,9 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import java.util.LinkedHashMap
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * A camera-based, lazy map. The View never assumes that all world chunks are loaded.
@@ -34,9 +37,15 @@ class MapView(context: Context) : View(context) {
     var preferredCenterBlock: Pair<Int, Int>? = null
         set(value) { field = value; centered = false; requestVisible() }
 
-    private val chunks = HashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
-    private val chunkBitmaps = HashMap<Pair<Int, Int>, Bitmap>()
-    private val loading = HashSet<Pair<Int, Int>>()
+    private val chunks = ConcurrentHashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
+    private val chunkBitmaps = ConcurrentHashMap<Pair<Int, Int>, Bitmap>()
+    private val loading = ConcurrentHashMap.newKeySet<Pair<Int, Int>>()
+
+    // Build 107: expensive 512x512 chunk rendering must never run from onDraw().
+    // A small pool keeps the UI thread responsive while still rendering a couple
+    // of visible chunks in parallel.
+    private val renderExecutor = Executors.newFixedThreadPool(2)
+    private val renderGeneration = AtomicInteger(0)
 
     var entityMarkers: List<MarkerDraw> = emptyList()
         set(value) { field = value; invalidate() }
@@ -142,6 +151,7 @@ class MapView(context: Context) : View(context) {
     }
 
     fun clearChunkData() {
+        renderGeneration.incrementAndGet()
         chunks.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
@@ -226,18 +236,14 @@ class MapView(context: Context) : View(context) {
     }
 
     /**
-     * Build a 512x512 logical map tile for every chunk. Each world block owns
-     * exactly a 32x32 source-pixel area at every zoom level. The renderer uses
-     * deterministic material texture, fine-grained color variation, and local
-     * relief shading instead of enlarging a single flat RGB pixel.
+     * Build a 512x512 logical map tile for every chunk. This method performs the
+     * expensive work and MUST run off the UI thread.
      */
-    private fun bitmapForChunk(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
+    private fun renderChunkBitmap(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
         val existing = chunkBitmaps[pos]
         if (existing != null && !existing.isRecycled && existing.width == chunkPixels) {
-            touchBitmap(pos)
             return existing
         }
-        existing?.let { if (!it.isRecycled) it.recycle() }
 
         val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.RGB_565)
         val pixels = IntArray(chunkPixels * chunkPixels)
@@ -251,27 +257,70 @@ class MapView(context: Context) : View(context) {
             val west = if (x > 0) grid[x - 1][z].surfaceY else info.surfaceY
             val relief = reliefShading(info.surfaceY, west, north)
             val base = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
+            val baseR = Color.red(base)
+            val baseG = Color.green(base)
+            val baseB = Color.blue(base)
 
-            // Four nested material bands give leaves, stone, dirt, wood and other
-            // large surfaces subtle texture while keeping each block recognizable.
+            // Calculate the 32x32 material pattern once per block instead of
+            // recomputing the material hash/variation for all 1024 pixels.
+            val variants = FloatArray(blockPixels * blockPixels)
             for (py in 0 until blockPixels) {
                 for (px in 0 until blockPixels) {
-                    val variant = BlockColors.textureVariant(info.material, worldX, worldZ, px, py)
-                    val factor = variant * relief
-                    val r = (Color.red(base) * factor).toInt().coerceIn(0, 255)
-                    val g = (Color.green(base) * factor).toInt().coerceIn(0, 255)
-                    val b = (Color.blue(base) * factor).toInt().coerceIn(0, 255)
-                    val dstX = x * blockPixels + px
-                    val dstZ = z * blockPixels + py
-                    pixels[dstZ * chunkPixels + dstX] = Color.rgb(r, g, b)
+                    variants[py * blockPixels + px] =
+                        BlockColors.textureVariant(info.material, worldX, worldZ, px, py) * relief
+                }
+            }
+
+            for (py in 0 until blockPixels) {
+                val dstRow = (z * blockPixels + py) * chunkPixels + x * blockPixels
+                val variantRow = py * blockPixels
+                for (px in 0 until blockPixels) {
+                    val factor = variants[variantRow + px]
+                    val r = (baseR * factor).toInt().coerceIn(0, 255)
+                    val g = (baseG * factor).toInt().coerceIn(0, 255)
+                    val b = (baseB * factor).toInt().coerceIn(0, 255)
+                    pixels[dstRow + px] = Color.rgb(r, g, b)
                 }
             }
         }
 
         bitmap.setPixels(pixels, 0, chunkPixels, 0, 0, chunkPixels, chunkPixels)
-        chunkBitmaps[pos] = bitmap
-        touchBitmap(pos)
         return bitmap
+    }
+
+    /** Schedule a render if the visible chunk has no ready bitmap. UI-thread safe. */
+    private fun requestChunkBitmap(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>) {
+        val existing = chunkBitmaps[pos]
+        if (existing != null && !existing.isRecycled && existing.width == chunkPixels) {
+            touchBitmap(pos)
+            return
+        }
+        if (!loading.add(pos)) return
+
+        val generation = renderGeneration.get()
+        renderExecutor.execute {
+            var rendered: Bitmap? = null
+            try {
+                rendered = renderChunkBitmap(pos, grid)
+                if (generation != renderGeneration.get() || chunks[pos] !== grid) {
+                    rendered?.recycle()
+                    return@execute
+                }
+                val old = chunkBitmaps.put(pos, rendered!!)
+                if (old != null && old !== rendered && !old.isRecycled) old.recycle()
+                rendered = null
+                post {
+                    if (generation == renderGeneration.get()) {
+                        touchBitmap(pos)
+                        invalidate()
+                    }
+                }
+            } catch (_: Throwable) {
+                rendered?.let { if (!it.isRecycled) it.recycle() }
+            } finally {
+                loading.remove(pos)
+            }
+        }
     }
 
     private fun reliefShading(height: Int, heightW: Int, heightN: Int): Float {
@@ -316,7 +365,14 @@ class MapView(context: Context) : View(context) {
                 val pos = cx to cz
                 val grid = chunks[pos]
                 if (grid != null) {
-                    canvas.drawBitmap(bitmapForChunk(pos, grid), null, RectF(left, top, right, bottom), tilePaint)
+                    val bitmap = chunkBitmaps[pos]
+                    if (bitmap != null && !bitmap.isRecycled) {
+                        touchBitmap(pos)
+                        canvas.drawBitmap(bitmap, null, RectF(left, top, right, bottom), tilePaint)
+                    } else {
+                        requestChunkBitmap(pos, grid)
+                        canvas.drawRect(left, top, right, bottom, unloadedPaint)
+                    }
                     // At very small chunk sizes, borders visually merge like MineTuner.
                     if (zoom >= 6f) {
                         canvas.drawRect(left, top, right, bottom, gridPaint)
@@ -428,7 +484,11 @@ class MapView(context: Context) : View(context) {
 
     fun captureChunkPreviewPng(chunkX: Int, chunkZ: Int): ByteArray? {
         val grid = chunks[chunkX to chunkZ] ?: return null
-        val source = bitmapForChunk(chunkX to chunkZ, grid)
+        val pos = chunkX to chunkZ
+        val source = chunkBitmaps[pos] ?: renderChunkBitmap(pos, grid).also {
+            val old = chunkBitmaps.put(pos, it)
+            if (old != null && old !== it && !old.isRecycled) old.recycle()
+        }
         val preview = Bitmap.createScaledBitmap(source, 128, 128, false)
         return java.io.ByteArrayOutputStream().use { out ->
             preview.compress(Bitmap.CompressFormat.PNG, 100, out)
@@ -438,6 +498,7 @@ class MapView(context: Context) : View(context) {
     }
 
     fun refreshVisibleChunks() {
+        renderGeneration.incrementAndGet()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
         bitmapAccessOrder.clear()
@@ -451,6 +512,8 @@ class MapView(context: Context) : View(context) {
     }
 
     override fun onDetachedFromWindow() {
+        renderGeneration.incrementAndGet()
+        renderExecutor.shutdownNow()
         super.onDetachedFromWindow()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
