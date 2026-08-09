@@ -147,8 +147,14 @@ class MapView(context: Context) : View(context) {
 
     fun setChunkData(newData: Map<Pair<Int, Int>, Array<Array<ColumnInfo>>>) {
         for ((pos, grid) in newData) {
-            chunks[pos] = grid
-            chunkBitmaps.remove(pos)?.recycle()
+            val previous = chunks.put(pos, grid)
+            // Only invalidate the rendered tile when the actual grid object changed.
+            // Repeated world-loading callbacks can otherwise recycle a perfectly good
+            // bitmap on every callback and make chunks visibly disappear.
+            if (previous !== grid) {
+                chunkBitmaps.remove(pos)?.let { if (!it.isRecycled) it.recycle() }
+                bitmapAccessOrder.remove(pos)
+            }
         }
         invalidate()
     }
@@ -222,10 +228,31 @@ class MapView(context: Context) : View(context) {
 
     private fun touchBitmap(pos: Pair<Int, Int>) {
         bitmapAccessOrder[pos] = Unit
-        while (bitmapAccessOrder.size > maxCachedChunkBitmaps) {
-            val oldest = bitmapAccessOrder.entries.iterator().next().key
-            bitmapAccessOrder.remove(oldest)
-            chunkBitmaps.remove(oldest)?.let { if (!it.isRecycled) it.recycle() }
+    }
+
+    /**
+     * Evict only off-screen bitmaps. Never recycle a bitmap that belongs to the
+     * current viewport; otherwise the next draw can see a missing/recycled tile
+     * and schedule it again, producing the Build 107/108 disappearing-chunk loop.
+     */
+    private fun trimOffscreenBitmaps() {
+        var offscreenCount = 0
+        for (pos in bitmapAccessOrder.keys) {
+            if (!visibleChunkPositions.contains(pos) && chunkBitmaps[pos]?.isRecycled == false) {
+                offscreenCount++
+            }
+        }
+        if (offscreenCount <= maxCachedOffscreenBitmaps) return
+
+        val iterator = bitmapAccessOrder.entries.iterator()
+        while (iterator.hasNext() && offscreenCount > maxCachedOffscreenBitmaps) {
+            val pos = iterator.next().key
+            if (visibleChunkPositions.contains(pos)) continue
+            iterator.remove()
+            chunkBitmaps.remove(pos)?.let {
+                if (!it.isRecycled) it.recycle()
+            }
+            offscreenCount--
         }
     }
 
@@ -347,7 +374,7 @@ class MapView(context: Context) : View(context) {
         val maxCx = floor((cameraX + halfWorldW) / 16f).toInt()
         val minCz = floor((cameraZ - halfWorldH) / 16f).toInt()
         val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt()
-
+        val visibleNow = HashSet<Pair<Int, Int>>()
         for (cx in minCx..maxCx) {
             for (cz in minCz..maxCz) {
                 val left = screenX(cx * 16f)
@@ -357,6 +384,7 @@ class MapView(context: Context) : View(context) {
                 if (right < 0 || left > width || bottom < 0 || top > height) continue
 
                 val pos = cx to cz
+                visibleNow.add(pos)
                 val grid = chunks[pos]
                 if (grid != null) {
                     val bitmap = chunkBitmaps[pos]
@@ -376,6 +404,11 @@ class MapView(context: Context) : View(context) {
                 }
             }
         }
+
+        // Mark the complete viewport before trimming. Every visible bitmap is now
+        // protected from eviction, regardless of how many chunks are on screen.
+        visibleChunkPositions = visibleNow
+        trimOffscreenBitmaps()
 
         // At the widest zoom MineTuner visually merges 4x4 chunks.  We keep the
         // underlying 16x16 terrain data, but suppress individual chunk borders and
