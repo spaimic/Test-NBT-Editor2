@@ -75,16 +75,13 @@ class WorldListActivity : AppCompatActivity() {
     private fun showWorldMenu(worldDir: File) {
         android.app.AlertDialog.Builder(this)
             .setTitle(LocalWorldStore.levelName(worldDir))
-            .setItems(arrayOf("Rename", "Open in Minecraft", "Flat World Generator", "Delete")) { _, which ->
+            .setItems(arrayOf("Rename", "Open in Minecraft", "Backup World", "Manage Backups", "Delete")) { _, which ->
                 when (which) {
                     0 -> promptRenameWorld(worldDir)
                     1 -> openInMinecraft(worldDir)
-                    2 -> {
-                        val i = Intent(this, FlatWorldGeneratorActivity::class.java)
-                        i.putExtra(FlatWorldGeneratorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
-                        startActivity(i)
-                    }
-                    3 -> confirmDelete(worldDir)
+                    2 -> createBackup(worldDir)
+                    3 -> manageBackups(worldDir)
+                    4 -> confirmDelete(worldDir)
                 }
             }
             .show()
@@ -107,6 +104,93 @@ class WorldListActivity : AppCompatActivity() {
                     refreshWorldList()
                 } catch (e: Exception) {
                     showErrorDialog(this, "Couldn't rename world", e)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun createBackup(worldDir: File) {
+        Thread {
+            try {
+                val backup = LocalWorldStore.createBackup(this, worldDir)
+                runOnUiThread {
+                    android.app.AlertDialog.Builder(this)
+                        .setTitle("Backup created")
+                        .setMessage("Backup saved successfully:\n${backup.name}")
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Couldn't create backup", e) }
+            }
+        }.start()
+    }
+
+    private fun manageBackups(worldDir: File) {
+        val backups = LocalWorldStore.listBackups(this, worldDir)
+        if (backups.isEmpty()) {
+            android.app.AlertDialog.Builder(this)
+                .setTitle("World Backups")
+                .setMessage("No backups exist for this world yet.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val labels = backups.map { it.name }.toTypedArray()
+        android.app.AlertDialog.Builder(this)
+            .setTitle("World Backups")
+            .setItems(labels) { _, which -> showBackupMenu(worldDir, backups[which]) }
+            .show()
+    }
+
+    private fun showBackupMenu(worldDir: File, backup: File) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle(backup.name)
+            .setItems(arrayOf("Restore", "Delete")) { _, which ->
+                when (which) {
+                    0 -> confirmRestore(worldDir, backup)
+                    1 -> confirmDeleteBackup(backup, worldDir)
+                }
+            }
+            .show()
+    }
+
+    private fun confirmRestore(worldDir: File, backup: File) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Restore backup?")
+            .setMessage("This will replace the current local copy of this world with the selected backup. This cannot be undone unless you have another backup.")
+            .setPositiveButton("Restore") { _, _ ->
+                Thread {
+                    try {
+                        LocalWorldStore.restoreBackup(worldDir, backup)
+                        runOnUiThread {
+                            refreshWorldList()
+                            android.app.AlertDialog.Builder(this)
+                                .setTitle("Backup restored")
+                                .setMessage("The world was restored successfully.")
+                                .setPositiveButton("OK", null)
+                                .show()
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { showErrorDialog(this, "Couldn't restore backup", e) }
+                    }
+                }.start()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDeleteBackup(backup: File, worldDir: File) {
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Delete backup?")
+            .setMessage("This permanently deletes ${backup.name}.")
+            .setPositiveButton("Delete") { _, _ ->
+                try {
+                    LocalWorldStore.deleteBackup(backup)
+                    manageBackups(worldDir)
+                } catch (e: Exception) {
+                    showErrorDialog(this, "Couldn't delete backup", e)
                 }
             }
             .setNegativeButton("Cancel", null)

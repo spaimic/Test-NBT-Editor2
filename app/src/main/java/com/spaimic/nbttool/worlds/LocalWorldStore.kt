@@ -9,6 +9,9 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * Worlds this app can actually edit live entirely inside our own sandbox —
@@ -185,6 +188,96 @@ object LocalWorldStore {
             }
         }
         return out
+    }
+
+    /** Creates a complete private backup of a local world as a zip. Unlike .mcworld export,
+     * this includes the app's local display-name metadata too. */
+    fun createBackup(context: Context, worldDir: File): File {
+        if (!File(worldDir, "level.dat").isFile) {
+            throw IllegalStateException("This is not a valid local world")
+        }
+        val stamp = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())
+        var out = File(backupsDir(context), "${worldDir.name}_$stamp.nbtbackup")
+        var n = 2
+        while (out.exists()) {
+            out = File(backupsDir(context), "${worldDir.name}_${stamp}_$n.nbtbackup")
+            n++
+        }
+
+        fun addFile(zos: ZipOutputStream, file: File, basePath: String) {
+            if (file.isDirectory) {
+                file.listFiles()?.forEach { addFile(zos, it, "$basePath${file.name}/") }
+            } else {
+                zos.putNextEntry(ZipEntry("$basePath${file.name}"))
+                file.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+            }
+        }
+        out.outputStream().use { fos ->
+            ZipOutputStream(fos).use { zos ->
+                worldDir.listFiles()?.forEach { addFile(zos, it, "") }
+            }
+        }
+        return out
+    }
+
+    fun listBackups(context: Context, worldDir: File): List<File> =
+        backupsDir(context).listFiles { f ->
+            f.isFile && f.name.startsWith("${worldDir.name}_") && f.name.endsWith(".nbtbackup")
+        }?.sortedByDescending { it.lastModified() } ?: emptyList()
+
+    /** Restores a backup atomically-ish: unpack into a sibling temp directory, validate it,
+     * then replace the current local world. */
+    fun restoreBackup(worldDir: File, backupFile: File) {
+        if (!backupFile.isFile) throw IllegalStateException("Backup file doesn't exist")
+        val parent = worldDir.parentFile ?: throw IllegalStateException("World has no parent directory")
+        val temp = File(parent, ".restore_${worldDir.name}_${System.nanoTime()}")
+        temp.mkdirs()
+        try {
+            backupFile.inputStream().use { input ->
+                ZipInputStream(input).use { zip ->
+                    var entry = zip.nextEntry
+                    while (entry != null) {
+                        val outFile = File(temp, entry.name)
+                        val canonicalRoot = temp.canonicalPath + File.separator
+                        if (!outFile.canonicalPath.startsWith(canonicalRoot)) {
+                            throw SecurityException("Backup entry escapes destination folder: ${entry.name}")
+                        }
+                        if (entry.isDirectory) outFile.mkdirs()
+                        else {
+                            outFile.parentFile?.mkdirs()
+                            outFile.outputStream().use { out -> zip.copyTo(out) }
+                        }
+                        zip.closeEntry()
+                        entry = zip.nextEntry
+                    }
+                }
+            }
+            if (!File(temp, "level.dat").isFile) {
+                throw IllegalStateException("Backup does not contain a valid level.dat")
+            }
+            val old = File(parent, ".old_${worldDir.name}_${System.nanoTime()}")
+            if (!worldDir.renameTo(old)) throw IllegalStateException("Couldn't move the current world out of the way")
+            try {
+                if (!temp.renameTo(worldDir)) {
+                    old.renameTo(worldDir)
+                    throw IllegalStateException("Couldn't install the restored backup")
+                }
+                old.deleteRecursively()
+            } catch (e: Exception) {
+                if (!worldDir.exists()) old.renameTo(worldDir)
+                throw e
+            }
+        } catch (e: Exception) {
+            temp.deleteRecursively()
+            throw e
+        }
+    }
+
+    fun deleteBackup(backupFile: File) {
+        if (!backupFile.delete() && backupFile.exists()) {
+            throw IllegalStateException("Couldn't delete backup")
+        }
     }
 
     fun deleteLocalWorld(worldDir: File) {
