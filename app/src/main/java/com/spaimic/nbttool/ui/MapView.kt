@@ -17,6 +17,7 @@ import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import java.util.LinkedHashMap
 
 /**
  * A camera-based, lazy map. The View never assumes that all world chunks are loaded.
@@ -73,9 +74,19 @@ class MapView(context: Context) : View(context) {
     // at the widest view and roughly 46x70 blocks at the closest view.
     private var zoom = 3.85f
     private val minZoom = 3.75f
-    // Build 105: match Blocktopograph-style detail by allowing up to 32 screen pixels per world block.
     private val maxZoom = 32f
-    private val highResThreshold = 12f
+
+    // Build 106: the renderer always keeps a 32x32 source-pixel footprint per
+    // world block. Zoom changes only the camera transform; it never swaps to a
+    // lower-resolution 16x16-per-chunk representation.
+    private val blockPixels = 32
+    private val chunkPixels = 16 * blockPixels
+
+    // A bounded cache prevents a large world viewport from retaining hundreds
+    // of 512x512 bitmaps at once. The underlying chunk data remains available,
+    // so evicted bitmaps are cheap to regenerate when they become visible again.
+    private val maxCachedChunkBitmaps = 24
+    private val bitmapAccessOrder = LinkedHashMap<Pair<Int, Int>, Unit>(32, 0.75f, true)
 
     /** World block coordinate at the center of the viewport. */
     private var cameraX = 0f
@@ -201,76 +212,82 @@ class MapView(context: Context) : View(context) {
     private fun screenZ(worldZ: Float): Float = height / 2f + (worldZ - cameraZ) * zoom
 
     private fun invalidateBitmapResolutionIfNeeded(oldZoom: Float, newZoom: Float) {
-        val oldHigh = oldZoom >= highResThreshold
-        val newHigh = newZoom >= highResThreshold
-        if (oldHigh != newHigh) {
-            chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
-            chunkBitmaps.clear()
+        // No resolution switch in Build 106. The chunk source bitmap is always
+        // 512x512 (32 pixels per block), regardless of zoom.
+    }
+
+    private fun touchBitmap(pos: Pair<Int, Int>) {
+        bitmapAccessOrder[pos] = Unit
+        while (bitmapAccessOrder.size > maxCachedChunkBitmaps) {
+            val oldest = bitmapAccessOrder.entries.iterator().next().key
+            bitmapAccessOrder.remove(oldest)
+            chunkBitmaps.remove(oldest)?.let { if (!it.isRecycled) it.recycle() }
         }
     }
 
     /**
-     * Build 16x16 low-resolution tiles for the overview, or 512x512 tiles at
-     * close zoom.  The latter gives every world block a 32x32 source-pixel
-     * footprint, matching the high-detail scale used by Blocktopograph-style
-     * map rendering.  High-resolution tiles are only created when the camera
-     * is close enough to see them, keeping large-world memory use reasonable.
+     * Build a 512x512 logical map tile for every chunk. Each world block owns
+     * exactly a 32x32 source-pixel area at every zoom level. The renderer uses
+     * deterministic material texture, fine-grained color variation, and local
+     * relief shading instead of enlarging a single flat RGB pixel.
      */
     private fun bitmapForChunk(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
-        val highRes = zoom >= highResThreshold
-        val expectedSize = if (highRes) 512 else 16
         val existing = chunkBitmaps[pos]
-        if (existing != null && existing.width == expectedSize && !existing.isRecycled) return existing
+        if (existing != null && !existing.isRecycled && existing.width == chunkPixels) {
+            touchBitmap(pos)
+            return existing
+        }
         existing?.let { if (!it.isRecycled) it.recycle() }
 
-        val bitmap = Bitmap.createBitmap(expectedSize, expectedSize, Bitmap.Config.ARGB_8888)
-        if (!highRes) {
-            val pixels = IntArray(256)
-            for (x in 0 until 16) for (z in 0 until 16) {
-                val info = grid[x][z]
-                val worldX = pos.first * 16 + x
-                val worldZ = pos.second * 16 + z
-                pixels[z * 16 + x] = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
-            }
-            bitmap.setPixels(pixels, 0, 16, 0, 0, 16, 16)
-        } else {
-            val pixels = IntArray(512 * 512)
-            for (x in 0 until 16) for (z in 0 until 16) {
-                val info = grid[x][z]
-                val worldX = pos.first * 16 + x
-                val worldZ = pos.second * 16 + z
-                val base = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
+        val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.RGB_565)
+        val pixels = IntArray(chunkPixels * chunkPixels)
 
-                // Four-by-four material cells make the 32x32 block footprint
-                // visibly textured instead of simply enlarging one flat pixel.
-                // The pattern is deterministic and tied to world coordinates,
-                // so it remains stable while panning and across chunk borders.
-                for (cellZ in 0 until 4) for (cellX in 0 until 4) {
-                    val seed = worldX * 73428767 + worldZ * 912931 + cellX * 19349663 + cellZ * 83492791 + info.material.hashCode()
-                    val variant = ((seed xor (seed ushr 16)) and 0x7fffffff) % 5
-                    val factor = when (variant) {
-                        0 -> 0.94f
-                        1 -> 0.97f
-                        2 -> 1.00f
-                        3 -> 1.03f
-                        else -> 1.06f
-                    }
+        for (x in 0 until 16) for (z in 0 until 16) {
+            val info = grid[x][z]
+            val worldX = pos.first * 16 + x
+            val worldZ = pos.second * 16 + z
+
+            val north = if (z > 0) grid[x][z - 1].surfaceY else info.surfaceY
+            val west = if (x > 0) grid[x - 1][z].surfaceY else info.surfaceY
+            val relief = reliefShading(info.surfaceY, west, north)
+            val base = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
+
+            // Four nested material bands give leaves, stone, dirt, wood and other
+            // large surfaces subtle texture while keeping each block recognizable.
+            for (py in 0 until blockPixels) {
+                for (px in 0 until blockPixels) {
+                    val variant = BlockColors.textureVariant(info.material, worldX, worldZ, px, py)
+                    val factor = variant * relief
                     val r = (Color.red(base) * factor).toInt().coerceIn(0, 255)
                     val g = (Color.green(base) * factor).toInt().coerceIn(0, 255)
                     val b = (Color.blue(base) * factor).toInt().coerceIn(0, 255)
-                    val c = Color.rgb(r, g, b)
-                    val startX = x * 32 + cellX * 8
-                    val startZ = z * 32 + cellZ * 8
-                    for (py in startZ until startZ + 8) {
-                        val row = py * 512
-                        for (px in startX until startX + 8) pixels[row + px] = c
-                    }
+                    val dstX = x * blockPixels + px
+                    val dstZ = z * blockPixels + py
+                    pixels[dstZ * chunkPixels + dstX] = Color.rgb(r, g, b)
                 }
             }
-            bitmap.setPixels(pixels, 0, 512, 0, 0, 512, 512)
         }
+
+        bitmap.setPixels(pixels, 0, chunkPixels, 0, 0, chunkPixels, chunkPixels)
         chunkBitmaps[pos] = bitmap
+        touchBitmap(pos)
         return bitmap
+    }
+
+    private fun reliefShading(height: Int, heightW: Int, heightN: Int): Float {
+        var samples = 0
+        var heightDiff = 0f
+        if (heightW > 0) {
+            heightDiff += height - heightW
+            samples++
+        }
+        if (heightN > 0) {
+            heightDiff += height - heightN
+            samples++
+        }
+        if (samples == 0) return 1f
+        val boosted = heightDiff * Math.pow(1.05, samples.toDouble()).toFloat()
+        return ((kotlin.math.atan(boosted.toDouble()) / Math.PI).toFloat() * 0.8f) + 1f
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -423,6 +440,7 @@ class MapView(context: Context) : View(context) {
     fun refreshVisibleChunks() {
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
+        bitmapAccessOrder.clear()
         requestVisible()
     }
 
@@ -436,5 +454,6 @@ class MapView(context: Context) : View(context) {
         super.onDetachedFromWindow()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
+        bitmapAccessOrder.clear()
     }
 }

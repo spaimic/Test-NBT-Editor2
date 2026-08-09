@@ -440,6 +440,32 @@ object BlockColors {
         )
     }
 
+    /**
+     * Returns a small deterministic texture multiplier for one source pixel.
+     * This is intentionally generated from the material and world position,
+     * rather than copied from Blocktopograph assets. It gives large surfaces
+     * subtle variation while remaining stable across chunk boundaries and zoom.
+     */
+    fun textureVariant(material: String, worldX: Int, worldZ: Int, px: Int, pz: Int): Float {
+        val name = material.substringAfter(':').lowercase()
+        val coarse = when {
+            name.contains("leaves") || name.contains("leaf") -> 0.88f
+            name.contains("grass") || name.contains("fern") || name.contains("vine") -> 0.93f
+            name.contains("wood") || name.contains("log") || name.contains("stem") || name.contains("hyphae") -> 0.95f
+            name.contains("stone") || name.contains("deepslate") || name.contains("cobble") -> 0.97f
+            name.contains("sand") || name.contains("gravel") || name.contains("dirt") || name.contains("clay") -> 0.96f
+            else -> 0.94f
+        }
+        var h = worldX * 374761393 + worldZ * 668265263 + px * 1274126177 + pz * 1442695041 + name.hashCode()
+        h = h xor (h ushr 13)
+        h *= -1640531527
+        h = h xor (h ushr 16)
+        val n = (h and 0x7fffffff) % 11
+        val delta = (n - 5) * 0.012f
+        val directional = if (((px shr 3) + (pz shr 3)) and 1 == 0) 0.008f else -0.004f
+        return (1f + delta + directional) * (0.96f + (coarse - 0.94f) * 0.18f)
+    }
+
     fun isKnown(blockNameWithNamespace: String): Boolean =
         resolveOrNull(blockNameWithNamespace.substringAfter(':')) != null
 
