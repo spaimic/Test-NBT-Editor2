@@ -52,7 +52,7 @@ object FlatWorldGenerator {
      * expects a large, specific set of game-rule/settings fields to exist even
      * for a "new" world it hasn't loaded yet.
      */
-    fun buildNewWorldLevelDat(levelName: String, layers: List<FlatLayer>): NbtIO.LevelDat {
+    fun buildNewWorldLevelDat(levelName: String, layers: List<FlatLayer>, biomeOverride: String = "minecraft:plains"): NbtIO.LevelDat {
         fun b(v: Int) = NbtTag.Byte(v.toByte())
         fun i(v: Int) = NbtTag.Int(v)
         fun l(v: Long) = NbtTag.Long(v)
@@ -74,7 +74,7 @@ object FlatWorldGenerator {
         val seed = kotlin.random.Random.nextLong()
 
         val root = LinkedHashMap<String, NbtTag>()
-        root["BiomeOverride"] = s("minecraft:minecraft:")
+        root["BiomeOverride"] = s(biomeOverride)
         root["CenterMapsToOrigin"] = b(0)
         root["ConfirmedPlatformLockedContent"] = b(0)
         root["Difficulty"] = i(2)

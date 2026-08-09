@@ -276,35 +276,39 @@ class MapViewerActivity : AppCompatActivity() {
         val options = arrayListOf(
             "Chunk Information",
             "💎 Show All Diamond Coordinates",
+        )
+        if (selectedDbDimension() == 1) options.add("🏺 Show All Ancient Debris Coordinates")
+        options.addAll(listOf(
             "Show Entities",
             "Show Block Entities",
             "Copy Chunk",
             "Paste Chunk",
             "Delete Chunk"
-        )
+        ))
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
             .setItems(options.toTypedArray()) { _, which ->
-                when (which) {
-                    0 -> showChunkInformation(chunkX, chunkZ)
-                    1 -> showDiamondCoordinates(chunkX, chunkZ)
-                    2 -> {
+                when (options[which]) {
+                    "Chunk Information" -> showChunkInformation(chunkX, chunkZ)
+                    "💎 Show All Diamond Coordinates" -> showDiamondCoordinates(chunkX, chunkZ)
+                    "🏺 Show All Ancient Debris Coordinates" -> showAncientDebrisCoordinates(chunkX, chunkZ)
+                    "Show Entities" -> {
                         val i = Intent(this, EntityListActivity::class.java)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         i.putExtra(EntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
-                    3 -> {
+                    "Show Block Entities" -> {
                         val i = Intent(this, BlockEntityListActivity::class.java)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         i.putExtra(BlockEntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
-                    4 -> copyChunk(chunkX, chunkZ)
-                    5 -> chooseChunkToPaste(chunkX, chunkZ)
-                    6 -> promptDeleteChunk(chunkX, chunkZ)
+                    "Copy Chunk" -> copyChunk(chunkX, chunkZ)
+                    "Paste Chunk" -> chooseChunkToPaste(chunkX, chunkZ)
+                    "Delete Chunk" -> promptDeleteChunk(chunkX, chunkZ)
                 }
             }.show()
     }
@@ -343,6 +347,40 @@ class MapViewerActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 runOnUiThread { showErrorDialog(this, "Failed to scan diamond coordinates", e) }
+            }
+        }.start()
+    }
+
+    private fun showAncientDebrisCoordinates(chunkX: Int, chunkZ: Int) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        Thread {
+            try {
+                val coordinates = ChunkScanner.findAncientDebrisCoordinates(bridge, chunkX, chunkZ, 1)
+                runOnUiThread {
+                    if (coordinates.isEmpty()) {
+                        AlertDialog.Builder(this)
+                            .setTitle("🏺 Ancient Debris Coordinates")
+                            .setMessage("No ancient_debris blocks were found in this Nether chunk.")
+                            .setPositiveButton("OK", null).show()
+                        return@runOnUiThread
+                    }
+                    val text = coordinates.joinToString("\n") { "🏺 (${it.x}, ${it.y}, ${it.z})" }
+                    AlertDialog.Builder(this)
+                        .setTitle("🏺 Ancient Debris Coordinates (${coordinates.size})")
+                        .setMessage(text)
+                        .setNegativeButton("Close", null)
+                        .setPositiveButton("Copy All Coordinates") { _, _ ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Ancient Debris Coordinates", text))
+                            Toast.makeText(this, "Copied ${coordinates.size} ancient debris coordinates.", Toast.LENGTH_SHORT).show()
+                        }.show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to scan ancient debris coordinates", e) }
             }
         }.start()
     }

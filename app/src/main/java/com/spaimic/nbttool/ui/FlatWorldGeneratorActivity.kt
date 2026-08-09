@@ -2,6 +2,8 @@ package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
 import android.os.Bundle
+import android.text.InputType
+import android.view.ViewGroup
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.nbt.NbtIO
@@ -12,59 +14,133 @@ import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
 
 /**
- * Lets you build a custom flat-world layer stack (bottom to top) and write it
- * into level.dat as the "FlatWorldLayers" JSON string Bedrock expects, along
- * with Generator=2. Only affects newly-generated chunks — it can't reshape
- * terrain that's already been explored.
+ * Custom flat-world generator. With an existing world path it edits that world's
+ * level.dat; without one it creates a brand-new world directly from this screen.
+ * Layers are always displayed and stored bottom-to-top (first row = lowest layer).
  */
 class FlatWorldGeneratorActivity : AppCompatActivity() {
 
-    private lateinit var worldDir: File
-    private lateinit var levelDatFile: File
+    private var worldDir: File? = null
+    private var levelDatFile: File? = null
     private var levelDat: NbtIO.LevelDat? = null
     private lateinit var listView: ListView
     private val layers = ArrayList<FlatLayer>()
+    private lateinit var biomeSpinner: Spinner
+    private lateinit var preventSlimes: CheckBox
+    private lateinit var worldNameInput: EditText
+    private var createMode = false
+
+    private val biomeOptions = listOf(
+        "Plains" to "minecraft:plains",
+        "Forest" to "minecraft:forest",
+        "Taiga" to "minecraft:taiga",
+        "Desert" to "minecraft:desert",
+        "Savanna" to "minecraft:savanna",
+        "Jungle" to "minecraft:jungle",
+        "Swamp" to "minecraft:swamp",
+        "Snowy Plains" to "minecraft:snowy_plains",
+        "Cherry Grove" to "minecraft:cherry_grove",
+        "Badlands" to "minecraft:badlands",
+        "Mushroom Fields" to "minecraft:mushroom_fields",
+        "Ocean" to "minecraft:ocean"
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
-        levelDatFile = File(worldDir, "level.dat")
-        title = "Flat World Generator"
+        val path = intent.getStringExtra(EXTRA_WORLD_PATH)
+        createMode = path.isNullOrBlank()
+        worldDir = path?.let(::File)
+        levelDatFile = worldDir?.let { File(it, "level.dat") }
+        title = if (createMode) "Custom Flat World Generator" else "Flat World Generator"
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        listView = ListView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        buildUi()
+        if (createMode) {
+            layers.addAll(defaultLayers())
+            refresh()
+        } else {
+            loadExistingWorld()
         }
+    }
+
+    private fun buildUi() {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 12, 16, 12)
+        }
+
+        if (createMode) {
+            worldNameInput = EditText(this).apply {
+                hint = "World name"
+                setText("Custom Flat World")
+                setSingleLine(true)
+            }
+            root.addView(worldNameInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        } else {
+            worldNameInput = EditText(this).apply { visibility = android.view.View.GONE }
+        }
+
+        val biomeLabel = TextView(this).apply { text = "Biome"; setPadding(4, 8, 4, 4) }
+        root.addView(biomeLabel)
+        biomeSpinner = Spinner(this)
+        biomeSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, biomeOptions.map { it.first })
+        root.addView(biomeSpinner)
+
+        preventSlimes = CheckBox(this).apply {
+            text = "Prevent slimes from spawning"
+            setOnCheckedChangeListener { _, checked ->
+                // The checkbox only changes the generated stack when Generate is pressed.
+                // Keeping the editable list unchanged makes it obvious what the user chose.
+            }
+        }
+        root.addView(preventSlimes)
+
+        val help = TextView(this).apply {
+            text = "Layers are bottom → top. Layer 1 is the lowest layer. The world starts at Y -64."
+            setPadding(4, 2, 4, 10)
+        }
+        root.addView(help)
+
+        listView = ListView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        root.addView(listView)
+
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val addButton = Button(this).apply {
             text = "Add layer"
             setOnClickListener { promptAddLayer() }
         }
-        root.addView(listView)
-        root.addView(addButton)
-        setContentView(root)
+        val generateButton = Button(this).apply {
+            text = if (createMode) "Create World" else "Save"
+            setOnClickListener { generate() }
+        }
+        buttons.addView(addButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        buttons.addView(generateButton, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(buttons)
 
+        setContentView(root)
         listView.setOnItemClickListener { _, _, position, _ -> promptEditLayer(position) }
         listView.setOnItemLongClickListener { _, _, position, _ -> showLayerMenu(position); true }
-
-        load()
     }
 
-    private fun load() {
+    private fun defaultLayers() = listOf(
+        FlatLayer("minecraft:bedrock", 1),
+        FlatLayer("minecraft:dirt", 2),
+        FlatLayer("minecraft:grass_block", 1)
+    )
+
+    private fun loadExistingWorld() {
         try {
-            levelDat = NbtIO.readLevelDat(levelDatFile.readBytes())
-            val existingJson = (levelDat!!.root.entries["FlatWorldLayers"] as? NbtTag.Str)?.value
+            val file = levelDatFile ?: error("Missing level.dat")
+            levelDat = NbtIO.readLevelDat(file.readBytes())
+            val dat = levelDat!!
+            val existingJson = (dat.root.entries["FlatWorldLayers"] as? NbtTag.Str)?.value
             val existing = existingJson?.let { FlatWorldGenerator.fromJson(it) }
             layers.clear()
-            if (existing != null) {
-                layers.addAll(existing)
-            } else {
-                // classic default preset as a starting point: bedrock, dirt×2, grass on top
-                layers.addAll(listOf(
-                    FlatLayer("minecraft:bedrock", 1),
-                    FlatLayer("minecraft:dirt", 2),
-                    FlatLayer("minecraft:grass_block", 1)
-                ))
-            }
+            layers.addAll(existing ?: defaultLayers())
+            val biome = (dat.root.entries["BiomeOverride"] as? NbtTag.Str)?.value
+            val index = biomeOptions.indexOfFirst { it.second == biome }
+            if (index >= 0) biomeSpinner.setSelection(index)
             refresh()
         } catch (e: Exception) {
             showErrorDialog(this, "Failed to load level.dat", e)
@@ -81,115 +157,124 @@ class FlatWorldGeneratorActivity : AppCompatActivity() {
         val countInput = EditText(this).apply {
             hint = "count"
             setText("1")
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            inputType = InputType.TYPE_CLASS_NUMBER
         }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(48, 24, 48, 0)
-            addView(nameInput)
-            addView(countInput)
+            addView(nameInput); addView(countInput)
         }
         AlertDialog.Builder(this)
-            .setTitle("Add layer (added on top)")
+            .setTitle("Add layer (on top)")
             .setView(box)
             .setPositiveButton("Add") { _, _ ->
                 val name = nameInput.text.toString().trim().ifBlank { return@setPositiveButton }
                 val count = countInput.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: 1
-                layers.add(FlatLayer(name, count))
-                refresh()
+                layers.add(FlatLayer(name, count)); refresh()
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            .setNegativeButton("Cancel", null).show()
     }
 
     private fun promptEditLayer(index: Int) {
         val layer = layers[index]
         val nameInput = EditText(this).apply { setText(layer.blockName) }
-        val countInput = EditText(this).apply {
-            setText(layer.count.toString())
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 24, 48, 0)
-            addView(nameInput)
-            addView(countInput)
-        }
-        AlertDialog.Builder(this)
-            .setTitle("Edit layer ${index + 1}")
-            .setView(box)
+        val countInput = EditText(this).apply { setText(layer.count.toString()); inputType = InputType.TYPE_CLASS_NUMBER }
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(48, 24, 48, 0); addView(nameInput); addView(countInput) }
+        AlertDialog.Builder(this).setTitle("Edit layer ${index + 1}").setView(box)
             .setPositiveButton("Save") { _, _ ->
                 layer.blockName = nameInput.text.toString().trim().ifBlank { layer.blockName }
                 layer.count = countInput.text.toString().toIntOrNull()?.coerceAtLeast(1) ?: layer.count
                 refresh()
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
+            }.setNegativeButton("Cancel", null).show()
     }
 
     private fun showLayerMenu(index: Int) {
         val options = buildList {
             add("Edit")
-            if (index > 0) add("Move down (toward bedrock)")
-            if (index < layers.size - 1) add("Move up (toward surface)")
+            if (index > 0) add("Move down (toward bottom)")
+            if (index < layers.size - 1) add("Move up (toward top)")
             add("Delete")
         }
-        AlertDialog.Builder(this)
-            .setTitle("Layer ${index + 1}: ${layers[index].blockName}")
+        AlertDialog.Builder(this).setTitle("Layer ${index + 1}: ${layers[index].blockName}")
             .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
                     "Edit" -> promptEditLayer(index)
-                    "Move down (toward bedrock)" -> { swap(index, index - 1) }
-                    "Move up (toward surface)" -> { swap(index, index + 1) }
+                    "Move down (toward bottom)" -> swap(index, index - 1)
+                    "Move up (toward top)" -> swap(index, index + 1)
                     "Delete" -> { layers.removeAt(index); refresh() }
                 }
-            }
-            .show()
+            }.show()
     }
 
     private fun swap(a: Int, b: Int) {
-        val tmp = layers[a]; layers[a] = layers[b]; layers[b] = tmp
-        refresh()
+        val tmp = layers[a]; layers[a] = layers[b]; layers[b] = tmp; refresh()
     }
 
-    override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
-        menu.add(0, MENU_GENERATE, 0, "Generate")
-        return true
-    }
+    private fun selectedBiomeId(): String = biomeOptions[biomeSpinner.selectedItemPosition].second
 
-    override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
-        if (item.itemId == MENU_GENERATE) {
-            generate()
-            return true
+    /** Adds air below the chosen stack so its top is Y=39, leaving no spawnable space below Y=40. */
+    private fun preparedLayers(): List<FlatLayer> {
+        val base = layers.map { FlatLayer(it.blockName, it.count) }
+        if (!preventSlimes.isChecked) return base
+        val solidHeight = base.sumOf { it.count }
+        val maxSlimeSafeHeight = 104 // Y -64..39 inclusive
+        if (solidHeight > maxSlimeSafeHeight) {
+            throw IllegalArgumentException("Slime prevention needs the selected layers to fit between Y -64 and Y 39 (maximum 104 blocks).")
         }
-        return super.onOptionsItemSelected(item)
+        val bottom = 40 - solidHeight
+        val airCount = bottom - (-64)
+        if (airCount <= 0) return base
+        return listOf(FlatLayer("minecraft:air", airCount)) + base
     }
 
     private fun generate() {
-        val dat = levelDat ?: return
         if (layers.isEmpty()) {
-            Toast.makeText(this, "Add at least one layer first", Toast.LENGTH_SHORT).show()
-            return
+            Toast.makeText(this, "Add at least one layer first", Toast.LENGTH_SHORT).show(); return
         }
         try {
-            val backupFile = File(LocalWorldStore.backupsDir(this), "level_${worldDir.name}_${System.currentTimeMillis()}.dat.bak")
-            levelDatFile.copyTo(backupFile, overwrite = true)
+            val finalLayers = preparedLayers()
+            if (finalLayers.sumOf { it.count } > 384) {
+                throw IllegalArgumentException("The layer stack is too tall for the Bedrock world height range.")
+            }
+            val biomeId = selectedBiomeId()
+            if (createMode) createNewWorld(finalLayers, biomeId) else saveExistingWorld(finalLayers, biomeId)
+        } catch (e: Exception) {
+            showErrorDialog(this, "Couldn't generate flat world", e)
+        }
+    }
 
-            val json = FlatWorldGenerator.toJson(layers)
-            dat.root.entries["FlatWorldLayers"] = NbtTag.Str(json)
+    private fun createNewWorld(finalLayers: List<FlatLayer>, biomeId: String) {
+        val name = worldNameInput.text.toString().trim().ifBlank { "Custom Flat World" }
+        Thread {
+            try {
+                val localName = LocalWorldStore.uniqueLocalName(this, name)
+                val dir = File(LocalWorldStore.rootDir(this), localName).apply { mkdirs() }
+                val dat = FlatWorldGenerator.buildNewWorldLevelDat(name, finalLayers, biomeId)
+                File(dir, "level.dat").writeBytes(NbtIO.writeLevelDat(dat))
+                LocalWorldStore.writeDisplayName(dir, name)
+                runOnUiThread {
+                    Toast.makeText(this, "Created \"$localName\"", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to create world", e) }
+            }
+        }.start()
+    }
+
+    private fun saveExistingWorld(finalLayers: List<FlatLayer>, biomeId: String) {
+        val dat = levelDat ?: return
+        val file = levelDatFile ?: return
+        try {
+            val backupFile = File(LocalWorldStore.backupsDir(this), "level_${worldDir!!.name}_${System.currentTimeMillis()}.dat.bak")
+            file.copyTo(backupFile, overwrite = true)
+            dat.root.entries["FlatWorldLayers"] = NbtTag.Str(FlatWorldGenerator.toJson(finalLayers))
             dat.root.entries["Generator"] = NbtTag.Int(FlatWorldGenerator.GENERATOR_FLAT)
-            levelDatFile.writeBytes(NbtIO.writeLevelDat(dat))
-
-            AlertDialog.Builder(this)
-                .setTitle("Flat world settings saved")
-                .setMessage(
-                    "level.dat now generates new chunks using your custom layers.\n\n" +
-                        "This only affects chunks that haven't been generated yet — it can't " +
-                        "reshape terrain that already exists in an explored world. For a clean " +
-                        "result, use this on a fresh/unexplored world."
-                )
-                .setPositiveButton("OK", null)
-                .show()
+            dat.root.entries["BiomeOverride"] = NbtTag.Str(biomeId)
+            file.writeBytes(NbtIO.writeLevelDat(dat))
+            AlertDialog.Builder(this).setTitle("Flat world settings saved")
+                .setMessage("New chunks will use the custom layers. Existing generated terrain is unchanged.\n\nBiomeOverride: $biomeId")
+                .setPositiveButton("OK") { _, _ -> finish() }.show()
         } catch (e: Exception) {
             showErrorDialog(this, "Failed to save", e)
         }
@@ -197,6 +282,5 @@ class FlatWorldGeneratorActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
-        private const val MENU_GENERATE = 1
     }
 }

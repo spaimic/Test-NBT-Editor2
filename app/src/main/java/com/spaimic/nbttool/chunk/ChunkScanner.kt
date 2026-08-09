@@ -15,6 +15,7 @@ data class EntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val i
 data class BlockEntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val id: String)
 
 data class DiamondCoordinate(val x: Int, val y: Int, val z: Int)
+data class OreCoordinate(val x: Int, val y: Int, val z: Int)
 
 data class ScanStats(
     val totalLoadedChunks: Int,
@@ -173,6 +174,35 @@ object ChunkScanner {
         }
 
         return result.sortedWith(compareBy<DiamondCoordinate> { it.y }.thenBy { it.x }.thenBy { it.z })
+    }
+
+    /** Finds every ancient_debris block in one Nether chunk. */
+    fun findAncientDebrisCoordinates(
+        bridge: LevelDbBridge,
+        chunkX: Int,
+        chunkZ: Int,
+        dimension: Int = 1
+    ): List<OreCoordinate> {
+        if (dimension != 1) return emptyList()
+        val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
+        if (subchunks.isEmpty()) return emptyList()
+
+        val result = ArrayList<OreCoordinate>()
+        val targetName = "minecraft:ancient_debris"
+        for ((subY, bytes) in subchunks) {
+            when (val parsed = SubChunkParser.parse(bytes)) {
+                is SubChunkParser.ParseResult.Failure -> continue
+                is SubChunkParser.ParseResult.Success -> {
+                    val baseY = subY * 16
+                    for (x in 0 until 16) for (z in 0 until 16) for (y in 0 until 16) {
+                        if (parsed.blocks[x][z][y] == targetName) {
+                            result.add(OreCoordinate(chunkX * 16 + x, baseY + y, chunkZ * 16 + z))
+                        }
+                    }
+                }
+            }
+        }
+        return result.sortedWith(compareBy<OreCoordinate> { it.y }.thenBy { it.x }.thenBy { it.z })
     }
 
     /**
