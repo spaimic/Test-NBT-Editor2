@@ -73,7 +73,9 @@ class MapView(context: Context) : View(context) {
     // at the widest view and roughly 46x70 blocks at the closest view.
     private var zoom = 3.85f
     private val minZoom = 3.75f
-    private val maxZoom = 20f
+    // Build 105: match Blocktopograph-style detail by allowing up to 32 screen pixels per world block.
+    private val maxZoom = 32f
+    private val highResThreshold = 12f
 
     /** World block coordinate at the center of the viewport. */
     private var cameraX = 0f
@@ -100,6 +102,7 @@ class MapView(context: Context) : View(context) {
             val oldZoom = zoom
             val newZoom = (zoom * detector.scaleFactor).coerceIn(minZoom, maxZoom)
             if (newZoom == oldZoom) return true
+            invalidateBitmapResolutionIfNeeded(oldZoom, newZoom)
 
             // Keep the point under the fingers fixed while zooming.
             val focusWorldX = cameraX + (detector.focusX - width / 2f) / oldZoom
@@ -148,7 +151,9 @@ class MapView(context: Context) : View(context) {
 
     private fun changeZoom(target: Float, focusX: Float, focusZ: Float) {
         val old = zoom
-        zoom = target.coerceIn(minZoom, maxZoom)
+        val newZoom = target.coerceIn(minZoom, maxZoom)
+        invalidateBitmapResolutionIfNeeded(old, newZoom)
+        zoom = newZoom
         val wx = cameraX + (focusX - width / 2f) / old
         val wz = cameraZ + (focusZ - height / 2f) / old
         cameraX = wx - (focusX - width / 2f) / zoom
@@ -195,9 +200,31 @@ class MapView(context: Context) : View(context) {
     private fun screenX(worldX: Float): Float = width / 2f + (worldX - cameraX) * zoom
     private fun screenZ(worldZ: Float): Float = height / 2f + (worldZ - cameraZ) * zoom
 
+    private fun invalidateBitmapResolutionIfNeeded(oldZoom: Float, newZoom: Float) {
+        val oldHigh = oldZoom >= highResThreshold
+        val newHigh = newZoom >= highResThreshold
+        if (oldHigh != newHigh) {
+            chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
+            chunkBitmaps.clear()
+        }
+    }
+
+    /**
+     * Build 16x16 low-resolution tiles for the overview, or 512x512 tiles at
+     * close zoom.  The latter gives every world block a 32x32 source-pixel
+     * footprint, matching the high-detail scale used by Blocktopograph-style
+     * map rendering.  High-resolution tiles are only created when the camera
+     * is close enough to see them, keeping large-world memory use reasonable.
+     */
     private fun bitmapForChunk(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
-        return chunkBitmaps.getOrPut(pos) {
-            val bitmap = Bitmap.createBitmap(16, 16, Bitmap.Config.ARGB_8888)
+        val highRes = zoom >= highResThreshold
+        val expectedSize = if (highRes) 512 else 16
+        val existing = chunkBitmaps[pos]
+        if (existing != null && existing.width == expectedSize && !existing.isRecycled) return existing
+        existing?.let { if (!it.isRecycled) it.recycle() }
+
+        val bitmap = Bitmap.createBitmap(expectedSize, expectedSize, Bitmap.Config.ARGB_8888)
+        if (!highRes) {
             val pixels = IntArray(256)
             for (x in 0 until 16) for (z in 0 until 16) {
                 val info = grid[x][z]
@@ -206,8 +233,44 @@ class MapView(context: Context) : View(context) {
                 pixels[z * 16 + x] = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
             }
             bitmap.setPixels(pixels, 0, 16, 0, 0, 16, 16)
-            bitmap
+        } else {
+            val pixels = IntArray(512 * 512)
+            for (x in 0 until 16) for (z in 0 until 16) {
+                val info = grid[x][z]
+                val worldX = pos.first * 16 + x
+                val worldZ = pos.second * 16 + z
+                val base = BlockColors.detailedColor(info.color, info.material, worldX, worldZ)
+
+                // Four-by-four material cells make the 32x32 block footprint
+                // visibly textured instead of simply enlarging one flat pixel.
+                // The pattern is deterministic and tied to world coordinates,
+                // so it remains stable while panning and across chunk borders.
+                for (cellZ in 0 until 4) for (cellX in 0 until 4) {
+                    val seed = worldX * 73428767 + worldZ * 912931 + cellX * 19349663 + cellZ * 83492791 + info.material.hashCode()
+                    val variant = ((seed xor (seed ushr 16)) and 0x7fffffff) % 5
+                    val factor = when (variant) {
+                        0 -> 0.94f
+                        1 -> 0.97f
+                        2 -> 1.00f
+                        3 -> 1.03f
+                        else -> 1.06f
+                    }
+                    val r = (Color.red(base) * factor).toInt().coerceIn(0, 255)
+                    val g = (Color.green(base) * factor).toInt().coerceIn(0, 255)
+                    val b = (Color.blue(base) * factor).toInt().coerceIn(0, 255)
+                    val c = Color.rgb(r, g, b)
+                    val startX = x * 32 + cellX * 8
+                    val startZ = z * 32 + cellZ * 8
+                    for (py in startZ until startZ + 8) {
+                        val row = py * 512
+                        for (px in startX until startX + 8) pixels[row + px] = c
+                    }
+                }
+            }
+            bitmap.setPixels(pixels, 0, 512, 0, 0, 512, 512)
         }
+        chunkBitmaps[pos] = bitmap
+        return bitmap
     }
 
     override fun onDraw(canvas: Canvas) {
