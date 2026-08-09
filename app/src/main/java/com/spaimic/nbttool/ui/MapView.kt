@@ -97,8 +97,13 @@ class MapView(context: Context) : View(context) {
     // A bounded cache prevents a large world viewport from retaining hundreds
     // of 512x512 bitmaps at once. The underlying chunk data remains available,
     // so evicted bitmaps are cheap to regenerate when they become visible again.
-    private val maxCachedChunkBitmaps = 24
     private val bitmapAccessOrder = LinkedHashMap<Pair<Int, Int>, Unit>(32, 0.75f, true)
+    // Positions currently inside the viewport. Updated before drawing so visible
+    // bitmaps are protected from eviction during the same frame.
+    private var visibleChunkPositions: Set<Pair<Int, Int>> = emptySet()
+    // Keep a modest number of recently used off-screen bitmaps in addition to all
+    // visible bitmaps. This avoids unbounded memory use without evicting visible tiles.
+    private val maxCachedOffscreenBitmaps = 24
 
     /** World block coordinate at the center of the viewport. */
     private var cameraX = 0f
@@ -236,11 +241,9 @@ class MapView(context: Context) : View(context) {
      * and schedule it again, producing the Build 107/108 disappearing-chunk loop.
      */
     private fun trimOffscreenBitmaps() {
-        var offscreenCount = 0
-        for (pos in bitmapAccessOrder.keys) {
-            if (!visibleChunkPositions.contains(pos) && chunkBitmaps[pos]?.isRecycled == false) {
-                offscreenCount++
-            }
+        var offscreenCount = bitmapAccessOrder.keys.count { pos ->
+            !visibleChunkPositions.contains(pos) &&
+                chunkBitmaps[pos]?.isRecycled == false
         }
         if (offscreenCount <= maxCachedOffscreenBitmaps) return
 
@@ -248,9 +251,10 @@ class MapView(context: Context) : View(context) {
         while (iterator.hasNext() && offscreenCount > maxCachedOffscreenBitmaps) {
             val pos = iterator.next().key
             if (visibleChunkPositions.contains(pos)) continue
+
             iterator.remove()
-            chunkBitmaps.remove(pos)?.let {
-                if (!it.isRecycled) it.recycle()
+            chunkBitmaps.remove(pos)?.let { bitmap ->
+                if (!bitmap.isRecycled) bitmap.recycle()
             }
             offscreenCount--
         }
@@ -374,7 +378,23 @@ class MapView(context: Context) : View(context) {
         val maxCx = floor((cameraX + halfWorldW) / 16f).toInt()
         val minCz = floor((cameraZ - halfWorldH) / 16f).toInt()
         val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt()
+
+        // Protect the entire viewport BEFORE drawing. The previous Build 109
+        // implementation updated this only after drawing, allowing trimOffscreenBitmaps()
+        // to evict a bitmap that was about to be drawn.
         val visibleNow = HashSet<Pair<Int, Int>>()
+        for (cx in minCx..maxCx) {
+            for (cz in minCz..maxCz) {
+                val left = screenX(cx * 16f)
+                val top = screenZ(cz * 16f)
+                val right = screenX((cx + 1) * 16f)
+                val bottom = screenZ((cz + 1) * 16f)
+                if (right < 0 || left > width || bottom < 0 || top > height) continue
+                visibleNow.add(cx to cz)
+            }
+        }
+        visibleChunkPositions = visibleNow
+
         for (cx in minCx..maxCx) {
             for (cz in minCz..maxCz) {
                 val left = screenX(cx * 16f)
@@ -405,9 +425,6 @@ class MapView(context: Context) : View(context) {
             }
         }
 
-        // Mark the complete viewport before trimming. Every visible bitmap is now
-        // protected from eviction, regardless of how many chunks are on screen.
-        visibleChunkPositions = visibleNow
         trimOffscreenBitmaps()
 
         // At the widest zoom MineTuner visually merges 4x4 chunks.  We keep the
