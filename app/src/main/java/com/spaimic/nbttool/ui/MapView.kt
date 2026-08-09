@@ -39,7 +39,10 @@ class MapView(context: Context) : View(context) {
 
     private val chunks = ConcurrentHashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
     private val chunkBitmaps = ConcurrentHashMap<Pair<Int, Int>, Bitmap>()
-    private val loading = ConcurrentHashMap.newKeySet<Pair<Int, Int>>()
+    // Build 108: LevelDB loading state belongs to MapViewerActivity.
+    // This view tracks only background bitmap renders, so database loading
+    // can never block a render request.
+    private val rendering = ConcurrentHashMap.newKeySet<Pair<Int, Int>>()
 
     // Build 107: expensive 512x512 chunk rendering must never run from onDraw().
     // A small pool keeps the UI thread responsive while still rendering a couple
@@ -155,15 +158,6 @@ class MapView(context: Context) : View(context) {
         chunks.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
-        invalidate()
-    }
-
-    fun markLoading(positions: Set<Pair<Int, Int>>) {
-        loading.addAll(positions)
-    }
-
-    fun markLoaded(positions: Set<Pair<Int, Int>>) {
-        loading.removeAll(positions)
         invalidate()
     }
 
@@ -295,7 +289,7 @@ class MapView(context: Context) : View(context) {
             touchBitmap(pos)
             return
         }
-        if (!loading.add(pos)) return
+        if (!rendering.add(pos)) return
 
         val generation = renderGeneration.get()
         renderExecutor.execute {
@@ -318,7 +312,7 @@ class MapView(context: Context) : View(context) {
             } catch (_: Throwable) {
                 rendered?.let { if (!it.isRecycled) it.recycle() }
             } finally {
-                loading.remove(pos)
+                rendering.remove(pos)
             }
         }
     }

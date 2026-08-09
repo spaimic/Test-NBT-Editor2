@@ -195,7 +195,6 @@ class MapViewerActivity : AppCompatActivity() {
         }
         if (todo.isEmpty()) return
 
-        mapView.markLoading(todo.toSet())
         for (pos in todo) {
             mapExecutor.execute {
                 try {
@@ -231,13 +230,11 @@ class MapViewerActivity : AppCompatActivity() {
                                 mapView.blockEntityMarkers = loadedBlockEntityMarkers.toList()
                             }
                         }
-                        mapView.markLoaded(setOf(pos))
                         coordText.text = "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
                     }
                 } catch (e: Throwable) {
                     runOnUiThread {
                         synchronized(loadingChunks) { loadingChunks.remove(pos) }
-                        mapView.markLoaded(setOf(pos))
                     }
                 }
             }
