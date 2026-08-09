@@ -14,6 +14,8 @@ data class EntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val i
 /** One block entity's position + id, for drawing a marker on the map. */
 data class BlockEntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val id: String)
 
+data class DiamondCoordinate(val x: Int, val y: Int, val z: Int)
+
 data class ScanStats(
     val totalLoadedChunks: Int,
     val outliersDropped: Int,
@@ -128,6 +130,50 @@ class ChunkIndex private constructor(
 }
 
 object ChunkScanner {
+
+    /**
+     * Finds every diamond_ore and deepslate_diamond_ore block in one chunk.
+     * Coordinates returned here are absolute world coordinates, and the scan
+     * only reads the selected dimension's subchunks.
+     */
+    fun findDiamondCoordinates(
+        bridge: LevelDbBridge,
+        chunkX: Int,
+        chunkZ: Int,
+        dimension: Int = 0
+    ): List<DiamondCoordinate> {
+        val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
+        if (subchunks.isEmpty()) return emptyList()
+
+        val result = ArrayList<DiamondCoordinate>()
+        val targetNames = setOf("minecraft:diamond_ore", "minecraft:deepslate_diamond_ore")
+
+        for ((subY, bytes) in subchunks) {
+            when (val parsed = SubChunkParser.parse(bytes)) {
+                is SubChunkParser.ParseResult.Failure -> continue
+                is SubChunkParser.ParseResult.Success -> {
+                    val baseY = subY * 16
+                    for (x in 0 until 16) {
+                        for (z in 0 until 16) {
+                            for (y in 0 until 16) {
+                                if (parsed.blocks[x][z][y] in targetNames) {
+                                    result.add(
+                                        DiamondCoordinate(
+                                            chunkX * 16 + x,
+                                            baseY + y,
+                                            chunkZ * 16 + z
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return result.sortedWith(compareBy<DiamondCoordinate> { it.y }.thenBy { it.x }.thenBy { it.z })
+    }
 
     /**
      * Kept for compatibility with older callers. The Map Viewer no longer uses this

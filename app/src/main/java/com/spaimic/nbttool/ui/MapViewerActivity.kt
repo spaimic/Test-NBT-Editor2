@@ -1,6 +1,9 @@
 package com.spaimic.nbttool.ui
 
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -272,6 +275,7 @@ class MapViewerActivity : AppCompatActivity() {
         val clipboardEntries = ChunkClipboard.list(this)
         val options = arrayListOf(
             "Chunk Information",
+            "💎 Show All Diamond Coordinates",
             "Show Entities",
             "Show Block Entities",
             "Copy Chunk",
@@ -283,25 +287,64 @@ class MapViewerActivity : AppCompatActivity() {
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> showChunkInformation(chunkX, chunkZ)
-                    1 -> {
+                    1 -> showDiamondCoordinates(chunkX, chunkZ)
+                    2 -> {
                         val i = Intent(this, EntityListActivity::class.java)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         i.putExtra(EntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
-                    2 -> {
+                    3 -> {
                         val i = Intent(this, BlockEntityListActivity::class.java)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_X, chunkX)
                         i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, chunkZ)
                         i.putExtra(BlockEntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
-                    3 -> copyChunk(chunkX, chunkZ)
-                    4 -> chooseChunkToPaste(chunkX, chunkZ)
-                    5 -> promptDeleteChunk(chunkX, chunkZ)
+                    4 -> copyChunk(chunkX, chunkZ)
+                    5 -> chooseChunkToPaste(chunkX, chunkZ)
+                    6 -> promptDeleteChunk(chunkX, chunkZ)
                 }
             }.show()
+    }
+
+    private fun showDiamondCoordinates(chunkX: Int, chunkZ: Int) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        val dimension = selectedDbDimension()
+        Thread {
+            try {
+                val coordinates = ChunkScanner.findDiamondCoordinates(bridge, chunkX, chunkZ, dimension)
+                runOnUiThread {
+                    if (coordinates.isEmpty()) {
+                        AlertDialog.Builder(this)
+                            .setTitle("💎 Diamond Coordinates")
+                            .setMessage("No diamond_ore or deepslate_diamond_ore blocks were found in this chunk.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                        return@runOnUiThread
+                    }
+
+                    val text = coordinates.joinToString("\n") { "💎 (${it.x}, ${it.y}, ${it.z})" }
+                    AlertDialog.Builder(this)
+                        .setTitle("💎 Diamond Coordinates (${coordinates.size})")
+                        .setMessage(text)
+                        .setNegativeButton("Close", null)
+                        .setPositiveButton("Copy All Coordinates") { _, _ ->
+                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Diamond Coordinates", text))
+                            Toast.makeText(this, "Copied ${coordinates.size} diamond coordinates.", Toast.LENGTH_SHORT).show()
+                        }
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { showErrorDialog(this, "Failed to scan diamond coordinates", e) }
+            }
+        }.start()
     }
 
     private fun showChunkInformation(chunkX: Int, chunkZ: Int) {
