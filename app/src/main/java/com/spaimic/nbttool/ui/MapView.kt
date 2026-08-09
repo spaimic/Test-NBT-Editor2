@@ -64,7 +64,13 @@ class MapView(context: Context) : View(context) {
         markerBitmapCache.getOrPut(resId) { BitmapFactory.decodeResource(resources, resId) }
 
     private val steveBitmap: Bitmap by lazy { BitmapFactory.decodeResource(resources, R.drawable.steve) }
-    private val tilePaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val tilePaint = Paint().apply {
+        // Build 112: map tiles must stay crisp and pixel-aligned. Do not let
+        // Android texture-filter the 12 px/block source bitmap while scaling it.
+        isAntiAlias = false
+        isFilterBitmap = false
+        isDither = false
+    }
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(80, 20, 20, 20)
         style = Paint.Style.STROKE
@@ -118,6 +124,10 @@ class MapView(context: Context) : View(context) {
     private var dragging = false
     private var pinching = false
     private var hadMultiTouch = false
+    // Build 112: after the second finger is lifted, the first one can remain
+    // down for a frame. Ignore that first one-finger MOVE so its coordinate jump
+    // cannot be interpreted as a pan.
+    private var ignoreNextSinglePointerMove = false
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
@@ -147,6 +157,10 @@ class MapView(context: Context) : View(context) {
             // Do not synthesize a tap when the pinch ends. The camera position
             // calculated in onScale is already the final pinch position.
             pinching = false
+            dragging = false
+            // The next ACTION_MOVE may contain the surviving finger at a very
+            // different screen coordinate. Ignore that first delta completely.
+            ignoreNextSinglePointerMove = true
             requestVisible()
         }
     })
@@ -264,6 +278,12 @@ class MapView(context: Context) : View(context) {
     /**
      * Build a 192x192 map tile for every chunk (12 px/block). This method performs
      * the expensive work and MUST run off the UI thread.
+     *
+     * Build 112 intentionally uses clean, flat map pixels. Earlier builds added
+     * per-pixel noise to imitate texture, which made large surfaces look like
+     * concrete powder. Instead, each block gets a small deterministic palette of
+     * solid shades arranged in clean 3x3 pixel cells. This keeps the richer
+     * Blocktopograph-like variation without texture grain or filtering artifacts.
      */
     private fun renderChunkBitmap(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>): Bitmap {
         val existing = chunkBitmaps[pos]
@@ -273,6 +293,14 @@ class MapView(context: Context) : View(context) {
 
         val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.RGB_565)
         val pixels = IntArray(chunkPixels * chunkPixels)
+        val cleanPattern = intArrayOf(
+            2, 1, 3, 2,
+            1, 0, 2, 3,
+            3, 2, 4, 1,
+            2, 3, 1, 2
+        )
+        val shadeFactors = floatArrayOf(0.92f, 0.96f, 1.00f, 1.04f, 1.08f)
+        val cellSize = 3
 
         for (x in 0 until 16) for (z in 0 until 16) {
             val info = grid[x][z]
@@ -287,32 +315,20 @@ class MapView(context: Context) : View(context) {
             val baseG = Color.green(base)
             val baseB = Color.blue(base)
 
-            // Calculate the 12x12 material pattern once per block. Normalize the
-            // material and hash it only once; the inner pixel loop uses the fast
-            // arithmetic-only variant path.
-            val materialName = info.material.substringAfter(':').lowercase()
-            val materialHash = materialName.hashCode()
-            val coarse = when {
-                materialName.contains("leaves") || materialName.contains("leaf") -> 0.88f
-                materialName.contains("grass") || materialName.contains("fern") || materialName.contains("vine") -> 0.93f
-                materialName.contains("wood") || materialName.contains("log") || materialName.contains("stem") || materialName.contains("hyphae") -> 0.95f
-                materialName.contains("stone") || materialName.contains("deepslate") || materialName.contains("cobble") -> 0.97f
-                materialName.contains("sand") || materialName.contains("gravel") || materialName.contains("dirt") || materialName.contains("clay") -> 0.96f
-                else -> 0.94f
-            }
-            val variants = FloatArray(blockPixels * blockPixels)
-            for (py in 0 until blockPixels) {
-                for (px in 0 until blockPixels) {
-                    variants[py * blockPixels + px] =
-                        BlockColors.textureVariantFast(materialHash, coarse, worldX, worldZ, px, py) * relief
-                }
-            }
+            // Offset the clean 4x4 shade pattern deterministically per block so
+            // forests/large surfaces don't form one repetitive global checker.
+            var h = worldX * -1640531527 + worldZ * 1013904223 + info.material.hashCode()
+            h = h xor (h ushr 16)
+            val offset = (h and 0x7fffffff) % cleanPattern.size
 
             for (py in 0 until blockPixels) {
+                val cellY = py / cellSize
                 val dstRow = (z * blockPixels + py) * chunkPixels + x * blockPixels
-                val variantRow = py * blockPixels
                 for (px in 0 until blockPixels) {
-                    val factor = variants[variantRow + px]
+                    val cellX = px / cellSize
+                    val patternIndex = (cellY * 4 + cellX + offset) % cleanPattern.size
+                    val shadeIndex = cleanPattern[patternIndex]
+                    val factor = shadeFactors[shadeIndex] * relief
                     val r = (baseR * factor).toInt().coerceIn(0, 255)
                     val g = (baseG * factor).toInt().coerceIn(0, 255)
                     val b = (baseB * factor).toInt().coerceIn(0, 255)
@@ -498,13 +514,20 @@ class MapView(context: Context) : View(context) {
                 hadMultiTouch = true
                 pinching = true
                 dragging = false
+                ignoreNextSinglePointerMove = true
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                // Never pan with a two-finger gesture. This was the source of the
-                // camera "jump" after pinch-zoom and made the final position differ
-                // from where the fingers actually stopped.
+                // Never pan with a two-finger gesture. Build 112 also ignores the
+                // first one-finger MOVE after a pinch so the surviving finger's
+                // coordinate jump cannot move the camera after zooming stops.
                 if (!pinching && !scaleDetector.isInProgress && event.pointerCount == 1) {
+                    if (ignoreNextSinglePointerMove) {
+                        lastX = event.x
+                        lastY = event.y
+                        ignoreNextSinglePointerMove = false
+                        return true
+                    }
                     val dx = event.x - lastX
                     val dz = event.y - lastY
                     if (kotlin.math.abs(event.x - downX) > 12 || kotlin.math.abs(event.y - downY) > 12) dragging = true
@@ -517,11 +540,15 @@ class MapView(context: Context) : View(context) {
             }
             MotionEvent.ACTION_POINTER_UP -> {
                 hadMultiTouch = true
+                pinching = true
+                ignoreNextSinglePointerMove = true
+                // Do not use the ACTION_POINTER_UP coordinate as a pan delta.
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 val wasGesture = hadMultiTouch || pinching
                 pinching = false
+                ignoreNextSinglePointerMove = false
                 if (!wasGesture && !dragging) handleTap(event.x, event.y)
                 hadMultiTouch = false
                 return true
@@ -529,6 +556,7 @@ class MapView(context: Context) : View(context) {
             MotionEvent.ACTION_CANCEL -> {
                 pinching = false
                 hadMultiTouch = false
+                ignoreNextSinglePointerMove = false
                 return true
             }
         }
