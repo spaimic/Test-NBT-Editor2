@@ -16,7 +16,6 @@ import com.spaimic.nbttool.chunk.ColumnInfo
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
-import kotlin.math.pow
 import kotlin.math.roundToInt
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -383,33 +382,17 @@ class MapView(context: Context) : View(context) {
         }
     }
 
-    /**
-     * Build 121: exact port of Blocktopograph's height shading, used by both its
-     * SatelliteRenderer (surface color mode) and HeightmapRenderer.
-     * See map/renderer/SatelliteRenderer.getHeightShading — this is the same
-     * west/north-only sigmoid, same constants (shadingAmp=0.8, k=0.35), just
-     * translated from Java. `east`/`south` are accepted to keep this method's
-     * call sites unchanged but are intentionally unused, matching the original.
-     */
     private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
-        var samples = 0
-        var heightDiff = 0f
-        // -64 is this world's floor sentinel (see ChunkScanner), the same role
-        // Blocktopograph's own -64 check plays for "no real neighbor data".
-        if (west > -64) {
-            heightDiff += (height - west)
-            samples++
-        }
-        if (north > -64) {
-            heightDiff += (height - north)
-            samples++
-        }
-        heightDiff *= 0.7f.pow(samples)
+        val leftSlope = height - west
+        val rightSlope = height - east
+        val northSlope = height - north
+        val southSlope = height - south
 
-        val shadingAmp = 0.8f
-        val k = 0.35f
-        val sigmoid = (2f / (1f + kotlin.math.exp(-k * heightDiff))) - 1f
-        return sigmoid * shadingAmp + 1f
+        // A small directional relief, deliberately capped so block colors remain
+        // recognizable. Positive values mean the current column is higher than
+        // its neighbors; negative values mean it is lower.
+        val slope = ((leftSlope - rightSlope) + (northSlope - southSlope)) * 0.035f
+        return (1f + slope.coerceIn(-0.14f, 0.14f)).coerceIn(0.86f, 1.14f)
     }
 
     override fun onDraw(canvas: Canvas) {

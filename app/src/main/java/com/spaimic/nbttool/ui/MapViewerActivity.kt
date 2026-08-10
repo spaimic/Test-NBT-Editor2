@@ -820,7 +820,7 @@ class MapViewerActivity : AppCompatActivity() {
                 // Village records use uppercase VILLAGE_ prefixes in Bedrock, and
                 // tickingarea records use the lowercase tickingarea_ prefix.
                 val prefixes = when (titleText) {
-                    "Multiplayer Players" -> listOf("player_server_")
+                    "Multiplayer Players" -> listOf("player_")
                     "MCStructures" -> listOf("structuretemplate_")
                     "Map Data" -> listOf("map_")
                     "Village Data" -> listOf("VILLAGE_Overworld_")

@@ -37,18 +37,6 @@ object BlockColors {
     private val DIRT = rgb(151, 109, 77)
     private val STONE = rgb(112, 112, 112)
     private val WATER = rgb(64, 64, 255)
-
-    /**
-     * Build 121: Blocktopograph's own water block color is ARGB 0x802e43f4 —
-     * i.e. every water block is only ~50% opaque (alpha 0x80 of 0xff). Its map
-     * renderer (SatelliteRenderer.getColumnColour) alpha-composites that color
-     * down through the water column onto whatever is beneath it, which is why
-     * shallow water shows the seafloor through it while deep water reads as a
-     * flat, saturated blue. This is the exact per-layer alpha value, reused
-     * here so the same depth-based darkening applies to our own (biome-tinted)
-     * water color instead of Blocktopograph's flat untinted one.
-     */
-    const val WATER_LAYER_ALPHA: Float = 0x80 / 255f
     private val WOOD = rgb(143, 119, 72)
     private val QUARTZ = rgb(255, 252, 245)
     private val COLOR_ORANGE = rgb(216, 127, 51)
@@ -114,12 +102,9 @@ object BlockColors {
     private val BEDROCK_VINE = rgb(78, 113, 30)
     private val BEDROCK_STONE = rgb(112, 112, 112)
     private val BEDROCK_DEEPSLATE = rgb(100, 100, 100)
-    // Cherry wood is intentionally pink-tinted. The old 209/177/161 value was
-    // too beige/gray for a map renderer and made cherry-built structures lose
-    // their identity. Keep the light pink body and a darker pink/red bark tone.
-    private val BEDROCK_CHERRY_WOOD = rgb(232, 158, 176)
-    private val BEDROCK_CHERRY_LOG = rgb(232, 158, 176)
-    private val BEDROCK_CHERRY_STRIPPED = rgb(196, 105, 126)
+    private val BEDROCK_CHERRY_WOOD = rgb(209, 177, 161)
+    private val BEDROCK_CHERRY_LOG = rgb(209, 177, 161)
+    private val BEDROCK_CHERRY_STRIPPED = rgb(160, 77, 78)
     private val BEDROCK_BIRCH_WOOD = rgb(247, 233, 163)
     private val BEDROCK_SPRUCE_WOOD = rgb(129, 86, 49)
     private val BEDROCK_JUNGLE_WOOD = rgb(151, 109, 77)

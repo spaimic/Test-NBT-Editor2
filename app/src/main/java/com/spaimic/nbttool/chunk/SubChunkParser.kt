@@ -41,28 +41,9 @@ object SubChunkParser {
             if (layerCount < 1) {
                 return fail("layerCount=$layerCount (version=$version)")
             }
-            // Bedrock can store more than one palette layer in a subchunk.
-            // The previous renderer decoded layer 0 and then discarded every
-            // additional layer. That can make the apparent highest block disappear
-            // when the visible block is stored in another layer (and can leave
-            // columns with no usable surface, which later become the gray fallback).
-            // Merge all layers into one map: later non-air layers override air and
-            // can therefore represent liquid/waterlogged content correctly.
-            val merged = decodeLayer(stream)
-            for (i in 1 until layerCount) {
-                val layer = decodeLayer(stream)
-                for (x in 0 until 16) {
-                    for (z in 0 until 16) {
-                        for (y in 0 until 16) {
-                            val name = layer[x][z][y]
-                            if (name != "minecraft:air" && name != "minecraft:unknown") {
-                                merged[x][z][y] = name
-                            }
-                        }
-                    }
-                }
-            }
-            ParseResult.Success(merged)
+            val layer0 = decodeLayer(stream)
+            for (i in 1 until layerCount) decodeLayer(stream) // skip extra layers (e.g. waterlogging)
+            ParseResult.Success(layer0)
         } catch (e: Exception) {
             fail("${e.javaClass.simpleName}: ${e.message}")
         }
@@ -70,13 +51,6 @@ object SubChunkParser {
 
     private fun decodeLayer(stream: DataInputStream): Array<Array<Array<String>>> {
         val flag = stream.readUnsignedByte()
-        // 0xFF is used by Bedrock for an empty/absent storage layer. Treat it as
-        // an all-air layer instead of rejecting the whole subchunk. This is
-        // important for chunks whose upper/lower subchunks contain no persisted
-        // block palette data.
-        if (flag == 0xFF) {
-            return Array(16) { Array(16) { Array(16) { "minecraft:air" } } }
-        }
         val bitsPerBlock = flag ushr 1
         if (bitsPerBlock > 32) throw IOException("implausible bitsPerBlock=$bitsPerBlock (flag=$flag)")
         val indices = IntArray(4096)
