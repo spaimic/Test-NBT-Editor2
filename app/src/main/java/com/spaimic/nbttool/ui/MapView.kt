@@ -12,6 +12,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import com.spaimic.nbttool.R
 import com.spaimic.nbttool.chunk.BlockColors
+import com.spaimic.nbttool.chunk.BlocktopographSatelliteRenderer
 import com.spaimic.nbttool.chunk.ColumnInfo
 import kotlin.math.floor
 import kotlin.math.max
