@@ -314,6 +314,7 @@ object ChunkScanner {
 
         val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
         val found = Array(16) { BooleanArray(16) }
+        val fallback = Array(16) { arrayOfNulls<ColumnInfo>(16) }
         var remaining = 256
         var hadSuccessfulSubchunk = false
         val biomeData = try {
@@ -339,7 +340,18 @@ object ChunkScanner {
                         if (found[x][z]) continue
                         for (y in 15 downTo 0) {
                             val name = parsed.blocks[x][z][y]
-                            if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
+                            if (name == "minecraft:air") continue
+
+                            if (fallback[x][z] == null) {
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                val surfaceY = subY * 16 + y
+                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                val baseColor = BlockColors.colorForDimension(name, dimension)
+                                val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
+                                fallback[x][z] = ColumnInfo(tinted, surfaceY, name)
+                            }
+
+                            if (!BlockColors.isMapTransparent(name)) {
                                 if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                 val surfaceY = subY * 16 + y
                                 val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
@@ -351,6 +363,16 @@ object ChunkScanner {
                                 break
                             }
                         }
+                    }
+                }
+            }
+        }
+        for (x in 0 until 16) {
+            for (z in 0 until 16) {
+                if (!found[x][z]) {
+                    fallback[x][z]?.let {
+                        grid[x][z] = it
+                        found[x][z] = true
                     }
                 }
             }
@@ -498,6 +520,7 @@ object ChunkScanner {
 
         val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
         val found = Array(16) { BooleanArray(16) }
+        val fallback = Array(16) { arrayOfNulls<ColumnInfo>(16) }
         var remaining = 256
         var hadSuccessfulSubchunk = false
         val biomeData = try {
@@ -520,7 +543,17 @@ object ChunkScanner {
                             if (found[x][z]) continue
                             for (y in 15 downTo 0) {
                                 val name = blocks[x][z][y]
-                                if (name != "minecraft:air") {
+                                if (name == "minecraft:air") continue
+
+                                if (fallback[x][z] == null) {
+                                    if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                    val surfaceY = subY * 16 + y
+                                    val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                    val baseColor = BlockColors.colorForDimension(name, 0)
+                                    fallback[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
+                                }
+
+                                if (!BlockColors.isMapTransparent(name)) {
                                     if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                     val surfaceY = subY * 16 + y
                                     val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
@@ -532,6 +565,17 @@ object ChunkScanner {
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        for (x in 0 until 16) {
+            for (z in 0 until 16) {
+                if (!found[x][z]) {
+                    fallback[x][z]?.let {
+                        grid[x][z] = it
+                        found[x][z] = true
                     }
                 }
             }

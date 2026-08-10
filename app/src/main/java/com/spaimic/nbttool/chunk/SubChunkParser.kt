@@ -41,9 +41,18 @@ object SubChunkParser {
             if (layerCount < 1) {
                 return fail("layerCount=$layerCount (version=$version)")
             }
-            val layer0 = decodeLayer(stream)
-            for (i in 1 until layerCount) decodeLayer(stream) // skip extra layers (e.g. waterlogging)
-            ParseResult.Success(layer0)
+            val merged = decodeLayer(stream)
+            for (i in 1 until layerCount) {
+                val overlay = try {
+                    decodeLayer(stream)
+                } catch (_: Exception) {
+                    // If a later storage layer is malformed, keep the base layer we
+                    // already decoded rather than throwing away the whole subchunk.
+                    return ParseResult.Success(merged)
+                }
+                mergeLayerInto(merged, overlay)
+            }
+            ParseResult.Success(merged)
         } catch (e: Exception) {
             fail("${e.javaClass.simpleName}: ${e.message}")
         }
@@ -95,6 +104,26 @@ object SubChunkParser {
             }
         }
         return out
+    }
+
+
+    private fun mergeLayerInto(
+        base: Array<Array<Array<String>>>,
+        overlay: Array<Array<Array<String>>>
+    ) {
+        // Later block-storage layers can override earlier base data. For the map
+        // renderer, any non-air block from the later layer is more useful than
+        // silently dropping it.
+        for (x in 0 until 16) {
+            for (z in 0 until 16) {
+                for (y in 0 until 16) {
+                    val name = overlay[x][z][y]
+                    if (name != "minecraft:air") {
+                        base[x][z][y] = name
+                    }
+                }
+            }
+        }
     }
 
     private fun readIntLE(stream: DataInputStream): Int {
