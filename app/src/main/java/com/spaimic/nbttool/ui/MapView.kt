@@ -383,15 +383,23 @@ class MapView(context: Context) : View(context) {
     }
 
     private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
-        // Build 114 used a very local height delta that could make isolated
-        // columns look harsher than the surrounding terrain. Build 115 treats
-        // elevation as a smooth directional slope instead: the west/east and
-        // north/south gradients are combined and softly limited. Flat terrain
-        // therefore stays exactly at 1.0, while hills gain only a subtle relief.
-        val dx = (east - west).coerceIn(-32, 32)
-        val dz = (south - north).coerceIn(-32, 32)
-        val slope = (dx + dz) * 0.0085f
-        return (1f + slope.coerceIn(-0.16f, 0.16f)).coerceIn(0.84f, 1.16f)
+        // Build 116: use a small terrain-normal approximation instead of simply
+        // adding signed height deltas. A light source from the north-west gives
+        // rising terrain a natural highlight/shadow while perfectly flat terrain
+        // remains exactly 1.0. Large cliffs are smoothly compressed so the block's
+        // actual map color is never overwhelmed by shading.
+        val dx = ((east - west) * 0.5f).coerceIn(-24f, 24f)
+        val dz = ((south - north) * 0.5f).coerceIn(-24f, 24f)
+        val slopeMagnitude = kotlin.math.sqrt(dx * dx + dz * dz)
+        if (slopeMagnitude < 0.001f) return 1f
+
+        // Light points from north-west. Positive light-facing slope becomes a
+        // little brighter; terrain falling away becomes a little darker.
+        val lightX = -0.7071f
+        val lightZ = -0.7071f
+        val facing = ((dx * lightX) + (dz * lightZ)) / (1f + slopeMagnitude * 0.12f)
+        val relief = (1f + facing * 0.045f).coerceIn(0.88f, 1.12f)
+        return relief
     }
 
     override fun onDraw(canvas: Canvas) {

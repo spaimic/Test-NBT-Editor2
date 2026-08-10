@@ -336,12 +336,15 @@ object ChunkScanner {
                             val name = parsed.blocks[x][z][y]
                             if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
                                 val surfaceY = subY * 16 + y
-                                if (surfaceY <= grid[x][z].surfaceY) break
-                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
-                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
-                                val baseColor = BlockColors.colorForDimension(name, dimension)
-                                val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
-                                grid[x][z] = ColumnInfo(tinted, surfaceY, name)
+                                // This scan is already top-down within a subchunk.
+                                // Never allow a lower candidate to replace a higher one.
+                                if (surfaceY > grid[x][z].surfaceY) {
+                                    if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                    val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                    val baseColor = BlockColors.colorForDimension(name, dimension)
+                                    val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
+                                    grid[x][z] = ColumnInfo(tinted, surfaceY, name)
+                                }
                                 break
                             }
                         }
@@ -521,11 +524,12 @@ object ChunkScanner {
                             val name = blocks[x][z][y]
                             if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
                                 val surfaceY = subY * 16 + y
-                                if (surfaceY <= grid[x][z].surfaceY) break
-                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
-                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
-                                val baseColor = BlockColors.colorForDimension(name, 0)
-                                grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
+                                if (surfaceY > grid[x][z].surfaceY) {
+                                    if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                    val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                    val baseColor = BlockColors.colorForDimension(name, 0)
+                                    grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
+                                }
                                 break
                             }
                         }

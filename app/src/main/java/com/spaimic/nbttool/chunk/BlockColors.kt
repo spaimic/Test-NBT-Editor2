@@ -102,9 +102,12 @@ object BlockColors {
     private val BEDROCK_VINE = rgb(78, 113, 30)
     private val BEDROCK_STONE = rgb(112, 112, 112)
     private val BEDROCK_DEEPSLATE = rgb(100, 100, 100)
-    private val BEDROCK_CHERRY_WOOD = rgb(209, 177, 161)
-    private val BEDROCK_CHERRY_LOG = rgb(209, 177, 161)
-    private val BEDROCK_CHERRY_STRIPPED = rgb(160, 77, 78)
+    // Cherry wood is intentionally pink-tinted. The old 209/177/161 value was
+    // too beige/gray for a map renderer and made cherry-built structures lose
+    // their identity. Keep the light pink body and a darker pink/red bark tone.
+    private val BEDROCK_CHERRY_WOOD = rgb(232, 158, 176)
+    private val BEDROCK_CHERRY_LOG = rgb(232, 158, 176)
+    private val BEDROCK_CHERRY_STRIPPED = rgb(196, 105, 126)
     private val BEDROCK_BIRCH_WOOD = rgb(247, 233, 163)
     private val BEDROCK_SPRUCE_WOOD = rgb(129, 86, 49)
     private val BEDROCK_JUNGLE_WOOD = rgb(151, 109, 77)

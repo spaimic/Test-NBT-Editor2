@@ -51,6 +51,13 @@ object SubChunkParser {
 
     private fun decodeLayer(stream: DataInputStream): Array<Array<Array<String>>> {
         val flag = stream.readUnsignedByte()
+        // 0xFF is used by Bedrock for an empty/absent storage layer. Treat it as
+        // an all-air layer instead of rejecting the whole subchunk. This is
+        // important for chunks whose upper/lower subchunks contain no persisted
+        // block palette data.
+        if (flag == 0xFF) {
+            return Array(16) { Array(16) { Array(16) { "minecraft:air" } } }
+        }
         val bitsPerBlock = flag ushr 1
         if (bitsPerBlock > 32) throw IOException("implausible bitsPerBlock=$bitsPerBlock (flag=$flag)")
         val indices = IntArray(4096)
