@@ -102,16 +102,18 @@ object BlockColors {
     private val BEDROCK_VINE = rgb(78, 113, 30)
     private val BEDROCK_STONE = rgb(112, 112, 112)
     private val BEDROCK_DEEPSLATE = rgb(100, 100, 100)
-    private val BEDROCK_CHERRY_WOOD = rgb(209, 177, 161)
-    private val BEDROCK_CHERRY_LOG = rgb(209, 177, 161)
-    private val BEDROCK_CHERRY_STRIPPED = rgb(160, 77, 78)
+    private val BEDROCK_CHERRY_WOOD = rgb(224, 173, 177)
+    private val BEDROCK_CHERRY_LOG = rgb(217, 168, 172)
+    private val BEDROCK_CHERRY_STRIPPED = rgb(178, 92, 101)
     private val BEDROCK_BIRCH_WOOD = rgb(247, 233, 163)
     private val BEDROCK_SPRUCE_WOOD = rgb(129, 86, 49)
     private val BEDROCK_JUNGLE_WOOD = rgb(151, 109, 77)
     private val BEDROCK_ACACIA_WOOD = rgb(216, 127, 51)
     private val BEDROCK_DARK_OAK_WOOD = rgb(102, 76, 51)
-    private val BEDROCK_MANGROVE_WOOD = rgb(153, 51, 51)
-    private val BEDROCK_BAMBOO = rgb(229, 229, 51)
+    private val BEDROCK_MANGROVE_WOOD = rgb(146, 71, 63)
+    private val BEDROCK_BAMBOO = rgb(224, 206, 94)
+    private val BEDROCK_PALE_OAK_WOOD = rgb(223, 218, 209)
+    private val BEDROCK_PALE_OAK_STRIPPED = rgb(190, 185, 176)
     private val BEDROCK_SCULK = rgb(13, 18, 23)
 
     // dye-color name -> its wool/concrete-family map color and terracotta-family map color
@@ -233,28 +235,118 @@ object BlockColors {
         "crimson_nylium" to rgb(189, 48, 49),
         "warped_nylium" to rgb(22, 126, 134),
         "warped_wart_block" to rgb(20, 180, 133),
-        "prismarine" to rgb(76, 127, 153),
+        "prismarine" to rgb(74, 161, 163),
         "diamond_block" to rgb(92, 219, 213),
         "emerald_block" to rgb(0, 217, 58),
         "gold_block" to rgb(250, 238, 77),
         "iron_block" to rgb(167, 167, 167),
         "raw_iron_block" to rgb(216, 175, 147),
         "quartz_block" to rgb(255, 252, 245),
-        "calcite" to rgb(209, 177, 161),
-        "tuff" to rgb(57, 41, 35),
-        "tuff_bricks" to rgb(57, 41, 35),
-        "mud" to rgb(87, 92, 92),
-        "mud_bricks" to rgb(135, 107, 98),
-        "cherry_planks" to BEDROCK_CHERRY_WOOD,
-        "cherry_stairs" to BEDROCK_CHERRY_WOOD,
-        "cherry_slab" to BEDROCK_CHERRY_WOOD,
-        "cherry_fence" to BEDROCK_CHERRY_WOOD,
-        "cherry_fence_gate" to BEDROCK_CHERRY_WOOD,
-        "cherry_door" to BEDROCK_CHERRY_WOOD,
-        "cherry_trapdoor" to BEDROCK_CHERRY_WOOD,
-        "cherry_hanging_sign" to rgb(160, 77, 78),
-        "cherry_standing_sign" to BEDROCK_CHERRY_WOOD,
-        "cherry_wall_sign" to BEDROCK_CHERRY_WOOD
+"calcite" to QUARTZ,
+"tuff" to rgb(105, 102, 98),
+"tuff_bricks" to rgb(105, 102, 98),
+"mud" to rgb(97, 88, 76),
+"mud_bricks" to rgb(136, 106, 92),
+"cherry_planks" to BEDROCK_CHERRY_WOOD,
+"cherry_stairs" to BEDROCK_CHERRY_WOOD,
+"cherry_slab" to BEDROCK_CHERRY_WOOD,
+"cherry_fence" to BEDROCK_CHERRY_WOOD,
+"cherry_fence_gate" to BEDROCK_CHERRY_WOOD,
+"cherry_door" to BEDROCK_CHERRY_WOOD,
+"cherry_trapdoor" to BEDROCK_CHERRY_WOOD,
+"cherry_button" to BEDROCK_CHERRY_WOOD,
+"cherry_pressure_plate" to BEDROCK_CHERRY_WOOD,
+"cherry_sign" to BEDROCK_CHERRY_WOOD,
+"cherry_standing_sign" to BEDROCK_CHERRY_WOOD,
+"cherry_wall_sign" to BEDROCK_CHERRY_WOOD,
+"cherry_hanging_sign" to BEDROCK_CHERRY_STRIPPED,
+"cherry_wall_hanging_sign" to BEDROCK_CHERRY_STRIPPED,
+
+"mangrove_planks" to BEDROCK_MANGROVE_WOOD,
+"mangrove_stairs" to BEDROCK_MANGROVE_WOOD,
+"mangrove_slab" to BEDROCK_MANGROVE_WOOD,
+"mangrove_fence" to BEDROCK_MANGROVE_WOOD,
+"mangrove_fence_gate" to BEDROCK_MANGROVE_WOOD,
+"mangrove_door" to BEDROCK_MANGROVE_WOOD,
+"mangrove_trapdoor" to BEDROCK_MANGROVE_WOOD,
+"mangrove_button" to BEDROCK_MANGROVE_WOOD,
+"mangrove_pressure_plate" to BEDROCK_MANGROVE_WOOD,
+"mangrove_sign" to BEDROCK_MANGROVE_WOOD,
+"mangrove_standing_sign" to BEDROCK_MANGROVE_WOOD,
+"mangrove_wall_sign" to BEDROCK_MANGROVE_WOOD,
+"mangrove_hanging_sign" to BEDROCK_MANGROVE_WOOD,
+"mangrove_wall_hanging_sign" to BEDROCK_MANGROVE_WOOD,
+"mangrove_boat" to BEDROCK_MANGROVE_WOOD,
+"mangrove_chest_boat" to BEDROCK_MANGROVE_WOOD,
+
+"bamboo_planks" to BEDROCK_BAMBOO,
+"bamboo_mosaic" to BEDROCK_BAMBOO,
+"bamboo_mosaic_stairs" to BEDROCK_BAMBOO,
+"bamboo_mosaic_slab" to BEDROCK_BAMBOO,
+"bamboo_fence" to BEDROCK_BAMBOO,
+"bamboo_fence_gate" to BEDROCK_BAMBOO,
+"bamboo_door" to BEDROCK_BAMBOO,
+"bamboo_trapdoor" to BEDROCK_BAMBOO,
+"bamboo_button" to BEDROCK_BAMBOO,
+"bamboo_pressure_plate" to BEDROCK_BAMBOO,
+"bamboo_sign" to BEDROCK_BAMBOO,
+"bamboo_standing_sign" to BEDROCK_BAMBOO,
+"bamboo_wall_sign" to BEDROCK_BAMBOO,
+"bamboo_hanging_sign" to BEDROCK_BAMBOO,
+"bamboo_wall_hanging_sign" to BEDROCK_BAMBOO,
+"bamboo_boat" to BEDROCK_BAMBOO,
+"bamboo_chest_boat" to BEDROCK_BAMBOO,
+
+"pale_oak_planks" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_stairs" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_slab" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_fence" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_fence_gate" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_door" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_trapdoor" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_button" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_pressure_plate" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_sign" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_standing_sign" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_wall_sign" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_hanging_sign" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_wall_hanging_sign" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_boat" to BEDROCK_PALE_OAK_WOOD,
+"pale_oak_chest_boat" to BEDROCK_PALE_OAK_WOOD,
+
+"warped_planks" to WARPED_STEM,
+"warped_stairs" to WARPED_STEM,
+"warped_slab" to WARPED_STEM,
+"warped_fence" to WARPED_STEM,
+"warped_fence_gate" to WARPED_STEM,
+"warped_door" to WARPED_STEM,
+"warped_trapdoor" to WARPED_STEM,
+"warped_button" to WARPED_STEM,
+"warped_pressure_plate" to WARPED_STEM,
+"warped_sign" to WARPED_STEM,
+"warped_standing_sign" to WARPED_STEM,
+"warped_wall_sign" to WARPED_STEM,
+"warped_hanging_sign" to WARPED_STEM,
+"warped_wall_hanging_sign" to WARPED_STEM,
+"warped_boat" to WARPED_STEM,
+"warped_chest_boat" to WARPED_STEM,
+
+"crimson_planks" to CRIMSON_STEM,
+"crimson_stairs" to CRIMSON_STEM,
+"crimson_slab" to CRIMSON_STEM,
+"crimson_fence" to CRIMSON_STEM,
+"crimson_fence_gate" to CRIMSON_STEM,
+"crimson_door" to CRIMSON_STEM,
+"crimson_trapdoor" to CRIMSON_STEM,
+"crimson_button" to CRIMSON_STEM,
+"crimson_pressure_plate" to CRIMSON_STEM,
+"crimson_sign" to CRIMSON_STEM,
+"crimson_standing_sign" to CRIMSON_STEM,
+"crimson_wall_sign" to CRIMSON_STEM,
+"crimson_hanging_sign" to CRIMSON_STEM,
+"crimson_wall_hanging_sign" to CRIMSON_STEM,
+"crimson_boat" to CRIMSON_STEM,
+"crimson_chest_boat" to CRIMSON_STEM
     )
 
     private val explicit: Map<String, Int> = mapOf(
@@ -273,10 +365,10 @@ object BlockColors {
         // stone family
         "stone" to STONE, "cobblestone" to STONE, "mossy_cobblestone" to STONE, "smooth_stone" to STONE,
         "andesite" to STONE, "polished_andesite" to STONE, "diorite" to QUARTZ, "polished_diorite" to QUARTZ,
-        "granite" to COLOR_ORANGE, "polished_granite" to COLOR_ORANGE,
+        "granite" to rgb(216, 127, 82), "polished_granite" to rgb(216, 127, 82),
         "deepslate" to DEEPSLATE, "cobbled_deepslate" to DEEPSLATE, "polished_deepslate" to DEEPSLATE,
         "deepslate_bricks" to DEEPSLATE, "deepslate_tiles" to DEEPSLATE, "chiseled_deepslate" to DEEPSLATE,
-        "tuff" to STONE, "tuff_bricks" to STONE, "chiseled_tuff" to STONE, "tuff_brick_slab" to STONE,
+        "tuff" to rgb(105, 102, 98), "tuff_bricks" to rgb(105, 102, 98), "chiseled_tuff" to rgb(105, 102, 98), "tuff_brick_slab" to rgb(105, 102, 98),
         "calcite" to QUARTZ, "dripstone_block" to DIRT, "pointed_dripstone" to DIRT,
         "bedrock" to STONE, "obsidian" to COLOR_BLACK, "crying_obsidian" to COLOR_PURPLE,
         "basalt" to STONE, "polished_basalt" to STONE, "smooth_basalt" to STONE, "blackstone" to TERRACOTTA_BLACK,
@@ -285,7 +377,7 @@ object BlockColors {
         "polished_blackstone_bricks" to TERRACOTTA_BLACK,
         "quartz_block" to QUARTZ, "quartz" to QUARTZ, "smooth_quartz" to QUARTZ, "quartz_bricks" to QUARTZ, "chiseled_quartz_block" to QUARTZ,
         "quartz_pillar" to QUARTZ,
-        "prismarine" to DIAMOND, "prismarine_bricks" to DIAMOND, "dark_prismarine" to COLOR_CYAN, "sea_lantern" to QUARTZ,
+        "prismarine" to DIAMOND, "prismarine_bricks" to rgb(74, 161, 163), "dark_prismarine" to COLOR_CYAN, "sea_lantern" to QUARTZ,
         "purpur_block" to COLOR_MAGENTA, "purpur_pillar" to COLOR_MAGENTA,
         "end_stone" to SAND, "end_stone_bricks" to SAND, "end_rod" to QUARTZ,
         "netherrack" to NETHER, "nether_bricks" to NETHER, "cracked_nether_bricks" to NETHER, "chiseled_nether_bricks" to NETHER,
