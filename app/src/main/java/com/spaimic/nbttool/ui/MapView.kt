@@ -383,23 +383,31 @@ class MapView(context: Context) : View(context) {
     }
 
     private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
-        // Build 116: use a small terrain-normal approximation instead of simply
-        // adding signed height deltas. A light source from the north-west gives
-        // rising terrain a natural highlight/shadow while perfectly flat terrain
-        // remains exactly 1.0. Large cliffs are smoothly compressed so the block's
-        // actual map color is never overwhelmed by shading.
-        val dx = ((east - west) * 0.5f).coerceIn(-24f, 24f)
-        val dz = ((south - north) * 0.5f).coerceIn(-24f, 24f)
-        val slopeMagnitude = kotlin.math.sqrt(dx * dx + dz * dz)
-        if (slopeMagnitude < 0.001f) return 1f
+        // Build 117: stronger Blocktopograph-style terrain relief. The old
+        // implementation capped the effect so aggressively that hills were
+        // almost invisible. Treat the four neighboring surface heights as a
+        // small height field and approximate its normal. Flat terrain remains
+        // exactly unchanged.
+        val dx = ((east - west) * 0.5f).coerceIn(-32f, 32f)
+        val dz = ((south - north) * 0.5f).coerceIn(-32f, 32f)
+        val slope = kotlin.math.sqrt(dx * dx + dz * dz)
+        if (slope < 0.001f) return 1f
 
-        // Light points from north-west. Positive light-facing slope becomes a
-        // little brighter; terrain falling away becomes a little darker.
-        val lightX = -0.7071f
-        val lightZ = -0.7071f
-        val facing = ((dx * lightX) + (dz * lightZ)) / (1f + slopeMagnitude * 0.12f)
-        val relief = (1f + facing * 0.045f).coerceIn(0.88f, 1.12f)
-        return relief
+        // Light comes from the north-west and slightly above the terrain.
+        val lightX = -0.60f
+        val lightY = 0.80f
+        val lightZ = -0.60f
+        val normalX = -dx
+        val normalZ = -dz
+        val normalLength = kotlin.math.sqrt(normalX * normalX + 1f + normalZ * normalZ)
+        val facing = ((normalX * lightX) + lightY + (normalZ * lightZ)) / normalLength
+
+        // Remove the constant ambient component so a flat surface is exactly 1.
+        // Increase the response with slope, but compress very steep cliffs so
+        // colors never become black/white purely because of relief.
+        val slopeFactor = (slope / 12f).coerceIn(0f, 1f)
+        val directional = ((facing - lightY) * 0.95f * slopeFactor)
+        return (1f + directional).coerceIn(0.72f, 1.28f)
     }
 
     override fun onDraw(canvas: Canvas) {
