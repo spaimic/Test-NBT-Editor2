@@ -37,6 +37,18 @@ object BlockColors {
     private val DIRT = rgb(151, 109, 77)
     private val STONE = rgb(112, 112, 112)
     private val WATER = rgb(64, 64, 255)
+
+    /**
+     * Build 121: Blocktopograph's own water block color is ARGB 0x802e43f4 —
+     * i.e. every water block is only ~50% opaque (alpha 0x80 of 0xff). Its map
+     * renderer (SatelliteRenderer.getColumnColour) alpha-composites that color
+     * down through the water column onto whatever is beneath it, which is why
+     * shallow water shows the seafloor through it while deep water reads as a
+     * flat, saturated blue. This is the exact per-layer alpha value, reused
+     * here so the same depth-based darkening applies to our own (biome-tinted)
+     * water color instead of Blocktopograph's flat untinted one.
+     */
+    const val WATER_LAYER_ALPHA: Float = 0x80 / 255f
     private val WOOD = rgb(143, 119, 72)
     private val QUARTZ = rgb(255, 252, 245)
     private val COLOR_ORANGE = rgb(216, 127, 51)

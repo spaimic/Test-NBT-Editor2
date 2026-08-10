@@ -16,6 +16,7 @@ import com.spaimic.nbttool.chunk.ColumnInfo
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -327,12 +328,15 @@ class MapView(context: Context) : View(context) {
                 else -> info.surfaceY
             }
 
-            // Build 120: use an independent renderer modeled on the functional
-            // behavior of Blocktopograph's satellite renderer. It intentionally
-            // uses west/north surface samples and atan-based slope shading.
-            val color = com.spaimic.nbttool.chunk.BlocktopographCompatibleRenderer.renderColumn(
-                grid, x, z, west, north
-            )
+            // Build 114: no coordinate-based color variation. Only local height
+            // differences affect the final shade, producing the clean, subtle
+            // relief visible in Blocktopograph while preserving block identity.
+            val relief = reliefShading(info.surfaceY, west, east, north, south)
+            val base = info.color
+            val r = (Color.red(base) * relief).toInt().coerceIn(0, 255)
+            val g = (Color.green(base) * relief).toInt().coerceIn(0, 255)
+            val b = (Color.blue(base) * relief).toInt().coerceIn(0, 255)
+            val color = Color.rgb(r, g, b)
 
             for (py in 0 until blockPixels) {
                 val row = (z * blockPixels + py) * chunkPixels + x * blockPixels
@@ -379,6 +383,34 @@ class MapView(context: Context) : View(context) {
         }
     }
 
+    /**
+     * Build 121: exact port of Blocktopograph's height shading, used by both its
+     * SatelliteRenderer (surface color mode) and HeightmapRenderer.
+     * See map/renderer/SatelliteRenderer.getHeightShading — this is the same
+     * west/north-only sigmoid, same constants (shadingAmp=0.8, k=0.35), just
+     * translated from Java. `east`/`south` are accepted to keep this method's
+     * call sites unchanged but are intentionally unused, matching the original.
+     */
+    private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
+        var samples = 0
+        var heightDiff = 0f
+        // -64 is this world's floor sentinel (see ChunkScanner), the same role
+        // Blocktopograph's own -64 check plays for "no real neighbor data".
+        if (west > -64) {
+            heightDiff += (height - west)
+            samples++
+        }
+        if (north > -64) {
+            heightDiff += (height - north)
+            samples++
+        }
+        heightDiff *= 0.7f.pow(samples)
+
+        val shadingAmp = 0.8f
+        val k = 0.35f
+        val sigmoid = (2f / (1f + kotlin.math.exp(-k * heightDiff))) - 1f
+        return sigmoid * shadingAmp + 1f
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)

@@ -1,9 +1,13 @@
 package com.spaimic.nbttool.chunk
 
+import android.graphics.Color
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.pow
 
 /** One rendered map column: the color to show, and the real block Y of its surface. */
 data class ColumnInfo(val color: Int, val surfaceY: Int, val material: String = "")
@@ -131,6 +135,57 @@ class ChunkIndex private constructor(
 }
 
 object ChunkScanner {
+
+    /**
+     * Build 121: exact port of Blocktopograph's water depth shading
+     * (map/renderer/SatelliteRenderer.getColumnColour). Repeatedly alpha-composites
+     * a color of alpha [BlockColors.WATER_LAYER_ALPHA] over [floorColor], [depth]
+     * times, using the closed form of that composite instead of an actual loop.
+     */
+    private fun blendWaterDepth(waterColor: Int, floorColor: Int, depth: Int): Int {
+        val a = BlockColors.WATER_LAYER_ALPHA
+        // alphaRemain after `depth` layers, matching Blocktopograph's loop cutoff
+        // (it stops once alphaRemain < 0.1 -- by depth 8 this is already ~0.4%).
+        val remain = (1f - a).toDouble().pow(min(depth, 8).toDouble()).toFloat()
+        fun mix(top: Int, bottom: Int) = (top * (1f - remain) + bottom * remain).toInt().coerceIn(0, 255)
+        return Color.rgb(
+            mix(Color.red(waterColor), Color.red(floorColor)),
+            mix(Color.green(waterColor), Color.green(floorColor)),
+            mix(Color.blue(waterColor), Color.blue(floorColor))
+        )
+    }
+
+    /**
+     * Looks a few blocks beneath a water surface (within the same decoded
+     * subchunk) to find the water's depth and what's underneath it, then
+     * blends toward that floor color the same way Blocktopograph does. Air
+     * pockets (underwater caves) are skipped rather than counted as depth.
+     */
+    private fun blendWaterColumn(
+        blocks: Array<Array<Array<String>>>,
+        x: Int, z: Int, y: Int,
+        waterColor: Int,
+        dimension: Int
+    ): Int {
+        var depth = 1
+        var floorColor: Int? = null
+        var yy = y - 1
+        val floorLimit = max(0, y - 8)
+        while (yy >= floorLimit) {
+            when (val below = blocks[x][z][yy]) {
+                "minecraft:water", "minecraft:flowing_water" -> depth++
+                "minecraft:air", "minecraft:cave_air" -> {}
+                else -> {
+                    floorColor = BlockColors.colorForDimension(below, dimension)
+                    break
+                }
+            }
+            yy--
+        }
+        return blendWaterDepth(waterColor, floorColor ?: waterColor, depth)
+    }
+
+    private fun isWater(name: String) = name == "minecraft:water" || name == "minecraft:flowing_water"
 
     /**
      * Finds every diamond_ore and deepslate_diamond_ore block in one chunk.
@@ -343,7 +398,10 @@ object ChunkScanner {
                                     val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
                                     val baseColor = BlockColors.colorForDimension(name, dimension)
                                     val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
-                                    grid[x][z] = ColumnInfo(tinted, surfaceY, name)
+                                    val finalColor = if (dimension == 0 && isWater(name))
+                                        blendWaterColumn(parsed.blocks, x, z, y, tinted, dimension)
+                                    else tinted
+                                    grid[x][z] = ColumnInfo(finalColor, surfaceY, name)
                                 }
                                 break
                             }
@@ -401,7 +459,11 @@ object ChunkScanner {
     
         }
 
-        MapShading.apply(grid)
+        // Build 121: elevation shading is no longer baked into the stored column
+        // color here. Blocktopograph itself only shades at render/tile-draw time
+        // (SatelliteRenderer/HeightmapRenderer), using the exact west/north
+        // sigmoid now in MapView.reliefShading; baking a second, different shading
+        // pass in here as well would double-apply and drift from that formula.
         return LoadedChunk(grid, entityMarkers, blockMarkers)
     }
 
@@ -528,7 +590,9 @@ object ChunkScanner {
                                     if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                     val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
                                     val baseColor = BlockColors.colorForDimension(name, 0)
-                                    grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
+                                    val tinted = BiomeTint.apply(name, baseColor, biomeId)
+                                    val finalColor = if (isWater(name)) blendWaterColumn(blocks, x, z, y, tinted, 0) else tinted
+                                    grid[x][z] = ColumnInfo(finalColor, surfaceY, name)
                                 }
                                 break
                             }
