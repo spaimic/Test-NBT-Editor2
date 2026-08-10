@@ -1,7 +1,9 @@
 package com.spaimic.nbttool.nbt
 
+import android.util.JsonReader
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.Reader
 
 /**
  * Converts NbtTag <-> JSON. Plain JSON only has one numeric type, so every
@@ -213,6 +215,132 @@ object NbtJson {
         val tag = fromJson(obj)
         return tag as? NbtTag.Compound
             ?: throw IllegalArgumentException("Root of the JSON must be a Compound (got ${NbtTag.typeName(tag.id)})")
+    }
+
+    /**
+     * Memory-efficient importer for very large JSON files. Unlike
+     * importCompoundFromJsonString(), this never materializes the complete JSON
+     * document as a String or JSONObject tree. The NBT model is built directly
+     * from Android's streaming JsonReader. This is important for huge exports
+     * such as ~local_player files containing hundreds of thousands of book pages.
+     *
+     * The canonical NBT-JSON format emitted by this class writes the "type"
+     * field first (and "elementType" before a List's "value"), so the
+     * streaming parser intentionally requires that ordering.
+     */
+    fun importCompoundFromReader(reader: Reader): NbtTag.Compound {
+        JsonReader(reader).use { jsonReader ->
+            val tag = readStreamingTag(jsonReader)
+            return tag as? NbtTag.Compound
+                ?: throw IllegalArgumentException("Root of the JSON must be a Compound (got ${NbtTag.typeName(tag.id)})")
+        }
+    }
+
+    private fun readStreamingTag(reader: JsonReader): NbtTag {
+        reader.beginObject()
+        if (!reader.hasNext()) {
+            reader.endObject()
+            throw IllegalArgumentException("Empty NBT tag object")
+        }
+
+        val firstName = reader.nextName()
+        if (firstName != "type") {
+            reader.close()
+            throw IllegalArgumentException("NBT tag must begin with a \"type\" field")
+        }
+        val typeName = reader.nextString()
+        val typeId = typeIdForName(typeName)
+
+        var elementTypeId = -1
+        var valueRead = false
+        var result: NbtTag? = null
+
+        while (reader.hasNext()) {
+            when (val name = reader.nextName()) {
+                "elementType" -> {
+                    if (typeId != 9) throw IllegalArgumentException("Unexpected \"elementType\" for type \"$typeName\"")
+                    elementTypeId = typeIdForName(reader.nextString())
+                }
+                "value" -> {
+                    if (valueRead) throw IllegalArgumentException("Duplicate \"value\" field")
+                    result = readStreamingValue(reader, typeId, typeName, elementTypeId)
+                    valueRead = true
+                }
+                else -> {
+                    throw IllegalArgumentException("Unknown field \"$name\" in NBT tag of type \"$typeName\"")
+                }
+            }
+        }
+        reader.endObject()
+
+        if (typeId == 0) return NbtTag.End
+        if (!valueRead) throw IllegalArgumentException("Missing \"value\" field for type \"$typeName\"")
+        return result ?: throw IllegalArgumentException("Could not parse value for type \"$typeName\"")
+    }
+
+    private fun readStreamingValue(
+        reader: JsonReader,
+        typeId: Int,
+        typeName: String,
+        elementTypeId: Int
+    ): NbtTag {
+        return when (typeId) {
+            1 -> NbtTag.Byte(reader.nextInt().toByte())
+            2 -> NbtTag.Short(reader.nextInt().toShort())
+            3 -> NbtTag.Int(reader.nextInt())
+            4 -> NbtTag.Long(reader.nextLong())
+            5 -> NbtTag.Float(reader.nextDouble().toFloat())
+            6 -> NbtTag.Double(reader.nextDouble())
+            8 -> NbtTag.Str(reader.nextString())
+            7 -> {
+                val values = ArrayList<kotlin.Byte>()
+                reader.beginArray()
+                while (reader.hasNext()) values.add(reader.nextInt().toByte())
+                reader.endArray()
+                NbtTag.ByteArray(kotlin.ByteArray(values.size) { values[it] })
+            }
+            11 -> {
+                val values = ArrayList<Int>()
+                reader.beginArray()
+                while (reader.hasNext()) values.add(reader.nextInt())
+                reader.endArray()
+                NbtTag.IntArray(IntArray(values.size) { values[it] })
+            }
+            12 -> {
+                val values = ArrayList<Long>()
+                reader.beginArray()
+                while (reader.hasNext()) values.add(reader.nextLong())
+                reader.endArray()
+                NbtTag.LongArray(LongArray(values.size) { values[it] })
+            }
+            9 -> {
+                if (elementTypeId < 0) throw IllegalArgumentException("List is missing \"elementType\"")
+                val items = ArrayList<NbtTag>()
+                reader.beginArray()
+                while (reader.hasNext()) {
+                    val item = readStreamingTag(reader)
+                    if (item.id != elementTypeId) {
+                        throw IllegalArgumentException(
+                            "List element type mismatch: expected ${NbtTag.typeName(elementTypeId)}, got ${NbtTag.typeName(item.id)}"
+                        )
+                    }
+                    items.add(item)
+                }
+                reader.endArray()
+                NbtTag.ListTag(elementTypeId, items)
+            }
+            10 -> {
+                val entries = LinkedHashMap<String, NbtTag>()
+                reader.beginObject()
+                while (reader.hasNext()) {
+                    val key = reader.nextName()
+                    entries[key] = readStreamingTag(reader)
+                }
+                reader.endObject()
+                NbtTag.Compound(entries)
+            }
+            else -> throw IllegalArgumentException("Unsupported type \"$typeName\"")
+        }
     }
 
     fun toJson(tag: NbtTag): JSONObject {

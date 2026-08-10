@@ -115,16 +115,26 @@ class BlockEntityEditorActivity : AppCompatActivity() {
                 }
             }
             NbtJsonFileOps.REQUEST_IMPORT_JSON -> {
-                try {
-                    val json = NbtJsonFileOps.readText(this, uri)
-                    val imported = NbtJson.importCompoundFromJsonString(json) // throws before anything is touched
-                    compound.entries.clear()
-                    compound.entries.putAll(imported.entries)
-                    adapter.refresh()
-                    Toast.makeText(this, "Imported. Tap Save to write it back.", Toast.LENGTH_LONG).show()
-                } catch (e: Exception) {
-                    showErrorDialog(this, "Import failed — nothing was changed", e)
-                }
+                Toast.makeText(this, "Importing JSON…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    try {
+                        val imported = NbtJsonFileOps.openReader(this, uri).use { reader ->
+                            NbtJson.importCompoundFromReader(reader)
+                        }
+                        runOnUiThread {
+                            try {
+                                compound.entries.clear()
+                                compound.entries.putAll(imported.entries)
+                                adapter.refresh()
+                                Toast.makeText(this, "Imported. Tap Save to write it back.", Toast.LENGTH_LONG).show()
+                            } catch (e: Exception) {
+                                showErrorDialog(this, "Import failed — nothing was changed", e)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { showErrorDialog(this, "Import failed — nothing was changed", e) }
+                    }
+                }.start()
             }
         }
     }

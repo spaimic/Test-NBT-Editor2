@@ -100,18 +100,28 @@ class EditorActivity : AppCompatActivity() {
                 }
             }
             NbtJsonFileOps.REQUEST_IMPORT_JSON -> {
-                try {
-                    val json = NbtJsonFileOps.readText(this, uri)
-                    val imported = NbtJson.importCompoundFromJsonString(json) // throws before anything is touched
-                    NbtHistory.recordBefore(dat.root)
-                    dat.root.entries.clear()
-                    dat.root.entries.putAll(imported.entries)
-                    adapter.refresh()
-                    hasUnsavedChanges = true
-                    Toast.makeText(this, "Imported. Tap Save to write it to level.dat.", Toast.LENGTH_LONG).show()
-                } catch (e: Exception) {
-                    showErrorDialog(this, "Import failed — nothing was changed", e)
-                }
+                Toast.makeText(this, "Importing JSON…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    try {
+                        val imported = NbtJsonFileOps.openReader(this, uri).use { reader ->
+                            NbtJson.importCompoundFromReader(reader)
+                        }
+                        runOnUiThread {
+                            try {
+                                val undoRecorded = NbtHistory.recordBeforeIfSafe(dat.root)
+                                dat.root.entries.clear()
+                                dat.root.entries.putAll(imported.entries)
+                                adapter.refresh()
+                                hasUnsavedChanges = true
+                                Toast.makeText(this, if (undoRecorded) "Imported. Tap Save to write it to level.dat." else "Imported. Very large import: undo snapshot skipped. Tap Save to write it to level.dat.", Toast.LENGTH_LONG).show()
+                            } catch (e: Exception) {
+                                showErrorDialog(this, "Import failed — nothing was changed", e)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { showErrorDialog(this, "Import failed — nothing was changed", e) }
+                    }
+                }.start()
             }
         }
     }

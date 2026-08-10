@@ -3,6 +3,8 @@ package com.spaimic.nbttool.ui
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 /** Shared Save-As / Open-Document plumbing for NBT-as-JSON export/import —
  * only what happens with the resulting text differs per screen. */
@@ -37,6 +39,17 @@ object NbtJsonFileOps {
         val stream = activity.contentResolver.openInputStream(uri)
             ?: throw IllegalStateException("Couldn't open the picked file")
         return stream.use { it.readBytes().toString(Charsets.UTF_8) }
+    }
+
+    /**
+     * Opens a buffered character stream for large JSON imports. Callers must
+     * consume and close the returned Reader. Unlike readText(), this never
+     * loads the complete document into a single String.
+     */
+    fun openReader(activity: Activity, uri: Uri): BufferedReader {
+        val stream = activity.contentResolver.openInputStream(uri)
+            ?: throw IllegalStateException("Couldn't open the picked file")
+        return BufferedReader(InputStreamReader(stream, Charsets.UTF_8), 64 * 1024)
     }
 
     /** Turns a screen title into a filesystem-safe suggested filename. */

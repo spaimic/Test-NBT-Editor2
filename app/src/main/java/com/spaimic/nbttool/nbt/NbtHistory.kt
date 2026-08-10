@@ -37,6 +37,40 @@ object NbtHistory {
         s.redo.clear()
     }
 
+    /**
+     * Records an undo snapshot only when the tree is reasonably small. A full
+     * deep copy of a ~local_player containing hundreds of thousands or millions
+     * of book pages can temporarily duplicate hundreds of MB and defeat the
+     * large-file importer. Huge imports therefore deliberately skip the undo
+     * snapshot; the imported data itself remains lossless.
+     *
+     * @return true when an undo snapshot was recorded, false when skipped.
+     */
+    fun recordBeforeIfSafe(root: NbtTag.Compound, maxNodes: Int = 100_000): Boolean {
+        if (countNodes(root, maxNodes + 1) > maxNodes) {
+            val s = stack(root)
+            s.redo.clear()
+            return false
+        }
+        recordBefore(root)
+        return true
+    }
+
+    private fun countNodes(root: NbtTag.Compound, limit: Int): Int {
+        var count = 0
+        fun walk(tag: NbtTag) {
+            if (count >= limit) return
+            count++
+            when (tag) {
+                is NbtTag.Compound -> tag.entries.values.forEach(::walk)
+                is NbtTag.ListTag -> tag.items.forEach(::walk)
+                else -> Unit
+            }
+        }
+        walk(root)
+        return count
+    }
+
     fun canUndo(root: NbtTag.Compound): Boolean = stack(root).undo.isNotEmpty()
 
     fun canRedo(root: NbtTag.Compound): Boolean = stack(root).redo.isNotEmpty()
