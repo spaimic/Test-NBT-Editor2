@@ -312,16 +312,18 @@ object ChunkScanner {
             return loadNetherChunkDirect(bridge, chunkX, chunkZ, subchunks, unknownBlockNames, failureReasonCounts, failureReasonExamples, includeMarkers)
         }
 
-        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
-        val found = Array(16) { BooleanArray(16) }
-        var remaining = 256
+        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, Int.MIN_VALUE) } }
         var hadSuccessfulSubchunk = false
         val biomeData = try {
             bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, dimension))?.let { BiomeMapParser.parse(it) }
         } catch (_: Exception) { null }
 
-        for ((subY, bytes) in subchunks) {
-            if (remaining == 0) break
+        // IMPORTANT: inspect every successfully decoded subchunk. The previous
+        // implementation stopped once a column had a candidate surface, which
+        // could preserve a lower block when records arrived out of order or when
+        // a higher subchunk was decoded later. The surface is the MAXIMUM Y of a
+        // non-transparent block across all available subchunks.
+        for ((subY, bytes) in subchunks.sortedByDescending { it.first }) {
             when (val parsed = SubChunkParser.parse(bytes)) {
                 is SubChunkParser.ParseResult.Failure -> {
                     failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
@@ -330,18 +332,16 @@ object ChunkScanner {
                 is SubChunkParser.ParseResult.Success -> {
                     hadSuccessfulSubchunk = true
                     for (x in 0 until 16) for (z in 0 until 16) {
-                        if (found[x][z]) continue
                         for (y in 15 downTo 0) {
                             val name = parsed.blocks[x][z][y]
                             if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
-                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                 val surfaceY = subY * 16 + y
+                                if (surfaceY <= grid[x][z].surfaceY) break
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
                                 val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
                                 val baseColor = BlockColors.colorForDimension(name, dimension)
                                 val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
                                 grid[x][z] = ColumnInfo(tinted, surfaceY, name)
-                                found[x][z] = true
-                                remaining--
                                 break
                             }
                         }
@@ -350,6 +350,14 @@ object ChunkScanner {
             }
         }
         if (!hadSuccessfulSubchunk) return null
+
+        // A completely empty/transparent column is valid, but it should not carry
+        // Int.MIN_VALUE into the map shading pass. Keep it at the lowest world Y.
+        for (x in 0 until 16) for (z in 0 until 16) {
+            if (grid[x][z].surfaceY == Int.MIN_VALUE) {
+                grid[x][z] = grid[x][z].copy(surfaceY = -64)
+            }
+        }
 
         // Marker reads are optional because they are much more expensive than
         // terrain decoding. Build 111 loads terrain first and can add markers
@@ -490,16 +498,15 @@ object ChunkScanner {
         val pos = chunkX to chunkZ
         if (!index.hasChunk(chunkX, chunkZ)) return null
 
-        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
-        val found = Array(16) { BooleanArray(16) }
-        var remaining = 256
+        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, Int.MIN_VALUE) } }
         var hadSuccessfulSubchunk = false
         val biomeData = try {
             bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ))?.let { BiomeMapParser.parse(it) }
         } catch (_: Exception) { null }
 
-        for ((subY, rawKey) in index.subchunks[pos].orEmpty()) {
-            if (remaining == 0) break
+        // Do not stop after finding the first surface. Compute the true maximum Y
+        // independently for every X/Z column across every decoded subchunk.
+        for ((subY, rawKey) in index.subchunks[pos].orEmpty().sortedByDescending { it.first }) {
             val bytes = bridge.read(rawKey) ?: continue
             when (val parsed = SubChunkParser.parse(bytes)) {
                 is SubChunkParser.ParseResult.Failure -> {
@@ -509,21 +516,17 @@ object ChunkScanner {
                 is SubChunkParser.ParseResult.Success -> {
                     hadSuccessfulSubchunk = true
                     val blocks = parsed.blocks
-                    for (x in 0 until 16) {
-                        for (z in 0 until 16) {
-                            if (found[x][z]) continue
-                            for (y in 15 downTo 0) {
-                                val name = blocks[x][z][y]
-                                if (name != "minecraft:air") {
-                                    if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
-                                    val surfaceY = subY * 16 + y
-                                    val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
-                                    val baseColor = BlockColors.colorForDimension(name, 0)
-                                    grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
-                                    found[x][z] = true
-                                    remaining--
-                                    break
-                                }
+                    for (x in 0 until 16) for (z in 0 until 16) {
+                        for (y in 15 downTo 0) {
+                            val name = blocks[x][z][y]
+                            if (name != "minecraft:air" && !BlockColors.isMapTransparent(name)) {
+                                val surfaceY = subY * 16 + y
+                                if (surfaceY <= grid[x][z].surfaceY) break
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                val baseColor = BlockColors.colorForDimension(name, 0)
+                                grid[x][z] = ColumnInfo(BiomeTint.apply(name, baseColor, biomeId), surfaceY, name)
+                                break
                             }
                         }
                     }
@@ -532,6 +535,11 @@ object ChunkScanner {
         }
 
         if (!hadSuccessfulSubchunk) return null
+        for (x in 0 until 16) for (z in 0 until 16) {
+            if (grid[x][z].surfaceY == Int.MIN_VALUE) {
+                grid[x][z] = grid[x][z].copy(surfaceY = -64)
+            }
+        }
 
         // Load markers only for this visible chunk. They are deliberately not part
         // of the global initial scan.

@@ -219,7 +219,7 @@ class PlayerDbActivity : AppCompatActivity() {
         Thread {
             try {
                 val prefixes = when (titleText) {
-                    "Multiplayer Players" -> listOf("player_")
+                    "Multiplayer Players" -> listOf("player_server_")
                     "MCStructures" -> listOf("structuretemplate_")
                     "Map Data" -> listOf("map_")
                     "Village Data" -> listOf("VILLAGE_Overworld_")

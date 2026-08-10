@@ -383,16 +383,15 @@ class MapView(context: Context) : View(context) {
     }
 
     private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
-        val leftSlope = height - west
-        val rightSlope = height - east
-        val northSlope = height - north
-        val southSlope = height - south
-
-        // A small directional relief, deliberately capped so block colors remain
-        // recognizable. Positive values mean the current column is higher than
-        // its neighbors; negative values mean it is lower.
-        val slope = ((leftSlope - rightSlope) + (northSlope - southSlope)) * 0.035f
-        return (1f + slope.coerceIn(-0.14f, 0.14f)).coerceIn(0.86f, 1.14f)
+        // Build 114 used a very local height delta that could make isolated
+        // columns look harsher than the surrounding terrain. Build 115 treats
+        // elevation as a smooth directional slope instead: the west/east and
+        // north/south gradients are combined and softly limited. Flat terrain
+        // therefore stays exactly at 1.0, while hills gain only a subtle relief.
+        val dx = (east - west).coerceIn(-32, 32)
+        val dz = (south - north).coerceIn(-32, 32)
+        val slope = (dx + dz) * 0.0085f
+        return (1f + slope.coerceIn(-0.16f, 0.16f)).coerceIn(0.84f, 1.16f)
     }
 
     override fun onDraw(canvas: Canvas) {
