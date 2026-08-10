@@ -327,15 +327,16 @@ class MapView(context: Context) : View(context) {
                 else -> info.surfaceY
             }
 
-            // Build 114: no coordinate-based color variation. Only local height
-            // differences affect the final shade, producing the clean, subtle
-            // relief visible in Blocktopograph while preserving block identity.
-            val relief = reliefShading(info.surfaceY, west, east, north, south)
-            val base = info.color
-            val r = (Color.red(base) * relief).toInt().coerceIn(0, 255)
-            val g = (Color.green(base) * relief).toInt().coerceIn(0, 255)
-            val b = (Color.blue(base) * relief).toInt().coerceIn(0, 255)
-            val color = Color.rgb(r, g, b)
+            // Build 118: use the Blocktopograph-style satellite terrain shading
+            // adapter. It intentionally samples west/north neighbors rather than
+            // applying a generic four-direction normal, which is what gives the
+            // classic top-down terrain-depth illusion.
+            val color = BlocktopographSatelliteRenderer.shade(
+                info.color,
+                info.surfaceY,
+                west,
+                north
+            )
 
             for (py in 0 until blockPixels) {
                 val row = (z * blockPixels + py) * chunkPixels + x * blockPixels
@@ -380,34 +381,6 @@ class MapView(context: Context) : View(context) {
                 rendering.remove(pos)
             }
         }
-    }
-
-    private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
-        // Build 117: stronger Blocktopograph-style terrain relief. The old
-        // implementation capped the effect so aggressively that hills were
-        // almost invisible. Treat the four neighboring surface heights as a
-        // small height field and approximate its normal. Flat terrain remains
-        // exactly unchanged.
-        val dx = ((east - west) * 0.5f).coerceIn(-32f, 32f)
-        val dz = ((south - north) * 0.5f).coerceIn(-32f, 32f)
-        val slope = kotlin.math.sqrt(dx * dx + dz * dz)
-        if (slope < 0.001f) return 1f
-
-        // Light comes from the north-west and slightly above the terrain.
-        val lightX = -0.60f
-        val lightY = 0.80f
-        val lightZ = -0.60f
-        val normalX = -dx
-        val normalZ = -dz
-        val normalLength = kotlin.math.sqrt(normalX * normalX + 1f + normalZ * normalZ)
-        val facing = ((normalX * lightX) + lightY + (normalZ * lightZ)) / normalLength
-
-        // Remove the constant ambient component so a flat surface is exactly 1.
-        // Increase the response with slope, but compress very steep cliffs so
-        // colors never become black/white purely because of relief.
-        val slopeFactor = (slope / 12f).coerceIn(0f, 1f)
-        val directional = ((facing - lightY) * 0.95f * slopeFactor)
-        return (1f + directional).coerceIn(0.72f, 1.28f)
     }
 
     override fun onDraw(canvas: Canvas) {
