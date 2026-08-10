@@ -41,9 +41,28 @@ object SubChunkParser {
             if (layerCount < 1) {
                 return fail("layerCount=$layerCount (version=$version)")
             }
-            val layer0 = decodeLayer(stream)
-            for (i in 1 until layerCount) decodeLayer(stream) // skip extra layers (e.g. waterlogging)
-            ParseResult.Success(layer0)
+            // Bedrock can store more than one palette layer in a subchunk.
+            // The previous renderer decoded layer 0 and then discarded every
+            // additional layer. That can make the apparent highest block disappear
+            // when the visible block is stored in another layer (and can leave
+            // columns with no usable surface, which later become the gray fallback).
+            // Merge all layers into one map: later non-air layers override air and
+            // can therefore represent liquid/waterlogged content correctly.
+            val merged = decodeLayer(stream)
+            for (i in 1 until layerCount) {
+                val layer = decodeLayer(stream)
+                for (x in 0 until 16) {
+                    for (z in 0 until 16) {
+                        for (y in 0 until 16) {
+                            val name = layer[x][z][y]
+                            if (name != "minecraft:air" && name != "minecraft:unknown") {
+                                merged[x][z][y] = name
+                            }
+                        }
+                    }
+                }
+            }
+            ParseResult.Success(merged)
         } catch (e: Exception) {
             fail("${e.javaClass.simpleName}: ${e.message}")
         }

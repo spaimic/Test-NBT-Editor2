@@ -12,7 +12,6 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import com.spaimic.nbttool.R
 import com.spaimic.nbttool.chunk.BlockColors
-import com.spaimic.nbttool.chunk.BlocktopographSatelliteRenderer
 import com.spaimic.nbttool.chunk.ColumnInfo
 import kotlin.math.floor
 import kotlin.math.max
@@ -328,15 +327,11 @@ class MapView(context: Context) : View(context) {
                 else -> info.surfaceY
             }
 
-            // Build 118: use the Blocktopograph-style satellite terrain shading
-            // adapter. It intentionally samples west/north neighbors rather than
-            // applying a generic four-direction normal, which is what gives the
-            // classic top-down terrain-depth illusion.
-            val color = BlocktopographSatelliteRenderer.shade(
-                info.color,
-                info.surfaceY,
-                west,
-                north
+            // Build 120: use an independent renderer modeled on the functional
+            // behavior of Blocktopograph's satellite renderer. It intentionally
+            // uses west/north surface samples and atan-based slope shading.
+            val color = com.spaimic.nbttool.chunk.BlocktopographCompatibleRenderer.renderColumn(
+                grid, x, z, west, north
             )
 
             for (py in 0 until blockPixels) {
@@ -383,6 +378,7 @@ class MapView(context: Context) : View(context) {
             }
         }
     }
+
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
