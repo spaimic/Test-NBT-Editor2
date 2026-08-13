@@ -96,6 +96,9 @@ class DbEntryEditorActivity : AppCompatActivity() {
         menu.add(0, MENU_UNDO, 0, "Undo")
         menu.add(0, MENU_REDO, 0, "Redo")
         menu.add(0, MENU_SEARCH, 0, "Global NBT Search")
+        if (displayName.startsWith("map_")) {
+            menu.add(0, MENU_IMPORT_IMAGE, 0, "Import Image to Map")
+        }
         return true
     }
 
@@ -117,6 +120,10 @@ class DbEntryEditorActivity : AppCompatActivity() {
             MENU_SEARCH -> { adapter.showGlobalSearch(); return true }
             MENU_IMPORT_JSON -> {
                 NbtJsonFileOps.launchImportPicker(this)
+                return true
+            }
+            MENU_IMPORT_IMAGE -> {
+                launchMapImagePicker()
                 return true
             }
         }
@@ -160,7 +167,37 @@ class DbEntryEditorActivity : AppCompatActivity() {
                     }
                 }.start()
             }
+            REQUEST_IMPORT_MAP_IMAGE -> {
+                Toast.makeText(this, "Generating map image…", Toast.LENGTH_SHORT).show()
+                Thread {
+                    try {
+                        NbtHistory.recordBefore(compound)
+                        MapImageImporter.importIntoMap(this, uri, compound)
+                        runOnUiThread {
+                            adapter.refresh()
+                            hasUnsavedChanges = true
+                            Toast.makeText(
+                                this,
+                                "Image imported into $displayName. Tap Save to write it to the world.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    } catch (e: Throwable) {
+                        runOnUiThread {
+                            showErrorDialog(this, "Map image import failed — nothing was saved", e)
+                        }
+                    }
+                }.start()
+            }
         }
+    }
+
+    private fun launchMapImagePicker() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+        }
+        startActivityForResult(intent, REQUEST_IMPORT_MAP_IMAGE)
     }
 
     override fun onBackPressed() {
@@ -203,5 +240,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
         private const val MENU_UNDO = 4
         private const val MENU_REDO = 5
         private const val MENU_SEARCH = 6
+        private const val MENU_IMPORT_IMAGE = 7
+        private const val REQUEST_IMPORT_MAP_IMAGE = 12501
     }
 }
