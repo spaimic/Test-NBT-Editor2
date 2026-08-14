@@ -298,7 +298,10 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         private var panY = 0f
         private var lastX = 0f
         private var lastY = 0f
+        private var lastMidX = 0f
+        private var lastMidY = 0f
         private var lastDist = 0f
+        private var activePointerId = MotionEvent.INVALID_POINTER_ID
         private var mode = 0
         private var moved = false
 
@@ -308,24 +311,95 @@ class Chunk3DViewerActivity : AppCompatActivity() {
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { lastX = e.x; lastY = e.y; moved = false; mode = 1; return true }
-                MotionEvent.ACTION_POINTER_DOWN -> { lastDist = distance(e); mode = 2; return true }
+                MotionEvent.ACTION_DOWN -> {
+                    activePointerId = e.getPointerId(0)
+                    lastX = e.x
+                    lastY = e.y
+                    moved = false
+                    mode = 1
+                    return true
+                }
+
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (e.pointerCount >= 2) {
+                        lastDist = distance(e)
+                        lastMidX = (e.getX(0) + e.getX(1)) * 0.5f
+                        lastMidY = (e.getY(0) + e.getY(1)) * 0.5f
+                        mode = 2
+                        moved = true
+                    }
+                    return true
+                }
+
                 MotionEvent.ACTION_MOVE -> {
                     if (mode == 2 && e.pointerCount >= 2) {
                         val d = distance(e)
-                        if (lastDist > 0f) zoom = (zoom * (d / lastDist)).coerceIn(0.25f, 6f)
+                        if (lastDist > 0f && d > 0f) {
+                            zoom = (zoom * (d / lastDist)).coerceIn(0.25f, 6f)
+                        }
+
+                        // Two-finger movement pans the model instead of making it jump.
+                        val midX = (e.getX(0) + e.getX(1)) * 0.5f
+                        val midY = (e.getY(0) + e.getY(1)) * 0.5f
+                        panX += midX - lastMidX
+                        panY += midY - lastMidY
+                        lastMidX = midX
+                        lastMidY = midY
                         lastDist = d
-                        invalidate(); return true
+                        invalidate()
+                        return true
                     }
-                    if (mode == 1) {
-                        val dx = e.x - lastX; val dy = e.y - lastY
-                        if (abs(dx) > 3f || abs(dy) > 3f) moved = true
-                        rotY += dx * 0.009f; rotX = (rotX + dy * 0.006f).coerceIn(-1.45f, 1.45f)
-                        lastX = e.x; lastY = e.y; invalidate(); return true
+
+                    if (mode == 1 && activePointerId != MotionEvent.INVALID_POINTER_ID) {
+                        val index = e.findPointerIndex(activePointerId)
+                        if (index >= 0) {
+                            val x = e.getX(index)
+                            val y = e.getY(index)
+                            val dx = x - lastX
+                            val dy = y - lastY
+                            if (abs(dx) > 2f || abs(dy) > 2f) moved = true
+                            rotY += dx * 0.009f
+                            rotX = (rotX + dy * 0.006f).coerceIn(-1.45f, 1.45f)
+                            lastX = x
+                            lastY = y
+                            invalidate()
+                        }
+                        return true
                     }
                 }
-                MotionEvent.ACTION_UP -> { if (mode == 1 && selectionEnabled && !moved) selectAt(e.x, e.y); mode = 0; return true }
-                MotionEvent.ACTION_POINTER_UP -> { mode = 1; return true }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (e.actionMasked == MotionEvent.ACTION_UP &&
+                        mode == 1 && selectionEnabled && !moved) {
+                        selectAt(e.x, e.y)
+                    }
+                    activePointerId = MotionEvent.INVALID_POINTER_ID
+                    mode = 0
+                    lastDist = 0f
+                    return true
+                }
+
+                MotionEvent.ACTION_POINTER_UP -> {
+                    val liftedId = e.getPointerId(e.actionIndex)
+                    if (liftedId == activePointerId) {
+                        val remaining = if (e.actionIndex == 0) 1 else 0
+                        if (remaining < e.pointerCount) {
+                            activePointerId = e.getPointerId(remaining)
+                            lastX = e.getX(remaining)
+                            lastY = e.getY(remaining)
+                            mode = 1
+                        }
+                    } else if (mode == 2 && e.pointerCount - 1 >= 1) {
+                        // Continue smoothly with the pointer that remains.
+                        val remaining = if (e.actionIndex == 0) 1 else 0
+                        activePointerId = e.getPointerId(remaining)
+                        lastX = e.getX(remaining)
+                        lastY = e.getY(remaining)
+                        mode = 1
+                    }
+                    lastDist = 0f
+                    return true
+                }
             }
             return true
         }

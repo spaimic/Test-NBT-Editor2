@@ -174,7 +174,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         })
         controls.addView(Button(this).apply { text = "Search"; setOnClickListener { showSearchDialog() } })
         controls.addView(Button(this).apply { text = "Replace"; setOnClickListener { showReplaceDialog() } })
-        controls.addView(Button(this).apply { text = "View Chunk 3D"; setOnClickListener { open3DViewer(false) } })
+        controls.addView(Button(this).apply { text = "View Chunk 3D"; setOnClickListener { open3DViewer(true) } })
         controls.addView(Button(this).apply {
             text = "Undo"; isEnabled = undoStack.isNotEmpty()
             setOnClickListener { undo() }
