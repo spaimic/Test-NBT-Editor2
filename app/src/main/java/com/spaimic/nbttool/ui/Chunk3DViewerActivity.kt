@@ -21,6 +21,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
     private var bridge: LevelDbBridge? = null
     private var ownsBridge = false
     private val blocks = HashMap<Pos, String>()
+    private val renderBlocks = ArrayList<Pos>()
     private var selectedX = -1
     private var selectedZ = -1
     private var selectionEnabled = true
@@ -63,11 +64,60 @@ class Chunk3DViewerActivity : AppCompatActivity() {
                         }
                     }
                 }
+                prepareRenderSurface()
                 runOnUiThread { showViewer() }
             } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to load 3D chunk", e) }
             }
         }.start()
+    }
+
+    /** Build the exterior shell once. Interior blocks/cavities are not rendered.
+     * A flood-fill through air from outside the 16x16x385 volume identifies only faces
+     * that can actually be seen from the outside. This also avoids doing expensive
+     * HashSet/filter work on every frame.
+     */
+    private fun prepareRenderSurface() {
+        renderBlocks.clear()
+        if (blocks.isEmpty()) return
+        val occupied = HashSet(blocks.keys)
+        val minY = blocks.keys.minOf { it.y }
+        val maxY = blocks.keys.maxOf { it.y }
+        // Reachable air is represented as packed positions. x/z may be -1..16 and y
+        // may extend one cell beyond the chunk vertically so the outside is connected.
+        data class Air(val x: Int, val y: Int, val z: Int)
+        val queue = java.util.ArrayDeque<Air>()
+        val seen = HashSet<Air>()
+        fun addAir(a: Air) { if (seen.add(a)) queue.add(a) }
+        // Seed the outside with a shell around the occupied Y range.
+        for (y in (minY - 1)..(maxY + 1)) {
+            addAir(Air(-1, y, -1)); addAir(Air(16, y, -1));
+            addAir(Air(-1, y, 16)); addAir(Air(16, y, 16))
+        }
+        for (x in -1..16) for (z in -1..16) {
+            addAir(Air(x, minY - 1, z)); addAir(Air(x, maxY + 1, z))
+        }
+        val dirs = arrayOf(
+            intArrayOf(1,0,0), intArrayOf(-1,0,0), intArrayOf(0,1,0),
+            intArrayOf(0,-1,0), intArrayOf(0,0,1), intArrayOf(0,0,-1)
+        )
+        while (queue.isNotEmpty()) {
+            val a = queue.removeFirst()
+            for (d in dirs) {
+                val nx=a.x+d[0]; val ny=a.y+d[1]; val nz=a.z+d[2]
+                if (nx !in -1..16 || nz !in -1..16 || ny < minY-1 || ny > maxY+1) continue
+                val n=Air(nx,ny,nz)
+                if (!occupied.contains(Pos(nx,ny,nz))) addAir(n)
+            }
+        }
+        for (p in blocks.keys) {
+            var exposed = false
+            for (d in dirs) {
+                val a=Air(p.x+d[0], p.y+d[1], p.z+d[2])
+                if (seen.contains(a)) { exposed=true; break }
+            }
+            if (exposed) renderBlocks.add(p)
+        }
     }
 
     private fun showViewer() {
@@ -169,7 +219,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             val rz = x * sy + z * cy
             val ry = y * cx - rz * sx
             val rz2 = y * sx + rz * cx
-            val scale = min(width, height) * 0.055f * zoom
+            val scale = min(width, height) * 0.055f * zoom // uniform scale: every block is exactly 1×1×1
             return Triple(width / 2f + rx * scale + panX, height / 2f - ry * scale + panY, rz2)
         }
 
@@ -195,22 +245,18 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             super.onDraw(canvas)
             if (blocks.isEmpty()) { canvas.drawText("No non-air blocks in this chunk", 20f, 40f, paint); return }
             val visible = if (hideUnselected && selectedX in 0..15 && selectedZ in 0..15) {
-                blocks.entries.filter { it.key.x == selectedX && it.key.z == selectedZ }.map { it.toPair() }
+                // Once isolated, show every non-air block in the selected BlockChunk so
+                // buried blocks become inspectable rather than remaining occluded by the rest of the chunk.
+                blocks.keys.filter { it.x == selectedX && it.z == selectedZ }
             } else {
-                val neighbors = HashSet<Pos>(blocks.keys)
-                blocks.entries.filter { (p, _) ->
-                    p.x == 0 || p.x == 15 || p.z == 0 || p.z == 15 ||
-                    !neighbors.contains(Pos(p.x + 1, p.y, p.z)) || !neighbors.contains(Pos(p.x - 1, p.y, p.z)) ||
-                    !neighbors.contains(Pos(p.x, p.y + 1, p.z)) || !neighbors.contains(Pos(p.x, p.y - 1, p.z)) ||
-                    !neighbors.contains(Pos(p.x, p.y, p.z + 1)) || !neighbors.contains(Pos(p.x, p.y, p.z - 1))
-                }.map { it.toPair() }
+                renderBlocks
             }
-            val projected = ArrayList<Pair<Pos, FloatArray>>(visible.size)
-            for ((p, _) in visible) {
+            val projected = ArrayList<Pair<Pos, Float>>(visible.size)
+            for (p in visible) {
                 val a = project(p.x-8f,p.y-64f,p.z-8f)
-                projected.add(p to floatArrayOf(a.first,a.second,a.third))
+                projected.add(p to a.third)
             }
-            projected.sortBy { it.second[2] }
+            projected.sortBy { it.second }
             for ((p, _) in projected) drawCube(canvas, p)
             if (selectedX in 0..15 && selectedZ in 0..15) drawSelection(canvas)
         }
