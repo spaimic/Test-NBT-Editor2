@@ -11,8 +11,16 @@ import com.spaimic.nbttool.chunk.SubChunkParser
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import java.io.File
+import java.util.ArrayDeque
 import kotlin.math.*
 
+/**
+ * Lightweight 3D chunk viewer.
+ *
+ * Build 144 uses a surface-only greedy mesh: exposed coplanar faces with the same
+ * rendered color are merged into larger rectangular quads. The mesh is built once
+ * when the chunk loads; frames only transform and draw the already-built quads.
+ */
 class Chunk3DViewerActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private var chunkX = 0
@@ -21,7 +29,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
     private var bridge: LevelDbBridge? = null
     private var ownsBridge = false
     private val blocks = HashMap<Pos, String>()
-    private val renderFaces = ArrayList<Face>()
+    private var mesh = emptyList<MeshQuad>()
     private var selectedX = -1
     private var selectedZ = -1
     private var selectionEnabled = true
@@ -31,7 +39,10 @@ class Chunk3DViewerActivity : AppCompatActivity() {
     private var openButton: Button? = null
 
     data class Pos(val x: Int, val y: Int, val z: Int)
-    data class Face(val p: Pos, val side: Int)
+
+    private data class V3(val x: Float, val y: Float, val z: Float)
+    private data class MeshQuad(val a: V3, val b: V3, val c: V3, val d: V3, val color: Int, val depth: Float)
+    private data class GroupKey(val face: Int, val plane: Int, val color: Int)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,7 +53,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         selectionEnabled = intent.getBooleanExtra(EXTRA_SELECTION_ENABLED, true)
         selectedX = intent.getIntExtra(EXTRA_SELECTED_X, -1)
         selectedZ = intent.getIntExtra(EXTRA_SELECTED_Z, -1)
-        title = "3D Chunk (${chunkX}, ${chunkZ})"
+        title = "3D Chunk ($chunkX, $chunkZ)"
         loadChunk()
     }
 
@@ -51,84 +62,174 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             try {
                 val sessionBridge = LevelDbSession.bridge
                 val b = if (sessionBridge != null && LevelDbSession.worldDir?.canonicalFile == worldDir.canonicalFile) {
-                    ownsBridge = false; sessionBridge
+                    ownsBridge = false
+                    sessionBridge
                 } else {
-                    ownsBridge = true; LevelDbBridge.open(worldDir)
+                    ownsBridge = true
+                    LevelDbBridge.open(worldDir)
                 }
                 bridge = b
+
                 for ((sy, bytes) in b.readSubchunks(chunkX, chunkZ, dimension)) {
                     val parsed = SubChunkParser.parse(bytes)
                     if (parsed is SubChunkParser.ParseResult.Success) {
                         for (x in 0..15) for (z in 0..15) for (y in 0..15) {
                             val name = parsed.blocks[x][z][y]
-                            if (name != "minecraft:air" && name != "air") blocks[Pos(x, sy * 16 + y, z)] = name
+                            if (!isAir(name)) blocks[Pos(x, sy * 16 + y, z)] = name
                         }
                     }
                 }
-                prepareRenderSurface()
-                runOnUiThread { showViewer() }
+
+                mesh = buildGreedySurfaceMesh()
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) showViewer()
+                }
             } catch (e: Throwable) {
-                runOnUiThread { showErrorDialog(this, "Failed to load 3D chunk", e) }
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) showErrorDialog(this, "Failed to load 3D chunk", e)
+                }
             }
         }.start()
     }
 
-    /** Build the exterior shell once. Interior blocks/cavities are not rendered.
-     * A flood-fill through air from outside the 16x16x385 volume identifies only faces
-     * that can actually be seen from the outside. This also avoids doing expensive
-     * HashSet/filter work on every frame.
-     */
-    private fun prepareRenderSurface() {
-        renderFaces.clear()
-        if (blocks.isEmpty()) return
+    private fun isAir(name: String): Boolean {
+        return name == "minecraft:air" || name == "air" || name.endsWith(":air")
+    }
 
-        val occupied = HashSet(blocks.keys)
+    /**
+     * Finds air reachable from outside the solid volume, then builds only faces
+     * touching that reachable air. This intentionally does not expose enclosed
+     * caves/interiors. Faces are greedily merged per orientation/plane/color.
+     */
+    private fun buildGreedySurfaceMesh(): List<MeshQuad> {
+        if (blocks.isEmpty()) return emptyList()
+
         val minY = blocks.keys.minOf { it.y }
         val maxY = blocks.keys.maxOf { it.y }
+        val h = maxY - minY + 3
+        val w = 18
+        val occupied = BooleanArray(w * h * w)
 
-        // Flood-fill air reachable from outside the chunk's occupied volume. A face is
-        // exposed only when the neighboring cell is reachable outside air. This lets
-        // us keep interior blocks/faces completely out of the normal 3D view.
-        data class Air(val x: Int, val y: Int, val z: Int)
-        val queue = java.util.ArrayDeque<Air>()
-        val seen = HashSet<Air>()
-        fun addAir(a: Air) { if (seen.add(a)) queue.add(a) }
+        fun ix(x: Int, y: Int, z: Int): Int = ((y - (minY - 1)) * w + (z + 1)) * w + (x + 1)
+        fun inside(x: Int, y: Int, z: Int): Boolean = x in -1..16 && z in -1..16 && y in (minY - 1)..(maxY + 1)
+        fun setOccupied(x: Int, y: Int, z: Int) { if (x in 0..15 && z in 0..15 && y in minY..maxY) occupied[ix(x, y, z)] = true }
+        for (p in blocks.keys) setOccupied(p.x, p.y, p.z)
 
-        for (y in (minY - 1)..(maxY + 1)) {
-            addAir(Air(-1, y, -1)); addAir(Air(16, y, -1))
-            addAir(Air(-1, y, 16)); addAir(Air(16, y, 16))
+        val reachable = BooleanArray(occupied.size)
+        val q = ArrayDeque<Pos>()
+        fun addAir(x: Int, y: Int, z: Int) {
+            if (!inside(x, y, z)) return
+            val i = ix(x, y, z)
+            if (occupied[i] || reachable[i]) return
+            reachable[i] = true
+            q.addLast(Pos(x, y, z))
         }
+
+        // Seed the entire outside boundary of the bounded volume.
         for (x in -1..16) for (z in -1..16) {
-            addAir(Air(x, minY - 1, z))
-            addAir(Air(x, maxY + 1, z))
+            addAir(x, minY - 1, z)
+            addAir(x, maxY + 1, z)
+        }
+        for (y in minY..maxY) {
+            for (x in -1..16) {
+                addAir(x, y, -1)
+                addAir(x, y, 16)
+            }
+            for (z in -1..16) {
+                addAir(-1, y, z)
+                addAir(16, y, z)
+            }
         }
 
         val dirs = arrayOf(
-            intArrayOf(1,0,0), intArrayOf(-1,0,0),
-            intArrayOf(0,1,0), intArrayOf(0,-1,0),
-            intArrayOf(0,0,1), intArrayOf(0,0,-1)
+            intArrayOf(1, 0, 0), intArrayOf(-1, 0, 0),
+            intArrayOf(0, 1, 0), intArrayOf(0, -1, 0),
+            intArrayOf(0, 0, 1), intArrayOf(0, 0, -1)
         )
-
-        while (queue.isNotEmpty()) {
-            val a = queue.removeFirst()
-            for (d in dirs) {
-                val nx = a.x + d[0]; val ny = a.y + d[1]; val nz = a.z + d[2]
-                if (nx !in -1..16 || nz !in -1..16 || ny < minY - 1 || ny > maxY + 1) continue
-                val n = Air(nx, ny, nz)
-                if (!occupied.contains(Pos(nx, ny, nz))) addAir(n)
-            }
+        while (q.isNotEmpty()) {
+            val a = q.removeFirst()
+            for (d in dirs) addAir(a.x + d[0], a.y + d[1], a.z + d[2])
         }
 
-        // Each cube has six independent physical faces. Camera rotation never changes
-        // which faces exist; only the projection changes. The side order is +X,-X,+Y,-Y,+Z,-Z.
-        for (p in blocks.keys) {
-            for (side in 0..5) {
-                val d = dirs[side]
-                if (seen.contains(Air(p.x + d[0], p.y + d[1], p.z + d[2]))) {
-                    renderFaces.add(Face(p, side))
+        // A group stores unit face cells as packed (u,v). Greedy rectangle merging
+        // turns large flat walls into a tiny number of quads.
+        val groups = HashMap<GroupKey, HashSet<Long>>()
+        fun addCell(face: Int, plane: Int, u: Int, v: Int, color: Int) {
+            val key = GroupKey(face, plane, color)
+            groups.getOrPut(key) { HashSet() }.add(packCell(u, v))
+        }
+
+        for ((p, name) in blocks) {
+            val color = BlockColors.colorForDimension(name, dimension)
+            // +X, -X, +Y, -Y, +Z, -Z. u/v coordinates are chosen so each face
+            // lies on a fixed plane and can be greedily merged in integer cells.
+            if (airReachable(reachable, ix(p.x + 1, p.y, p.z), p.x + 1, p.y, p.z, minY)) addCell(0, p.x + 1, p.y, p.z, color)
+            if (airReachable(reachable, ix(p.x - 1, p.y, p.z), p.x - 1, p.y, p.z, minY)) addCell(1, p.x, p.y, p.z, color)
+            if (airReachable(reachable, ix(p.x, p.y + 1, p.z), p.x, p.y + 1, p.z, minY)) addCell(2, p.y + 1, p.x, p.z, color)
+            if (airReachable(reachable, ix(p.x, p.y - 1, p.z), p.x, p.y - 1, p.z, minY)) addCell(3, p.y, p.x, p.z, color)
+            if (airReachable(reachable, ix(p.x, p.y, p.z + 1), p.x, p.y, p.z + 1, minY)) addCell(4, p.z + 1, p.x, p.y, color)
+            if (airReachable(reachable, ix(p.x, p.y, p.z - 1), p.x, p.y, p.z - 1, minY)) addCell(5, p.z, p.x, p.y, color)
+        }
+
+        val result = ArrayList<MeshQuad>()
+        for ((key, cells) in groups) {
+            while (cells.isNotEmpty()) {
+                val first = cells.first()
+                val u0 = unpackU(first)
+                val v0 = unpackV(first)
+                var u1 = u0
+                while (cells.contains(packCell(u1 + 1, v0))) u1++
+                var v1 = v0
+                var canGrow = true
+                while (canGrow) {
+                    val nextV = v1 + 1
+                    for (u in u0..u1) {
+                        if (!cells.contains(packCell(u, nextV))) { canGrow = false; break }
+                    }
+                    if (canGrow) v1 = nextV
                 }
+                for (v in v0..v1) for (u in u0..u1) cells.remove(packCell(u, v))
+                result.add(makeQuad(key.face, key.plane, u0, v0, u1 + 1, v1 + 1, key.color, minY))
             }
         }
+        return result
+    }
+
+    private fun airReachable(reachable: BooleanArray, index: Int, x: Int, y: Int, z: Int, minY: Int): Boolean {
+        if (x !in -1..16 || z !in -1..16 || y < minY - 1 || y > blocks.keys.maxOf { it.y } + 1) return true
+        return reachable[index]
+    }
+
+    private fun packCell(u: Int, v: Int): Long = (u.toLong() shl 32) xor (v.toLong() and 0xffffffffL)
+    private fun unpackU(v: Long): Int = (v shr 32).toInt()
+    private fun unpackV(v: Long): Int = v.toInt()
+
+    private fun makeQuad(face: Int, plane: Int, u0: Int, v0: Int, u1: Int, v1: Int, color: Int, minY: Int): MeshQuad {
+        val a: V3
+        val b: V3
+        val c: V3
+        val d: V3
+        when (face) {
+            0 -> { // +X, yz plane
+                a = V3(plane.toFloat(), u0.toFloat(), v0.toFloat()); b = V3(plane.toFloat(), u1.toFloat(), v0.toFloat()); c = V3(plane.toFloat(), u1.toFloat(), v1.toFloat()); d = V3(plane.toFloat(), u0.toFloat(), v1.toFloat())
+            }
+            1 -> { // -X
+                a = V3(plane.toFloat(), u0.toFloat(), v0.toFloat()); b = V3(plane.toFloat(), u0.toFloat(), v1.toFloat()); c = V3(plane.toFloat(), u1.toFloat(), v1.toFloat()); d = V3(plane.toFloat(), u1.toFloat(), v0.toFloat())
+            }
+            2 -> { // +Y, xz plane
+                a = V3(u0.toFloat(), plane.toFloat(), v0.toFloat()); b = V3(u0.toFloat(), plane.toFloat(), v1.toFloat()); c = V3(u1.toFloat(), plane.toFloat(), v1.toFloat()); d = V3(u1.toFloat(), plane.toFloat(), v0.toFloat())
+            }
+            3 -> { // -Y
+                a = V3(u0.toFloat(), plane.toFloat(), v0.toFloat()); b = V3(u1.toFloat(), plane.toFloat(), v0.toFloat()); c = V3(u1.toFloat(), plane.toFloat(), v1.toFloat()); d = V3(u0.toFloat(), plane.toFloat(), v1.toFloat())
+            }
+            4 -> { // +Z, xy plane
+                a = V3(u0.toFloat(), v0.toFloat(), plane.toFloat()); b = V3(u1.toFloat(), v0.toFloat(), plane.toFloat()); c = V3(u1.toFloat(), v1.toFloat(), plane.toFloat()); d = V3(u0.toFloat(), v1.toFloat(), plane.toFloat())
+            }
+            else -> { // -Z
+                a = V3(u0.toFloat(), v0.toFloat(), plane.toFloat()); b = V3(u0.toFloat(), v1.toFloat(), plane.toFloat()); c = V3(u1.toFloat(), v1.toFloat(), plane.toFloat()); d = V3(u1.toFloat(), v0.toFloat(), plane.toFloat())
+            }
+        }
+        return MeshQuad(a, b, c, d, color, 0f)
     }
 
     private fun showViewer() {
@@ -140,11 +241,17 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         root.addView(infoText)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         if (selectionEnabled) {
-            openButton = Button(this).apply { text = "Open Selected Area"; isEnabled = selectedX in 0..15 && selectedZ in 0..15; setOnClickListener { openSelected() } }
+            openButton = Button(this).apply {
+                text = "Open Selected Area"
+                isEnabled = selectedX in 0..15 && selectedZ in 0..15
+                setOnClickListener { openSelected() }
+            }
             controls.addView(openButton)
         }
         val hide = CheckBox(this).apply {
-            text = "Hide unselected areas"; isEnabled = selectedX in 0..15 && selectedZ in 0..15; isChecked = hideUnselected
+            text = "Hide unselected areas"
+            isEnabled = selectedX in 0..15 && selectedZ in 0..15
+            isChecked = hideUnselected
             setOnCheckedChangeListener { _, checked -> hideUnselected = checked; view.hideUnselected = checked; view.invalidate() }
         }
         controls.addView(hide)
@@ -179,8 +286,10 @@ class Chunk3DViewerActivity : AppCompatActivity() {
     }
 
     private inner class Chunk3DView : View(this) {
-        private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 5f; color = Color.rgb(255, 196, 0) }
+        private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { isDither = true }
+        private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE; strokeWidth = 5f; color = Color.rgb(255, 196, 0); isAntiAlias = true
+        }
         var hideUnselected = false
         private var rotX = 0.65f
         private var rotY = -0.7f
@@ -203,7 +312,10 @@ class Chunk3DViewerActivity : AppCompatActivity() {
                 MotionEvent.ACTION_POINTER_DOWN -> { lastDist = distance(e); mode = 2; return true }
                 MotionEvent.ACTION_MOVE -> {
                     if (mode == 2 && e.pointerCount >= 2) {
-                        val d = distance(e); if (lastDist > 0f) zoom = (zoom * (d / lastDist)).coerceIn(0.25f, 6f); lastDist = d; invalidate(); return true
+                        val d = distance(e)
+                        if (lastDist > 0f) zoom = (zoom * (d / lastDist)).coerceIn(0.25f, 6f)
+                        lastDist = d
+                        invalidate(); return true
                     }
                     if (mode == 1) {
                         val dx = e.x - lastX; val dy = e.y - lastY
@@ -221,127 +333,124 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         private fun distance(e: MotionEvent): Float {
             if (e.pointerCount < 2) return 0f
             val dx = e.getX(0) - e.getX(1); val dy = e.getY(0) - e.getY(1)
-            return hypot(dx, dy)
+            return hypot(dx.toDouble(), dy.toDouble()).toFloat()
         }
 
-        private fun project(x: Float, y: Float, z: Float): Triple<Float, Float, Float> {
+        private fun project(v: V3): Triple<Float, Float, Float> {
             val cy = cos(rotY); val sy = sin(rotY); val cx = cos(rotX); val sx = sin(rotX)
-            val rx = x * cy - z * sy
-            val rz = x * sy + z * cy
-            val ry = y * cx - rz * sx
-            val rz2 = y * sx + rz * cx
-            val scale = min(width, height) * 0.055f * zoom // uniform scale: every block is exactly 1×1×1
+            val rx = v.x * cy - v.z * sy
+            val rz = v.x * sy + v.z * cy
+            val ry = v.y * cx - rz * sx
+            val rz2 = v.y * sx + rz * cx
+            val scale = min(width, height) * 0.055f * zoom
             return Triple(width / 2f + rx * scale + panX, height / 2f - ry * scale + panY, rz2)
         }
 
         private fun selectAt(px: Float, py: Float) {
-            var bestX = -1
-            var bestZ = -1
-            var bestD = Float.MAX_VALUE
+            var bestX = -1; var bestZ = -1; var bestD = Float.MAX_VALUE
             for (z in 0..15) for (x in 0..15) {
                 val top = blocks.keys.asSequence().filter { it.x == x && it.z == z }.maxOfOrNull { it.y } ?: continue
-                val p = project(x - 7.5f, top - 64f, z - 7.5f)
+                val p = project(V3(x + 0.5f, top + 1f, z + 0.5f))
                 val d = hypot(px - p.first, py - p.second)
                 if (d < bestD) { bestD = d; bestX = x; bestZ = z }
             }
             if (bestX in 0..15 && bestZ in 0..15 && bestD < max(55f, min(width, height) * 0.10f)) {
                 selectedX = bestX; selectedZ = bestZ
-                updateInfoText()
-                openButton?.isEnabled = true
-                invalidate()
+                updateInfoText(); openButton?.isEnabled = true; invalidate()
             }
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            if (blocks.isEmpty()) { canvas.drawText("No non-air blocks in this chunk", 20f, 40f, paint); return }
-            val visibleFaces = if (hideUnselected && selectedX in 0..15 && selectedZ in 0..15) {
-                val selected = ArrayList<Face>()
-                val selectedBlocks = blocks.keys.filter { it.x == selectedX && it.z == selectedZ }.toHashSet()
-                for (p in selectedBlocks) {
-                    // In isolated mode the X/Z sides are exposed to the outside of the
-                    // selected one-column region. Internal Y faces remain hidden when
-                    // another block is directly above/below.
-                    for (side in 0..5) {
-                        val d = when (side) {
-                            0 -> intArrayOf(1,0,0); 1 -> intArrayOf(-1,0,0)
-                            2 -> intArrayOf(0,1,0); 3 -> intArrayOf(0,-1,0)
-                            4 -> intArrayOf(0,0,1); else -> intArrayOf(0,0,-1)
-                        }
-                        if (side == 2 || side == 3) {
-                            if (!selectedBlocks.contains(Pos(p.x + d[0], p.y + d[1], p.z + d[2]))) selected.add(Face(p, side))
-                        } else selected.add(Face(p, side))
-                    }
-                }
-                selected
-            } else renderFaces
-
-            // Project each cube's eight corners only once per frame, then reuse them
-            // for every exposed face. This avoids 8 projection calculations per face.
-            val projectedCubes = HashMap<Pos, Array<Triple<Float,Float,Float>>>()
-            val projectedFaces = ArrayList<Pair<Face, Float>>(visibleFaces.size)
-            for (face in visibleFaces) {
-                val cube = projectedCubes.getOrPut(face.p) { projectCube(face.p) }
-                val depth = (faceCorners(cube, face.side).sumOf { it.third.toDouble() } / 4.0).toFloat()
-                projectedFaces.add(face to depth)
+            if (blocks.isEmpty()) {
+                paint.color = Color.LTGRAY; paint.textSize = 18f; canvas.drawText("No non-air blocks in this chunk", 20f, 40f, paint); return
             }
-            projectedFaces.sortBy { it.second }
-            for ((face, _) in projectedFaces) drawFace(canvas, face, projectedCubes[face.p]!!)
+            if (hideUnselected && selectedX in 0..15 && selectedZ in 0..15) {
+                drawSelectedColumn(canvas)
+            } else {
+                drawMesh(canvas)
+            }
             if (selectedX in 0..15 && selectedZ in 0..15) drawSelection(canvas)
         }
 
-        private fun projectCube(p: Pos): Array<Triple<Float,Float,Float>> {
-            val x = p.x - 8f; val y = p.y - 64f; val z = p.z - 8f
-            return arrayOf(
-                project(x,y,z), project(x+1,y,z), project(x+1,y+1,z), project(x,y+1,z),
-                project(x,y,z+1), project(x+1,y,z+1), project(x+1,y+1,z+1), project(x,y+1,z+1)
-            )
-        }
-
-        private fun faceCorners(c: Array<Triple<Float,Float,Float>>, side: Int): Array<Triple<Float,Float,Float>> = when (side) {
-            0 -> arrayOf(c[1], c[5], c[6], c[2]) // +X
-            1 -> arrayOf(c[0], c[3], c[7], c[4]) // -X
-            2 -> arrayOf(c[3], c[2], c[6], c[7]) // +Y
-            3 -> arrayOf(c[0], c[4], c[5], c[1]) // -Y
-            4 -> arrayOf(c[4], c[7], c[6], c[5]) // +Z
-            else -> arrayOf(c[0], c[1], c[2], c[3]) // -Z
-        }
-
-        private fun drawFace(canvas: Canvas, f: Face, cube: Array<Triple<Float,Float,Float>>) {
-            val face = faceCorners(cube, f.side)
-            val base = BlockColors.colorForDimension(blocks[f.p] ?: "minecraft:stone", dimension)
-            val factor = when (f.side) {
-                2 -> 1.12f // top
-                3 -> 0.72f // bottom
-                0 -> 0.88f // +X
-                1 -> 0.82f // -X
-                4 -> 0.98f // +Z
-                else -> 0.90f // -Z
+        private fun drawMesh(canvas: Canvas) {
+            val projected = ArrayList<Pair<MeshQuad, Float>>(mesh.size)
+            for (q in mesh) {
+                val a = project(q.a); val b = project(q.b); val c = project(q.c); val d = project(q.d)
+                val depth = (a.third + b.third + c.third + d.third) * 0.25f
+                projected.add(q to depth)
             }
+            projected.sortBy { it.second }
+            for ((q, _) in projected) {
+                val a = project(q.a); val b = project(q.b); val c = project(q.c); val d = project(q.d)
+                paint.style = Paint.Style.FILL
+                paint.color = q.color
+                val path = Path()
+                path.moveTo(a.first, a.second); path.lineTo(b.first, b.second); path.lineTo(c.first, c.second); path.lineTo(d.first, d.second); path.close()
+                canvas.drawPath(path, paint)
+            }
+        }
+
+        private fun drawSelectedColumn(canvas: Canvas) {
+            val visible = blocks.keys.filter { it.x == selectedX && it.z == selectedZ }
+            val projected = ArrayList<Pair<Pos, Float>>(visible.size)
+            for (p in visible) {
+                val a = project(V3(p.x.toFloat(), p.y.toFloat(), p.z.toFloat()))
+                projected.add(p to a.third)
+            }
+            projected.sortBy { it.second }
+            for ((p, _) in projected) drawColumnBlock(canvas, p)
+        }
+
+        private fun drawColumnBlock(canvas: Canvas, p: Pos) {
+            val x = p.x.toFloat(); val y = p.y.toFloat(); val z = p.z.toFloat()
+            val pts = arrayOf(
+                project(V3(x, y, z)), project(V3(x + 1f, y, z)), project(V3(x + 1f, y + 1f, z)), project(V3(x, y + 1f, z)),
+                project(V3(x, y, z + 1f)), project(V3(x + 1f, y, z + 1f)), project(V3(x + 1f, y + 1f, z + 1f)), project(V3(x, y + 1f, z + 1f))
+            )
+            val base = BlockColors.colorForDimension(blocks[p] ?: "minecraft:stone", dimension)
             paint.style = Paint.Style.FILL
-            paint.color = shade(base, factor)
-            val path = Path()
-            path.moveTo(face[0].first, face[0].second)
-            for (i in 1 until face.size) path.lineTo(face[i].first, face[i].second)
-            path.close()
-            canvas.drawPath(path, paint)
+            paint.color = shade(base, 1.12f); polygon(canvas, pts, intArrayOf(3, 2, 6, 7))
+            paint.color = shade(base, 0.88f); polygon(canvas, pts, intArrayOf(1, 5, 6, 2))
+            paint.color = shade(base, 0.98f); polygon(canvas, pts, intArrayOf(0, 1, 2, 3))
         }
 
         private fun drawSelection(canvas: Canvas) {
+            if (selectedX !in 0..15 || selectedZ !in 0..15) return
             val ys = blocks.keys.filter { it.x == selectedX && it.z == selectedZ }.map { it.y }
             if (ys.isEmpty()) return
             val minY = ys.minOrNull() ?: return; val maxY = ys.maxOrNull() ?: return
-            val x = selectedX - 8f; val z = selectedZ - 8f
-            val pts = arrayOf(project(x,minY-64f,z), project(x+1,minY-64f,z), project(x+1,maxY+1-64f,z), project(x,maxY+1-64f,z), project(x,minY-64f,z+1), project(x+1,minY-64f,z+1), project(x+1,maxY+1-64f,z+1), project(x,maxY+1-64f,z+1))
+            val x = selectedX.toFloat(); val z = selectedZ.toFloat()
+            val pts = arrayOf(
+                project(V3(x, minY.toFloat(), z)), project(V3(x + 1f, minY.toFloat(), z)), project(V3(x + 1f, maxY + 1f, z)), project(V3(x, maxY + 1f, z)),
+                project(V3(x, minY.toFloat(), z + 1f)), project(V3(x + 1f, minY.toFloat(), z + 1f)), project(V3(x + 1f, maxY + 1f, z + 1f)), project(V3(x, maxY + 1f, z + 1f))
+            )
             val edges = arrayOf(intArrayOf(0,1,2,3,0), intArrayOf(4,5,6,7,4), intArrayOf(0,4), intArrayOf(1,5), intArrayOf(2,6), intArrayOf(3,7))
-            outline.style = Paint.Style.STROKE; outline.strokeWidth = 5f
-            for (edge in edges) { val path=Path(); path.moveTo(pts[edge[0]].first, pts[edge[0]].second); for(i in 1 until edge.size) path.lineTo(pts[edge[i]].first, pts[edge[i]].second); canvas.drawPath(path, outline) }
+            for (edge in edges) {
+                val path = Path(); path.moveTo(pts[edge[0]].first, pts[edge[0]].second)
+                for (i in 1 until edge.size) path.lineTo(pts[edge[i]].first, pts[edge[i]].second)
+                canvas.drawPath(path, outline)
+            }
         }
 
-        private fun shade(c: Int, factor: Float): Int = Color.rgb((Color.red(c)*factor).roundToInt().coerceIn(0,255), (Color.green(c)*factor).roundToInt().coerceIn(0,255), (Color.blue(c)*factor).roundToInt().coerceIn(0,255))
+        private fun polygon(canvas: Canvas, pts: Array<Triple<Float, Float, Float>>, idx: IntArray) {
+            val path = Path(); path.moveTo(pts[idx[0]].first, pts[idx[0]].second)
+            for (i in 1 until idx.size) path.lineTo(pts[idx[i]].first, pts[idx[i]].second)
+            path.close(); canvas.drawPath(path, paint)
+        }
+
+        private fun shade(c: Int, factor: Float): Int = Color.rgb(
+            (Color.red(c) * factor).roundToInt().coerceIn(0, 255),
+            (Color.green(c) * factor).roundToInt().coerceIn(0, 255),
+            (Color.blue(c) * factor).roundToInt().coerceIn(0, 255)
+        )
     }
 
-    override fun onDestroy() { if (ownsBridge) try { bridge?.close() } catch (_: Exception) {}; bridge=null; super.onDestroy() }
+    override fun onDestroy() {
+        if (ownsBridge) try { bridge?.close() } catch (_: Exception) {}
+        bridge = null
+        super.onDestroy()
+    }
 
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
