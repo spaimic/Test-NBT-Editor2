@@ -30,6 +30,15 @@ import java.io.File
  * tap-to-see-coordinates. The hamburger menu (top-left) jumps straight to the
  * things you'd normally want to edit, without hunting through the full key list.
  */
+
+private fun safeSelectionPreviewCrop(source: Bitmap, x: Int, y: Int, width: Int, height: Int): Bitmap {
+    val sx = x.coerceIn(0, source.width - 1)
+    val sy = y.coerceIn(0, source.height - 1)
+    val sw = width.coerceIn(1, source.width - sx)
+    val sh = height.coerceIn(1, source.height - sy)
+    return safeSelectionPreviewCrop(source, sx, sy, sw, sh)
+}
+
 class MapViewerActivity : AppCompatActivity() {
 
     private lateinit var worldDir: File
@@ -319,7 +328,7 @@ class MapViewerActivity : AppCompatActivity() {
             "Copy Chunk",
             "Paste Chunk",
             "Delete Chunk",
-            "Chunk Block Editor"
+            "Terrain Editor"
         ))
         if (mapView.selection != null) {
             options.addAll(listOf(
@@ -353,7 +362,7 @@ class MapViewerActivity : AppCompatActivity() {
                     "Copy Chunk" -> copyChunk(chunkX, chunkZ)
                     "Paste Chunk" -> chooseChunkToPaste(chunkX, chunkZ)
                     "Delete Chunk" -> promptDeleteChunk(chunkX, chunkZ)
-                    "Chunk Block Editor" -> {
+                    "Terrain Editor" -> {
                         val i = Intent(this, ChunkBlockEditorActivity::class.java)
                         i.putExtra(ChunkBlockEditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
                         i.putExtra(ChunkBlockEditorActivity.EXTRA_CHUNK_X, chunkX)

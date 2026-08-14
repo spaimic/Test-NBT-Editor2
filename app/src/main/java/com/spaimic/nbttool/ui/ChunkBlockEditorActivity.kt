@@ -48,7 +48,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
-        title = "Chunk Block Editor"
+        title = "Terrain Editor"
         chunkX = intent.getIntExtra(EXTRA_CHUNK_X, 0)
         chunkZ = intent.getIntExtra(EXTRA_CHUNK_Z, 0)
         dimension = intent.getIntExtra(EXTRA_DIMENSION, 0)
