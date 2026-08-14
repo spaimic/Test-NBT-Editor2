@@ -172,13 +172,13 @@ class DbEntryEditorActivity : AppCompatActivity() {
                 Thread {
                     try {
                         NbtHistory.recordBefore(compound)
-                        MapImageImporter.importIntoMap(this, uri, compound)
+                        val result = MapImageImporter.importIntoMap(this, uri, compound)
                         runOnUiThread {
                             adapter.refresh()
                             hasUnsavedChanges = true
                             Toast.makeText(
                                 this,
-                                "Image imported into $displayName. Tap Save to write it to the world.",
+                                "Generated map_${result.mapId}. Filled map added to inventory slot ${result.inventorySlot}. Tap Save to write it to the world.",
                                 Toast.LENGTH_LONG
                             ).show()
                         }

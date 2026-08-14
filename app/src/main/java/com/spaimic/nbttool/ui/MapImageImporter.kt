@@ -3,28 +3,36 @@ package com.spaimic.nbttool.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
 import android.net.Uri
 import com.spaimic.nbttool.nbt.NbtTag
-import java.io.InputStream
+import com.spaimic.nbttool.shizuku.LevelDbSession
 import kotlin.math.min
-import kotlin.math.pow
 
 /**
- * Build 126: Converts a normal image into the 128x128 color payload used by a
- * Bedrock map_<id> record. This is an independent implementation of the
- * image-to-map idea; it does not copy Nibnya's source.
+ * Build 127: image -> real Bedrock filled_map.
  *
- * The generated payload is one byte per map pixel (128*128 = 16384 bytes).
- * Transparent source pixels become map color 0; opaque pixels are matched
- * against a Bedrock-style base color palette.
+ * Build 126 only changed an existing map_<id> colors array. Build 127 creates
+ * a new map_<id> record and a minecraft:filled_map item pointing at it via
+ * map_uuid, then inserts that item into the local player's Inventory.
+ *
+ * The implementation is independent of Nibnya's source. It follows the
+ * documented Bedrock map/filled_map data relationship.
  */
 object MapImageImporter {
     const val MAP_SIZE = 128
     const val COLOR_BYTES = MAP_SIZE * MAP_SIZE
 
-    data class Result(val width: Int, val height: Int)
+    data class Result(
+        val mapId: Long,
+        val inventorySlot: Int,
+        val width: Int,
+        val height: Int
+    )
 
-    // Bedrock-style base map colors, ordered by palette slot.
     private val palette = intArrayOf(
         0x000000, 0x7F7C78, 0xF7E9A3, 0xA7A7A7, 0xFF0000, 0xA0A0FF,
         0xA7A7A7, 0x007C00, 0xFFFFFF, 0xA4A8B8, 0x976D4D, 0x707070,
@@ -39,7 +47,7 @@ object MapImageImporter {
         0xD8AF93, 0x7FA796
     )
 
-    fun importIntoMap(context: Context, uri: Uri, map: NbtTag.Compound): Result {
+    fun importIntoMap(context: Context, uri: Uri, templateMap: NbtTag.Compound): Result {
         val bitmap = context.contentResolver.openInputStream(uri).use { input ->
             requireNotNull(input) { "Couldn't open image." }
             BitmapFactory.decodeStream(input)
@@ -47,11 +55,9 @@ object MapImageImporter {
 
         val pixels = ByteArray(COLOR_BYTES)
         val scaled = Bitmap.createBitmap(MAP_SIZE, MAP_SIZE, Bitmap.Config.ARGB_8888)
-
         try {
-            // White canvas + aspect-preserving fit, matching the intended map-image UX.
-            val canvas = android.graphics.Canvas(scaled)
-            canvas.drawColor(android.graphics.Color.WHITE)
+            val canvas = Canvas(scaled)
+            canvas.drawColor(Color.WHITE)
             val scale = min(
                 MAP_SIZE.toFloat() / bitmap.width.toFloat(),
                 MAP_SIZE.toFloat() / bitmap.height.toFloat()
@@ -60,17 +66,20 @@ object MapImageImporter {
             val h = (bitmap.height * scale).coerceAtLeast(1f)
             val left = (MAP_SIZE - w) / 2f
             val top = (MAP_SIZE - h) / 2f
-            val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
-            canvas.drawBitmap(bitmap, null, android.graphics.RectF(left, top, left + w, top + h), paint)
+            canvas.drawBitmap(
+                bitmap, null,
+                RectF(left, top, left + w, top + h),
+                Paint(Paint.FILTER_BITMAP_FLAG)
+            )
 
             val argb = IntArray(COLOR_BYTES)
             scaled.getPixels(argb, 0, MAP_SIZE, 0, 0, MAP_SIZE, MAP_SIZE)
             for (i in argb.indices) {
                 val c = argb[i]
-                if (android.graphics.Color.alpha(c) < 128) {
-                    pixels[i] = 0
+                pixels[i] = if (Color.alpha(c) < 128) {
+                    0
                 } else {
-                    pixels[i] = nearestPaletteSlot(c).toByte()
+                    nearestPaletteSlot(c).toByte()
                 }
             }
         } finally {
@@ -78,48 +87,146 @@ object MapImageImporter {
             bitmap.recycle()
         }
 
-        val colorsTarget = findByteArray(map, "colors")
-            ?: throw IllegalArgumentException("This map record does not contain a byte-array named \"colors\".")
+        val session = LevelDbSession
+        val bridge = session.bridge ?: throw IllegalStateException("World database isn't open.")
 
-        if (colorsTarget.value.size == COLOR_BYTES) {
-            System.arraycopy(pixels, 0, colorsTarget.value, 0, COLOR_BYTES)
-        } else {
-            // A default map is 128x128. Replace an unusual-sized colors tag with
-            // a correctly sized array rather than mutating the immutable NbtTag field.
-            replaceByteArray(map, "colors", NbtTag.ByteArray(pixels))
+        // Find a genuinely unused numeric map_<id> key.
+        val existingMapIds = bridge.listKeysByPrefix("map_")
+            .mapNotNull { parseMapId(it.displayName) }
+            .toHashSet()
+
+        var mapId = (existingMapIds.maxOrNull() ?: 0L) + 1L
+        while (mapId in existingMapIds) mapId++
+
+        val mapKey = "map_$mapId"
+        val mapRecord = deepCopyCompound(templateMap)
+
+        setMapId(mapRecord, mapId)
+        setColors(mapRecord, pixels)
+
+        // Create/load ~local_player because the new filled_map must exist in
+        // the player's inventory, not merely as an orphaned map_<id> record.
+        val playerKey = "~local_player"
+        val playerRawKey = playerKey.toByteArray(Charsets.UTF_8)
+        val player = session.loadedEntries[playerKey] ?: run {
+            val bytes = bridge.read(playerRawKey)
+                ?: throw IllegalStateException("~local_player does not exist in this world.")
+            NbtTag.Compound(
+                java.util.LinkedHashMap(
+                    com.spaimic.nbttool.nbt.NbtIO.readRootCompoundNoHeader(bytes).entries
+                )
+            ).also {
+                session.loadedEntries[playerKey] = it
+                session.keyBytesByName[playerKey] = playerRawKey
+            }
         }
 
-        return Result(MAP_SIZE, MAP_SIZE)
+        val inventory = findInventory(player)
+            ?: throw IllegalStateException("Couldn't find the player's Inventory list.")
+
+        val slot = findFreeInventorySlot(inventory)
+            ?: throw IllegalStateException("Player inventory is full (slots 0–35).")
+
+        inventory.items.add(
+            createFilledMapItem(mapId, slot)
+        )
+
+        session.keyBytesByName[mapKey] = mapKey.toByteArray(Charsets.UTF_8)
+        session.loadedEntries[mapKey] = mapRecord
+
+        return Result(mapId, slot, MAP_SIZE, MAP_SIZE)
     }
 
-    private fun findByteArray(root: NbtTag.Compound, key: String): NbtTag.ByteArray? {
-        root.entries[key]?.let { if (it is NbtTag.ByteArray) return it }
+    private fun parseMapId(name: String): Long? =
+        if (name.startsWith("map_")) name.substring(4).toLongOrNull() else null
+
+    private fun createFilledMapItem(mapId: Long, slot: Int): NbtTag.Compound {
+        val tag = NbtTag.Compound(linkedMapOf(
+            "map_display_players" to NbtTag.Byte(1),
+            "map_is_init" to NbtTag.Byte(1),
+            "map_is_scaling" to NbtTag.Byte(0),
+            "map_name_index" to NbtTag.Int(0),
+            "map_scale" to NbtTag.Int(0),
+            "map_uuid" to NbtTag.Long(mapId)
+        ))
+
+        return NbtTag.Compound(linkedMapOf(
+            "Count" to NbtTag.Byte(1),
+            "Name" to NbtTag.Str("minecraft:filled_map"),
+            "Slot" to NbtTag.Byte(slot.toByte()),
+            "tag" to tag
+        ))
+    }
+
+    private fun findInventory(player: NbtTag.Compound): NbtTag.ListTag? {
+        val direct = player.entries["Inventory"]
+        if (direct is NbtTag.ListTag) return direct
+
+        // Some Bedrock player records place inventory under a nested compound.
+        fun search(tag: NbtTag): NbtTag.ListTag? = when (tag) {
+            is NbtTag.Compound -> {
+                tag.entries["Inventory"] as? NbtTag.ListTag
+                    ?: tag.entries.values.asSequence().mapNotNull(::search).firstOrNull()
+            }
+            is NbtTag.ListTag -> tag.items.asSequence().mapNotNull(::search).firstOrNull()
+            else -> null
+        }
+        return player.entries.values.asSequence().mapNotNull(::search).firstOrNull()
+    }
+
+    private fun findFreeInventorySlot(inventory: NbtTag.ListTag): Int? {
+        val used = HashSet<Int>()
+        for (item in inventory.items) {
+            if (item is NbtTag.Compound) {
+                val slot = (item.entries["Slot"] as? NbtTag.Byte)?.value?.toInt()
+                if (slot != null && slot in 0..35) used.add(slot)
+            }
+        }
+        return (0..35).firstOrNull { it !in used }
+    }
+
+    private fun setMapId(root: NbtTag.Compound, mapId: Long) {
+        val keyCandidates = listOf("mapId", "map_id", "map_uuid")
+        for (key in keyCandidates) {
+            val old = root.entries[key]
+            if (old != null) {
+                root.entries[key] = when (old) {
+                    is NbtTag.Long -> NbtTag.Long(mapId)
+                    is NbtTag.Int -> NbtTag.Int(mapId.toInt())
+                    else -> NbtTag.Long(mapId)
+                }
+                return
+            }
+        }
+        root.entries["mapId"] = NbtTag.Long(mapId)
+    }
+
+    private fun setColors(root: NbtTag.Compound, pixels: ByteArray) {
+        if (root.entries["colors"] is NbtTag.ByteArray) {
+            root.entries["colors"] = NbtTag.ByteArray(pixels)
+            return
+        }
         val data = root.entries["data"]
         if (data is NbtTag.Compound) {
-            data.entries[key]?.let { if (it is NbtTag.ByteArray) return it }
+            data.entries["colors"] = NbtTag.ByteArray(pixels)
+            return
         }
-        return null
+        root.entries["colors"] = NbtTag.ByteArray(pixels)
     }
 
-    private fun replaceByteArray(root: NbtTag.Compound, key: String, value: NbtTag.ByteArray) {
-        if (root.entries[key] is NbtTag.ByteArray) {
-            root.entries[key] = value
-            return
-        }
-        val data = root.entries["data"]
-        if (data is NbtTag.Compound && data.entries[key] is NbtTag.ByteArray) {
-            data.entries[key] = value
-            return
-        }
-        throw IllegalArgumentException("Could not replace the map colors tag.")
-    }
+    private fun deepCopyCompound(root: NbtTag.Compound): NbtTag.Compound =
+        NbtTag.Compound(
+            java.util.LinkedHashMap(
+                root.entries.mapValues {
+                    com.spaimic.nbttool.clipboard.NbtClipboard.deepCopy(it.value)
+                }
+            )
+        )
 
     private fun nearestPaletteSlot(argb: Int): Int {
-        val r = android.graphics.Color.red(argb)
-        val g = android.graphics.Color.green(argb)
-        val b = android.graphics.Color.blue(argb)
-        // Minecraft map colors use four brightness shades per base color.
-        // These multipliers are the standard map-color brightness factors.
+        val r = Color.red(argb)
+        val g = Color.green(argb)
+        val b = Color.blue(argb)
         val shadeMultipliers = intArrayOf(180, 220, 255, 135)
 
         var bestIndex = 1
@@ -141,12 +248,10 @@ object MapImageImporter {
                 val distance = dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11
                 if (distance < bestDistance) {
                     bestDistance = distance
-                    // Base color slot * 4 + brightness shade.
                     bestIndex = baseIndex * 4 + shade
                 }
             }
         }
         return bestIndex
     }
-
 }
