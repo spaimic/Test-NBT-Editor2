@@ -6,6 +6,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import android.content.Intent
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.chunk.ChunkKeys
 import com.spaimic.nbttool.chunk.SubChunkEditor
@@ -101,6 +102,11 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
             grid.addView(button)
         }
         vertical.addView(grid)
+        val view3d = Button(this).apply {
+            text = "View Entire Chunk in 3D"
+            setOnClickListener { open3DViewer(true) }
+        }
+        vertical.addView(view3d)
         outer.addView(vertical)
         setContentView(outer)
     }
@@ -123,7 +129,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
             setPadding(16, 16, 16, 8)
         }
         val header = TextView(this).apply {
-            text = "Chunk ($chunkX, $chunkZ)  •  X=$x Z=$z"
+            text = "Chunk Coordinates: ($chunkX, $chunkZ)\nBlockChunk Coordinates: ($x, $z)\nExact Coordinates: (${chunkX * 16 + x}, ${chunkZ * 16 + z})"
             textSize = 18f
             setPadding(8, 8, 8, 12)
         }
@@ -141,11 +147,13 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         }
         val search = Button(this).apply { text = "Search"; setOnClickListener { showSearchDialog() } }
         val replace = Button(this).apply { text = "Replace"; setOnClickListener { showReplaceDialog() } }
+        val view3d = Button(this).apply { text = "View Chunk 3D"; setOnClickListener { open3DViewer(false) } }
         val undo = Button(this).apply { text = "Undo"; isEnabled = undoStack.isNotEmpty(); setOnClickListener { undo() } }
         val redo = Button(this).apply { text = "Redo"; isEnabled = redoStack.isNotEmpty(); setOnClickListener { redo() } }
         controls.addView(hide)
         controls.addView(search)
         controls.addView(replace)
+        controls.addView(view3d)
         controls.addView(undo)
         controls.addView(redo)
         root.addView(controls)
@@ -230,7 +238,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         val input = EditText(this).apply { hint = "minecraft:stone"; setSingleLine(true) }
         AlertDialog.Builder(this)
             .setTitle("Search blocks")
-            .setMessage("Searches this entire chunk.")
+            .setMessage("Searches this BlockChunk only (Y=320 to Y=-64).")
             .setView(input)
             .setPositiveButton("Search") { _, _ -> showSearchResults(input.text.toString().trim()) }
             .setNegativeButton("Cancel", null)
@@ -239,28 +247,23 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
 
     private fun showSearchResults(query: String) {
         if (query.isBlank()) return
-        val matches = ArrayList<Triple<Int, Int, Int>>()
-        for (z in 0..15) for (x in 0..15) for (y in 320 downTo -64) {
-            val name = blocks[Triple(x, z, y)] ?: "minecraft:air"
-            if (name.contains(query, ignoreCase = true)) matches += Triple(x, z, y)
+        val matches = ArrayList<Int>()
+        for (y in 320 downTo -64) {
+            val name = blocks[Triple(selectedX, selectedZ, y)] ?: "minecraft:air"
+            if (name.contains(query, ignoreCase = true)) matches += y
         }
-        val message = if (matches.isEmpty()) "No blocks found for \"$query\"." else "Found ${matches.size} block(s) for \"$query\"."
+        val message = if (matches.isEmpty()) "No blocks found in BlockChunk X=$selectedX Z=$selectedZ for \"$query\"." else "Found ${matches.size} block(s) in BlockChunk X=$selectedX Z=$selectedZ."
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 8, 24, 8) }
-        if (matches.isNotEmpty()) {
-            matches.take(200).forEach { p ->
-                val name = blocks[p] ?: "minecraft:air"
-                list.addView(TextView(this).apply {
-                    text = "X=${p.first}  Y=${p.third}  Z=${p.second}   $name"
-                    setPadding(8, 10, 8, 10)
-                    setOnClickListener {
-                        selectedX = p.first; selectedZ = p.second; selectedY = p.third; columnScrollY = 0
-                        scrollToY(p.third)
-                    }
-                })
-            }
+        matches.forEach { y ->
+            val name = blocks[Triple(selectedX, selectedZ, y)] ?: "minecraft:air"
+            list.addView(TextView(this).apply {
+                text = "Y=$y   $name"
+                setPadding(8, 10, 8, 10)
+                setOnClickListener { selectedY = y; columnScrollY = 0; scrollToY(y) }
+            })
         }
         val scroll = ScrollView(this).apply { addView(list) }
-        AlertDialog.Builder(this).setTitle("Search results").setMessage(message).setView(scroll).setPositiveButton("Close", null).show()
+        AlertDialog.Builder(this).setTitle("Search BlockChunk").setMessage(message).setView(scroll).setPositiveButton("Close", null).show()
     }
 
     private fun scrollToY(y: Int) {
@@ -277,7 +280,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         container.addView(to)
         AlertDialog.Builder(this)
             .setTitle("Replace blocks")
-            .setMessage("Replace one selected block, or replace every matching block in this chunk.")
+            .setMessage("Replace a block in this BlockChunk, or replace every matching block in this BlockChunk.")
             .setView(container)
             .setPositiveButton("Replace Selected") { _, _ -> replaceSelected(from.text.toString().trim(), to.text.toString().trim()) }
             .setNeutralButton("Replace All") { _, _ -> replaceAll(from.text.toString().trim(), to.text.toString().trim()) }
@@ -310,8 +313,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
             return
         }
         val changes = ArrayList<BlockChange>()
-        for (z in 0..15) for (x in 0..15) for (y in 320 downTo -64) {
-            val p = Triple(x, z, y)
+        for (y in 320 downTo -64) {
+            val p = Triple(selectedX, selectedZ, y)
             val current = blocks[p] ?: "minecraft:air"
             if (current.equals(from, ignoreCase = true)) changes += BlockChange(p, current, to)
         }
@@ -321,6 +324,20 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         }
         applyAction(changes)
         Toast.makeText(this, "Replaced ${changes.size} block(s).", Toast.LENGTH_LONG).show()
+    }
+
+    private fun open3DViewer(selectionEnabled: Boolean) {
+        val i = Intent(this, Chunk3DViewerActivity::class.java)
+        i.putExtra(Chunk3DViewerActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
+        i.putExtra(Chunk3DViewerActivity.EXTRA_CHUNK_X, chunkX)
+        i.putExtra(Chunk3DViewerActivity.EXTRA_CHUNK_Z, chunkZ)
+        i.putExtra(Chunk3DViewerActivity.EXTRA_DIMENSION, dimension)
+        i.putExtra(Chunk3DViewerActivity.EXTRA_SELECTION_ENABLED, selectionEnabled)
+        if (!selectionEnabled) {
+            i.putExtra(Chunk3DViewerActivity.EXTRA_SELECTED_X, selectedX)
+            i.putExtra(Chunk3DViewerActivity.EXTRA_SELECTED_Z, selectedZ)
+        }
+        startActivity(i)
     }
 
     private fun saveChanges() {
