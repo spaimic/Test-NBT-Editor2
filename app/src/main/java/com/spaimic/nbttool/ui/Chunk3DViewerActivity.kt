@@ -1,5 +1,6 @@
 package com.spaimic.nbttool.ui
 
+import android.content.Intent
 import android.graphics.*
 import android.os.Bundle
 import android.view.*
@@ -146,8 +147,6 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             val dx = e.getX(0) - e.getX(1); val dy = e.getY(0) - e.getY(1)
             return hypot(dx, dy)
         }
-
-        private data class Projected(val pos: Pos, val sx: Float, val sy: Float, val depth: Float)
 
         private fun project(x: Float, y: Float, z: Float): Triple<Float, Float, Float> {
             val cy = cos(rotY); val sy = sin(rotY); val cx = cos(rotX); val sx = sin(rotX)
