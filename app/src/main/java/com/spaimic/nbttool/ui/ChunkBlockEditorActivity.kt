@@ -16,6 +16,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     private lateinit var worldDir: File
     private var chunkX = 0
     private var chunkZ = 0
+    private var dimension = 0
     private var bridge: LevelDbBridge? = null
     private val blocks = HashMap<Triple<Int,Int,Int>, String>()
     private val original = HashMap<Int, ByteArray>()
@@ -28,27 +29,17 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         worldDir = File(intent.getStringExtra(EXTRA_WORLD_PATH) ?: return finish())
         title = "Chunk Block Editor"
-        askChunk()
-    }
-
-    private fun askChunk() {
-        val box = LinearLayout(this).apply { orientation=LinearLayout.VERTICAL; setPadding(32,8,32,8) }
-        val x = EditText(this).apply { hint="Chunk X"; inputType=2 or 0x80000000 }
-        val z = EditText(this).apply { hint="Chunk Z"; inputType=2 or 0x80000000 }
-        box.addView(x); box.addView(z)
-        AlertDialog.Builder(this).setTitle("Open Chunk")
-            .setMessage("Enter the chunk coordinates to edit.")
-            .setView(box).setPositiveButton("Open") { _, _ ->
-                chunkX=x.text.toString().toIntOrNull() ?: 0; chunkZ=z.text.toString().toIntOrNull() ?: 0
-                loadChunk()
-            }.setNegativeButton("Cancel") { _, _ -> finish() }.show()
+        chunkX = intent.getIntExtra(EXTRA_CHUNK_X, 0)
+        chunkZ = intent.getIntExtra(EXTRA_CHUNK_Z, 0)
+        dimension = intent.getIntExtra(EXTRA_DIMENSION, 0)
+        loadChunk()
     }
 
     private fun loadChunk() {
         Thread {
             try {
                 val b=LevelDbBridge.open(worldDir); bridge=b
-                val subs=b.readSubchunks(chunkX,chunkZ,0)
+                val subs=b.readSubchunks(chunkX,chunkZ,dimension)
                 for ((sy,bytes) in subs) {
                     original[sy]=bytes.copyOf()
                     when(val parsed=SubChunkParser.parse(bytes)) {
@@ -148,7 +139,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
                         val after=blocks[Triple(x,z,sy*16+y)] ?: before
                         if(before!=after) bytes=SubChunkEditor.replaceBlock(bytes,x,z,y,after)
                     }
-                    writes += ChunkKeys.subChunkKey(chunkX,chunkZ,sy,0) to bytes
+                    writes += ChunkKeys.subChunkKey(chunkX,chunkZ,sy,dimension) to bytes
                 }
                 b.writeBatch(writes); dirty=false
                 runOnUiThread { Toast.makeText(this,"Saved ${writes.size} changed subchunk(s).",Toast.LENGTH_LONG).show(); showGrid() }
@@ -167,5 +158,12 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
     override fun onBackPressed() { if(dirty) AlertDialog.Builder(this).setTitle("Unsaved changes").setMessage("Discard block edits?").setPositiveButton("Discard") {_,_-> super.onBackPressed()}.setNegativeButton("Cancel",null).show() else super.onBackPressed() }
-    companion object { const val EXTRA_WORLD_PATH="world_path"; private const val MENU_SEARCH=1; private const val MENU_REPLACE=2 }
+    companion object {
+        const val EXTRA_WORLD_PATH="world_path"
+        const val EXTRA_CHUNK_X="chunk_x"
+        const val EXTRA_CHUNK_Z="chunk_z"
+        const val EXTRA_DIMENSION="dimension"
+        private const val MENU_SEARCH=1
+        private const val MENU_REPLACE=2
+    }
 }

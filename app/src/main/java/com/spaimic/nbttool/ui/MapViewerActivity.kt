@@ -309,7 +309,8 @@ class MapViewerActivity : AppCompatActivity() {
             "Show Block Entities",
             "Copy Chunk",
             "Paste Chunk",
-            "Delete Chunk"
+            "Delete Chunk",
+            "Chunk Block Editor"
         ))
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
@@ -335,6 +336,14 @@ class MapViewerActivity : AppCompatActivity() {
                     "Copy Chunk" -> copyChunk(chunkX, chunkZ)
                     "Paste Chunk" -> chooseChunkToPaste(chunkX, chunkZ)
                     "Delete Chunk" -> promptDeleteChunk(chunkX, chunkZ)
+                    "Chunk Block Editor" -> {
+                        val i = Intent(this, ChunkBlockEditorActivity::class.java)
+                        i.putExtra(ChunkBlockEditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
+                        i.putExtra(ChunkBlockEditorActivity.EXTRA_CHUNK_X, chunkX)
+                        i.putExtra(ChunkBlockEditorActivity.EXTRA_CHUNK_Z, chunkZ)
+                        i.putExtra(ChunkBlockEditorActivity.EXTRA_DIMENSION, selectedDbDimension())
+                        startActivity(i)
+                    }
                 }
             }.show()
     }
@@ -654,7 +663,6 @@ class MapViewerActivity : AppCompatActivity() {
             "The End NBT Data",
             "NBT Tag Clipboard",
             "Chunk Clipboard",
-            "Chunk Block Editor",
             "Open LevelDB Key by Name",
             "Advanced: Browse Extra DB Keys"
         )
@@ -681,13 +689,8 @@ class MapViewerActivity : AppCompatActivity() {
                     10 -> showExactKey("The End NBT Data", "TheEnd")
                     11 -> startActivity(Intent(this, ClipboardActivity::class.java))
                     12 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
-                    13 -> {
-                        val intent = Intent(this, ChunkBlockEditorActivity::class.java)
-                        intent.putExtra(ChunkBlockEditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
-                        startActivity(intent)
-                    }
-                    14 -> promptOpenLevelDbKeyByName()
-                    15 -> openAllKeysBrowser()
+                    13 -> promptOpenLevelDbKeyByName()
+                    14 -> openAllKeysBrowser()
                 }
             }
             .show()
