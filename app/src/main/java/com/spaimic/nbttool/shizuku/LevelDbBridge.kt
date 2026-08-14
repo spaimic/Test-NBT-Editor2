@@ -119,6 +119,15 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
 
     fun write(rawKey: ByteArray, value: ByteArray) = db.put(rawKey, value)
 
+    /** Atomically applies a group of LevelDB writes as one batch. */
+    fun writeBatch(entries: Collection<Pair<ByteArray, ByteArray>>) {
+        if (entries.isEmpty()) return
+        db.createWriteBatch().use { batch ->
+            for ((key, value) in entries) batch.put(key, value)
+            db.write(batch)
+        }
+    }
+
     fun delete(rawKey: ByteArray) = db.delete(rawKey)
 
     /** Full raw scan of every key/value pair. Kept for advanced/raw tooling. */

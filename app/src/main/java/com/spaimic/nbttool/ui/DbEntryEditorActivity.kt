@@ -79,6 +79,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
                     }
                     NbtHistory.recordBefore(compound)
                     row.setValue(newTag)
+                    LevelDbSession.markDirty(displayName)
                     hasUnsavedChanges = true
                     onSaved()
                 } catch (e: NumberFormatException) {
@@ -106,8 +107,20 @@ class DbEntryEditorActivity : AppCompatActivity() {
         when (item.itemId) {
             MENU_SAVE -> {
                 Thread {
-                    LevelDbSession.saveAllLoadedEntries()
-                    runOnUiThread { Toast.makeText(this, "Saved.", Toast.LENGTH_SHORT).show() }
+                    try {
+                        val names = if (LevelDbSession.dirtyEntries.isNotEmpty()) {
+                            LevelDbSession.dirtyEntries.toList()
+                        } else {
+                            listOf(displayName)
+                        }
+                        LevelDbSession.saveEntries(names)
+                        runOnUiThread {
+                            hasUnsavedChanges = false
+                            Toast.makeText(this, "Saved ${names.size} changed entr${if (names.size == 1) "y" else "ies"}.", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Throwable) {
+                        runOnUiThread { showErrorDialog(this, "Save failed — no changes were discarded", e) }
+                    }
                 }.start()
                 return true
             }
@@ -156,6 +169,7 @@ class DbEntryEditorActivity : AppCompatActivity() {
                                 compound.entries.clear()
                                 compound.entries.putAll(imported.entries)
                                 adapter.refresh()
+                                LevelDbSession.markDirty(displayName)
                                 hasUnsavedChanges = true
                                 Toast.makeText(this, if (undoRecorded) "Imported. Tap Save to write it to the world." else "Imported. Very large import: undo snapshot skipped. Tap Save to write it to the world.", Toast.LENGTH_LONG).show()
                             } catch (e: Exception) {
@@ -221,7 +235,12 @@ class DbEntryEditorActivity : AppCompatActivity() {
     private fun saveAndFinishSafely() {
         Thread {
             try {
-                LevelDbSession.saveAllLoadedEntries()
+                val names = if (LevelDbSession.dirtyEntries.isNotEmpty()) {
+                    LevelDbSession.dirtyEntries.toList()
+                } else {
+                    listOf(displayName)
+                }
+                LevelDbSession.saveEntries(names)
                 runOnUiThread {
                     hasUnsavedChanges = false
                     super@DbEntryEditorActivity.onBackPressed()

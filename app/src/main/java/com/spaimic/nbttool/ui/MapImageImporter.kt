@@ -133,6 +133,10 @@ object MapImageImporter {
 
         session.keyBytesByName[mapKey] = mapKey.toByteArray(Charsets.UTF_8)
         session.loadedEntries[mapKey] = mapRecord
+        // Only these two records are changed by this operation. The editor's Save
+        // action will therefore never rewrite unrelated cached world records.
+        session.markDirty(mapKey)
+        session.markDirty(playerKey)
 
         return Result(mapId, slot, MAP_SIZE, MAP_SIZE)
     }
