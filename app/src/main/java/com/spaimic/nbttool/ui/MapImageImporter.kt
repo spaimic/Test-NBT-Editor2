@@ -102,6 +102,7 @@ object MapImageImporter {
         val mapRecord = deepCopyCompound(templateMap)
 
         setMapId(mapRecord, mapId)
+        setMapDimensions(mapRecord)
         setColors(mapRecord, pixels)
 
         // Create/load ~local_player because the new filled_map must exist in
@@ -124,12 +125,20 @@ object MapImageImporter {
         val inventory = findInventory(player)
             ?: throw IllegalStateException("Couldn't find the player's Inventory list.")
 
-        val slot = findFreeInventorySlot(inventory)
+        val free = findFreeInventorySlot(inventory)
             ?: throw IllegalStateException("Player inventory is full (slots 0–35).")
 
-        inventory.items.add(
-            createFilledMapItem(mapId, slot)
-        )
+        // Bedrock player Inventory is commonly a fixed 36-entry list. Do NOT
+        // append a 37th compound: Minecraft can interpret the list position
+        // independently of Slot and this can duplicate Slot values and corrupt
+        // existing inventory entries. Reuse the existing empty entry when it
+        // exists, preserving the list's exact 36-entry structure.
+        val mapItem = createFilledMapItem(mapId, free.slot)
+        if (free.listIndex in inventory.items.indices) {
+            inventory.items[free.listIndex] = mapItem
+        } else {
+            inventory.items.add(mapItem)
+        }
 
         session.keyBytesByName[mapKey] = mapKey.toByteArray(Charsets.UTF_8)
         session.loadedEntries[mapKey] = mapRecord
@@ -189,26 +198,39 @@ object MapImageImporter {
      * Missing/empty Name => the slot is treated as empty.
      * Non-empty Name => the slot is occupied.
      */
-    private fun findFreeInventorySlot(inventory: NbtTag.ListTag): Int? {
+    private data class FreeSlot(val slot: Int, val listIndex: Int)
+
+    private fun findFreeInventorySlot(inventory: NbtTag.ListTag): FreeSlot? {
         val occupied = BooleanArray(36)
+        val emptyIndexBySlot = IntArray(36) { -1 }
 
-        for (item in inventory.items) {
+        for ((index, item) in inventory.items.withIndex()) {
             val compound = item as? NbtTag.Compound ?: continue
-
             val slot = (compound.entries["Slot"] as? NbtTag.Byte)?.value?.toInt()
                 ?: continue
-
             if (slot !in 0..35) continue
 
             val name = (compound.entries["Name"] as? NbtTag.Str)?.value ?: ""
-
-            // Empty/missing Name means this entry does not represent an item.
             if (name.isNotEmpty()) {
                 occupied[slot] = true
+                emptyIndexBySlot[slot] = -1
+            } else if (emptyIndexBySlot[slot] == -1) {
+                // Reuse the existing empty compound instead of appending another
+                // compound with the same Slot value.
+                emptyIndexBySlot[slot] = index
             }
         }
 
-        return (0..35).firstOrNull { !occupied[it] }
+        for (slot in 0..35) {
+            if (!occupied[slot]) {
+                val index = emptyIndexBySlot[slot]
+                if (index >= 0) return FreeSlot(slot, index)
+            }
+        }
+
+        // Sparse inventories may genuinely omit a slot. Append only in that
+        // case; fixed 36-entry inventories never take this path.
+        return (0..35).firstOrNull { !occupied[it] }?.let { FreeSlot(it, inventory.items.size) }
     }
 
     private fun setMapId(root: NbtTag.Compound, mapId: Long) {
@@ -225,6 +247,13 @@ object MapImageImporter {
             }
         }
         root.entries["mapId"] = NbtTag.Long(mapId)
+    }
+
+    private fun setMapDimensions(root: NbtTag.Compound) {
+        root.entries["width"] = NbtTag.Int(MAP_SIZE)
+        root.entries["height"] = NbtTag.Int(MAP_SIZE)
+        root.entries["scale"] = NbtTag.Byte(0)
+        root.entries["fullyExplored"] = NbtTag.Byte(1)
     }
 
     private fun setColors(root: NbtTag.Compound, pixels: ByteArray) {
@@ -253,8 +282,10 @@ object MapImageImporter {
         val r = Color.red(argb)
         val g = Color.green(argb)
         val b = Color.blue(argb)
-        val shadeMultipliers = intArrayOf(180, 220, 255, 135)
-
+        // Bedrock's map palette used by this app stores the Bedrock base color
+        // IDs directly (0..61). Do NOT use Java's baseColor*4+shade encoding
+        // here. That encoding was the reason Build 129 produced scrambled/random
+        // colors. Nibnya's Bedrock palette uses these base IDs directly as well.
         var bestIndex = 1
         var bestDistance = Double.MAX_VALUE
         for (baseIndex in 1 until palette.size) {
@@ -262,20 +293,13 @@ object MapImageImporter {
             val br = (base shr 16) and 0xff
             val bg = (base shr 8) and 0xff
             val bb = base and 0xff
-
-            for (shade in shadeMultipliers.indices) {
-                val factor = shadeMultipliers[shade] / 255.0
-                val pr = (br * factor).coerceIn(0.0, 255.0)
-                val pg = (bg * factor).coerceIn(0.0, 255.0)
-                val pb = (bb * factor).coerceIn(0.0, 255.0)
-                val dr = r - pr
-                val dg = g - pg
-                val db = b - pb
-                val distance = dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11
-                if (distance < bestDistance) {
-                    bestDistance = distance
-                    bestIndex = baseIndex * 4 + shade
-                }
+            val dr = r - br
+            val dg = g - bg
+            val db = b - bb
+            val distance = dr * dr * 0.30 + dg * dg * 0.59 + db * db * 0.11
+            if (distance < bestDistance) {
+                bestDistance = distance
+                bestIndex = baseIndex
             }
         }
         return bestIndex
