@@ -126,6 +126,111 @@ object SubChunkParser {
         }
     }
 
+
+    /**
+     * Lightweight metadata scan: decodes indices/palette but does not allocate a
+     * 16x16x16 String array. Updates highest non-air Y for all 256 X/Z columns.
+     */
+    fun scanHighestColumns(value: ByteArray, highest: IntArray, subY: Int) {
+        require(highest.size >= 256)
+        val stream = DataInputStream(ByteArrayInputStream(value))
+        val version = stream.readUnsignedByte()
+        if (version != 8 && version != 9) return
+        val layerCount = stream.readUnsignedByte()
+        if (version == 9) stream.readUnsignedByte()
+        if (layerCount !in 1..8) return
+
+        // We only need the effective top block. For each layer, keep the palette
+        // names and 4096 compact indices, not 4096 String references.
+        val effective = IntArray(4096)
+        val effectiveNames = ArrayList<String>()
+        var haveBase = false
+        repeat(layerCount) { layerIndex ->
+            val decoded = decodeCompactLayer(stream) ?: return@repeat
+            if (!haveBase) {
+                effective.indices.forEach { effective[it] = decoded.indices[it] }
+                effectiveNames.clear(); effectiveNames.addAll(decoded.palette)
+                haveBase = true
+            } else {
+                // Preserve the layer-local palette by resolving only non-air cells.
+                for (i in 0 until 4096) {
+                    val name = decoded.palette.getOrNull(decoded.indices[i]) ?: "minecraft:air"
+                    if (!isAirName(name)) {
+                        val idx = effectiveNames.indexOf(name)
+                        if (idx >= 0) effective[i] = idx
+                        else { effectiveNames.add(name); effective[i] = effectiveNames.lastIndex }
+                    }
+                }
+            }
+        }
+        if (!haveBase) return
+        for (x in 0 until 16) for (z in 0 until 16) {
+            val column = z * 16 + x
+            var top = Int.MIN_VALUE
+            for (y in 15 downTo 0) {
+                val idx = effective[(x shl 8) or (z shl 4) or y]
+                val name = effectiveNames.getOrNull(idx) ?: "minecraft:air"
+                if (!isAirName(name)) { top = subY * 16 + y; break }
+            }
+            if (top > highest[column]) highest[column] = top
+        }
+    }
+
+    /** Decode only one X/Z column. No 16x16x16 String cube is allocated. */
+    fun readColumn(value: ByteArray, x: Int, z: Int, subY: Int): Map<Int, String> {
+        val result = HashMap<Int, String>()
+        val stream = DataInputStream(ByteArrayInputStream(value))
+        val version = stream.readUnsignedByte()
+        if (version != 8 && version != 9) return result
+        val layerCount = stream.readUnsignedByte()
+        if (version == 9) stream.readUnsignedByte()
+        if (layerCount !in 1..8) return result
+        val layers = ArrayList<CompactLayer>(layerCount)
+        repeat(layerCount) { decodeCompactLayer(stream)?.let { layers.add(it) } }
+        for (y in 0..15) {
+            var name = "minecraft:air"
+            for (layer in layers) {
+                val idx = layer.indices[(x shl 8) or (z shl 4) or y]
+                val n = layer.palette.getOrNull(idx) ?: "minecraft:air"
+                if (!isAirName(n)) name = n
+            }
+            result[subY * 16 + y] = name
+        }
+        return result
+    }
+
+    private data class CompactLayer(val indices: IntArray, val palette: List<String>)
+
+    private fun decodeCompactLayer(stream: DataInputStream): CompactLayer? {
+        val flag = stream.readUnsignedByte()
+        val bitsPerBlock = flag ushr 1
+        if (bitsPerBlock > 32) return null
+        val indices = IntArray(4096)
+        if (bitsPerBlock > 0) {
+            val blocksPerWord = 32 / bitsPerBlock
+            val wordCount = (4096 + blocksPerWord - 1) / blocksPerWord
+            val mask = if (bitsPerBlock == 32) -1 else (1 shl bitsPerBlock) - 1
+            var blockIndex = 0
+            for (w in 0 until wordCount) {
+                val word = readIntLE(stream)
+                for (i in 0 until blocksPerWord) {
+                    if (blockIndex >= 4096) break
+                    indices[blockIndex++] = (word ushr (i * bitsPerBlock)) and mask
+                }
+            }
+        }
+        val paletteSize = readIntLE(stream)
+        if (paletteSize !in 1..65536) return null
+        val palette = ArrayList<String>(paletteSize)
+        repeat(paletteSize) {
+            val compound = NbtIO.readCompoundFromStream(stream)
+            palette.add((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
+        }
+        return CompactLayer(indices, palette)
+    }
+
+    private fun isAirName(name: String): Boolean = name == "minecraft:air" || name == "air"
+
     private fun readIntLE(stream: DataInputStream): Int {
         val a = stream.readUnsignedByte(); val b = stream.readUnsignedByte()
         val c = stream.readUnsignedByte(); val d = stream.readUnsignedByte()

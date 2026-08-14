@@ -53,7 +53,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     }
 
     private fun loadChunkMetadata() {
-        Thread {
+        Thread({
             try {
                 val sessionBridge = LevelDbSession.bridge
                 val b = if (sessionBridge != null && LevelDbSession.worldDir?.canonicalFile == worldDir.canonicalFile) {
@@ -73,29 +73,15 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
                 // for each X/Z column, then release its 16^3 temporary array.
                 for ((sy, bytes) in subs) {
                     original[sy] = bytes.copyOf()
-                    val parsed = SubChunkParser.parse(bytes)
-                    if (parsed is SubChunkParser.ParseResult.Success) {
-                        for (x in 0..15) for (z in 0..15) {
-                            var top = Int.MIN_VALUE
-                            for (y in 15 downTo 0) {
-                                val name = parsed.blocks[x][z][y]
-                                if (!isAir(name)) {
-                                    top = sy * 16 + y
-                                    break
-                                }
-                            }
-                            if (top != Int.MIN_VALUE) {
-                                val idx = z * 16 + x
-                                if (top > highest[idx]) highest[idx] = top
-                            }
-                        }
-                    }
+                    // Build 139: compact metadata scan; do not allocate a 16x16x16
+                    // String cube for every subchunk just to find column tops.
+                    SubChunkParser.scanHighestColumns(bytes, highest, sy)
                 }
                 runOnUiThread { showGrid() }
             } catch (e: Throwable) {
-                runOnUiThread { showErrorDialog(this, "Failed to load chunk", e) }
+                runOnUiThread { if (!isFinishing && !isDestroyed) showErrorDialog(this, "Failed to load chunk", e) }
             }
-        }.start()
+        }, "ChunkBlockEditorLoad").start()
     }
 
     private fun showGrid() {
@@ -113,8 +99,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
                 textSize = 11f
                 setPadding(2, 2, 2, 2)
                 layoutParams = GridLayout.LayoutParams().apply {
-                    width = 150
-                    height = 90
+                    width = 96
+                    height = 72
                     setMargins(4, 4, 4, 4)
                 }
                 setOnClickListener { openColumn(x, z) }
@@ -136,14 +122,9 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     private fun loadColumn(x: Int, z: Int) {
         columnBlocks.clear()
         for ((sy, bytes) in original) {
-            val parsed = SubChunkParser.parse(bytes)
-            if (parsed is SubChunkParser.ParseResult.Success) {
-                for (y in 0..15) {
-                    val worldY = sy * 16 + y
-                    if (worldY in -64..320) {
-                        columnBlocks[worldY] = parsed.blocks[x][z][y]
-                    }
-                }
+            // Decode only this X/Z column.
+            for ((worldY, name) in SubChunkParser.readColumn(bytes, x, z, sy)) {
+                if (worldY in -64..320) columnBlocks[worldY] = name
             }
         }
         // Apply unsaved edits belonging to this BlockChunk.
