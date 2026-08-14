@@ -10,6 +10,7 @@ import com.spaimic.nbttool.chunk.ChunkKeys
 import com.spaimic.nbttool.chunk.SubChunkEditor
 import com.spaimic.nbttool.chunk.SubChunkParser
 import com.spaimic.nbttool.shizuku.LevelDbBridge
+import com.spaimic.nbttool.shizuku.LevelDbSession
 import java.io.File
 
 class ChunkBlockEditorActivity : AppCompatActivity() {
@@ -18,6 +19,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     private var chunkZ = 0
     private var dimension = 0
     private var bridge: LevelDbBridge? = null
+    private var ownsBridge = false
     private val blocks = HashMap<Triple<Int,Int,Int>, String>()
     private val original = HashMap<Int, ByteArray>()
     private var selectedX = -1
@@ -38,7 +40,19 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     private fun loadChunk() {
         Thread {
             try {
-                val b=LevelDbBridge.open(worldDir); bridge=b
+                // The Map Viewer already has this world's LevelDB open through LevelDbSession.
+                // Opening the same DB a second time causes java.nio.channels.OverlappingFileLockException.
+                // Reuse the existing bridge whenever possible; only open a new bridge when this
+                // activity was launched without an active session (for example from a future standalone entry point).
+                val sessionBridge = LevelDbSession.bridge
+                val b = if (sessionBridge != null && LevelDbSession.worldDir?.canonicalFile == worldDir.canonicalFile) {
+                    ownsBridge = false
+                    sessionBridge
+                } else {
+                    ownsBridge = true
+                    LevelDbBridge.open(worldDir)
+                }
+                bridge = b
                 val subs=b.readSubchunks(chunkX,chunkZ,dimension)
                 for ((sy,bytes) in subs) {
                     original[sy]=bytes.copyOf()
@@ -158,6 +172,14 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         return super.onOptionsItemSelected(item)
     }
     override fun onBackPressed() { if(dirty) AlertDialog.Builder(this).setTitle("Unsaved changes").setMessage("Discard block edits?").setPositiveButton("Discard") {_,_-> super.onBackPressed()}.setNegativeButton("Cancel",null).show() else super.onBackPressed() }
+
+    override fun onDestroy() {
+        if (ownsBridge) {
+            try { bridge?.close() } catch (_: Exception) { }
+        }
+        bridge = null
+        super.onDestroy()
+    }
     companion object {
         const val EXTRA_WORLD_PATH="world_path"
         const val EXTRA_CHUNK_X="chunk_x"
