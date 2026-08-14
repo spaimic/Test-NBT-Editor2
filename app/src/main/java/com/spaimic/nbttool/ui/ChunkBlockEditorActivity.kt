@@ -87,6 +87,9 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     private fun showGrid() {
         val outer = HorizontalScrollView(this).apply { isFillViewport = false }
         val vertical = ScrollView(this)
+        val verticalContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
         val grid = GridLayout(this).apply {
             columnCount = 16
             rowCount = 16
@@ -107,11 +110,12 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
             }
             grid.addView(button)
         }
-        vertical.addView(grid)
-        vertical.addView(Button(this).apply {
+        verticalContent.addView(grid)
+        verticalContent.addView(Button(this).apply {
             text = "View Entire Chunk in 3D"
             setOnClickListener { open3DViewer(true) }
         })
+        vertical.addView(verticalContent)
         outer.addView(vertical)
         setContentView(outer)
     }
