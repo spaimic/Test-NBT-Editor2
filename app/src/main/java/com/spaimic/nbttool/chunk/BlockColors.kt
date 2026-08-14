@@ -455,6 +455,9 @@ object BlockColors {
         "chalkboard" to COLOR_BLACK, // Education Edition block, togglable in Bedrock
         // sulfur bricks: added in a Bedrock update after this app's block-name knowledge cutoff
         "sulfur_bricks" to TERRACOTTA_YELLOW, "sulfur_brick_stairs" to TERRACOTTA_YELLOW, "sulfur_brick_slab" to TERRACOTTA_YELLOW, "sulfur_brick_wall" to TERRACOTTA_YELLOW,
+        // Newer Minecraft block families: keep both explicit IDs and generic fallback coverage.
+        "sulfur" to rgb(214, 190, 55), "sulfur_block" to rgb(214, 190, 55),
+        "cinnabar" to rgb(168, 54, 54), "cinnabar_block" to rgb(168, 54, 54),
         // redstone components
         "redstone_wire" to FIRE, "repeater" to STONE, "unpowered_repeater" to STONE, "powered_repeater" to FIRE,
         "comparator" to STONE, "unpowered_comparator" to STONE, "powered_comparator" to FIRE,
@@ -604,6 +607,9 @@ object BlockColors {
             if (name == "${dye}_concrete") return concrete
         }
         if (name == "terracotta") return TERRACOTTA_ORANGE
+        // Future/new block IDs from recent Minecraft versions.
+        if (name.contains("cinnabar")) return rgb(168, 54, 54)
+        if (name.contains("sulfur")) return rgb(214, 190, 55)
 
         // wood species: <species>_<part>
         val woodSuffixes = listOf(

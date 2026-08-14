@@ -26,6 +26,8 @@ class Chunk3DViewerActivity : AppCompatActivity() {
     private var selectionEnabled = true
     private var hideUnselected = false
     private lateinit var view: Chunk3DView
+    private lateinit var infoText: TextView
+    private var openButton: Button? = null
 
     data class Pos(val x: Int, val y: Int, val z: Int)
 
@@ -70,15 +72,15 @@ class Chunk3DViewerActivity : AppCompatActivity() {
 
     private fun showViewer() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val info = TextView(this).apply {
-            text = if (selectionEnabled) "Chunk Coordinates: ($chunkX, $chunkZ)\nTap a BlockChunk to select it." else "Chunk Coordinates: ($chunkX, $chunkZ)\nBlockChunk Coordinates: ($selectedX, $selectedZ)\nExact Coordinates: (${chunkX * 16 + selectedX}, ${chunkZ * 16 + selectedZ})"
+        infoText = TextView(this).apply {
             setPadding(16, 10, 16, 10); textSize = 15f
+            updateInfoText()
         }
-        root.addView(info)
+        root.addView(infoText)
         val controls = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
         if (selectionEnabled) {
-            val open = Button(this).apply { text = "Open Selected Area"; isEnabled = selectedX in 0..15 && selectedZ in 0..15; setOnClickListener { openSelected() } }
-            controls.addView(open)
+            openButton = Button(this).apply { text = "Open Selected Area"; isEnabled = selectedX in 0..15 && selectedZ in 0..15; setOnClickListener { openSelected() } }
+            controls.addView(openButton)
         }
         val hide = CheckBox(this).apply {
             text = "Hide unselected areas"; isEnabled = selectedX in 0..15 && selectedZ in 0..15; isChecked = hideUnselected
@@ -91,6 +93,17 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         view = Chunk3DView()
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
+    }
+
+    private fun updateInfoText() {
+        if (!::infoText.isInitialized) return
+        infoText.text = if (selectionEnabled && selectedX !in 0..15) {
+            "Chunk Coordinates: ($chunkX, $chunkZ)\nTap a BlockChunk to select it."
+        } else {
+            val exactX = chunkX * 16 + selectedX
+            val exactZ = chunkZ * 16 + selectedZ
+            "Chunk Coordinates: ($chunkX, $chunkZ)\nBlockChunk Coordinates: ($selectedX, $selectedZ)\nExact Coordinates: ($exactX, $exactZ)"
+        }
     }
 
     private fun openSelected() {
@@ -117,6 +130,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         private var lastY = 0f
         private var lastDist = 0f
         private var mode = 0
+        private var moved = false
 
         init { setBackgroundColor(Color.rgb(18, 18, 18)); isFocusable = true }
 
@@ -124,7 +138,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
 
         override fun onTouchEvent(e: MotionEvent): Boolean {
             when (e.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { lastX = e.x; lastY = e.y; mode = 1; return true }
+                MotionEvent.ACTION_DOWN -> { lastX = e.x; lastY = e.y; moved = false; mode = 1; return true }
                 MotionEvent.ACTION_POINTER_DOWN -> { lastDist = distance(e); mode = 2; return true }
                 MotionEvent.ACTION_MOVE -> {
                     if (mode == 2 && e.pointerCount >= 2) {
@@ -132,11 +146,12 @@ class Chunk3DViewerActivity : AppCompatActivity() {
                     }
                     if (mode == 1) {
                         val dx = e.x - lastX; val dy = e.y - lastY
-                        rotY += dx * 0.012f; rotX = (rotX + dy * 0.008f).coerceIn(-1.45f, 1.45f)
+                        if (abs(dx) > 3f || abs(dy) > 3f) moved = true
+                        rotY += dx * 0.009f; rotX = (rotX + dy * 0.006f).coerceIn(-1.45f, 1.45f)
                         lastX = e.x; lastY = e.y; invalidate(); return true
                     }
                 }
-                MotionEvent.ACTION_UP -> { if (mode == 1 && selectionEnabled) selectAt(e.x, e.y); mode = 0; return true }
+                MotionEvent.ACTION_UP -> { if (mode == 1 && selectionEnabled && !moved) selectAt(e.x, e.y); mode = 0; return true }
                 MotionEvent.ACTION_POINTER_UP -> { mode = 1; return true }
             }
             return true
@@ -159,30 +174,41 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         }
 
         private fun selectAt(px: Float, py: Float) {
-            var best: Pos? = null; var bestD = Float.MAX_VALUE
+            var bestX = -1
+            var bestZ = -1
+            var bestD = Float.MAX_VALUE
             for (z in 0..15) for (x in 0..15) {
-                val top = blocks.keys.filter { it.x == x && it.z == z }.maxOfOrNull { it.y } ?: continue
-                val p = project(x - 7.5f, top - 80f, z - 7.5f)
+                val top = blocks.keys.asSequence().filter { it.x == x && it.z == z }.maxOfOrNull { it.y } ?: continue
+                val p = project(x - 7.5f, top - 64f, z - 7.5f)
                 val d = hypot(px - p.first, py - p.second)
-                if (d < bestD) { bestD = d; best = Pos(x, top, z) }
+                if (d < bestD) { bestD = d; bestX = x; bestZ = z }
             }
-            if (best != null && bestD < max(80f, min(width, height) * 0.15f)) {
-                selectedX = best.x; selectedZ = best.z
+            if (bestX in 0..15 && bestZ in 0..15 && bestD < max(55f, min(width, height) * 0.10f)) {
+                selectedX = bestX; selectedZ = bestZ
+                updateInfoText()
+                openButton?.isEnabled = true
                 invalidate()
-                showViewer()
             }
         }
 
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
             if (blocks.isEmpty()) { canvas.drawText("No non-air blocks in this chunk", 20f, 40f, paint); return }
-            val visible = blocks.entries.filter { (p, _) -> !hideUnselected || p.x == selectedX && p.z == selectedZ }.map { it.toPair() }
-            val projected = ArrayList<Pair<Pos, FloatArray>>()
-            val neighbors = HashSet<Pos>(blocks.keys)
-            for ((p, name) in visible) {
-                val enclosed = neighbors.contains(Pos(p.x+1,p.y,p.z)) && neighbors.contains(Pos(p.x-1,p.y,p.z)) && neighbors.contains(Pos(p.x,p.y+1,p.z)) && neighbors.contains(Pos(p.x,p.y-1,p.z)) && neighbors.contains(Pos(p.x,p.y,p.z+1)) && neighbors.contains(Pos(p.x,p.y,p.z-1))
-                if (enclosed && !hideUnselected) continue
-                val a = project(p.x-8f,p.y-64f,p.z-8f); projected.add(p to floatArrayOf(a.first,a.second,a.third))
+            val visible = if (hideUnselected && selectedX in 0..15 && selectedZ in 0..15) {
+                blocks.entries.filter { it.key.x == selectedX && it.key.z == selectedZ }.map { it.toPair() }
+            } else {
+                val neighbors = HashSet<Pos>(blocks.keys)
+                blocks.entries.filter { (p, _) ->
+                    p.x == 0 || p.x == 15 || p.z == 0 || p.z == 15 ||
+                    !neighbors.contains(Pos(p.x + 1, p.y, p.z)) || !neighbors.contains(Pos(p.x - 1, p.y, p.z)) ||
+                    !neighbors.contains(Pos(p.x, p.y + 1, p.z)) || !neighbors.contains(Pos(p.x, p.y - 1, p.z)) ||
+                    !neighbors.contains(Pos(p.x, p.y, p.z + 1)) || !neighbors.contains(Pos(p.x, p.y, p.z - 1))
+                }.map { it.toPair() }
+            }
+            val projected = ArrayList<Pair<Pos, FloatArray>>(visible.size)
+            for ((p, _) in visible) {
+                val a = project(p.x-8f,p.y-64f,p.z-8f)
+                projected.add(p to floatArrayOf(a.first,a.second,a.third))
             }
             projected.sortBy { it.second[2] }
             for ((p, _) in projected) drawCube(canvas, p)
