@@ -11,6 +11,7 @@ import android.os.Environment
 import android.view.Gravity
 import android.widget.*
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import com.spaimic.nbttool.export.MapSelectionExporter
 import com.spaimic.nbttool.selection.WorldSelection
 import androidx.appcompat.app.AppCompatActivity
@@ -30,15 +31,6 @@ import java.io.File
  * tap-to-see-coordinates. The hamburger menu (top-left) jumps straight to the
  * things you'd normally want to edit, without hunting through the full key list.
  */
-
-private fun safeSelectionPreviewCrop(source: Bitmap, x: Int, y: Int, width: Int, height: Int): Bitmap {
-    val sx = x.coerceIn(0, source.width - 1)
-    val sy = y.coerceIn(0, source.height - 1)
-    val sw = width.coerceIn(1, source.width - sx)
-    val sh = height.coerceIn(1, source.height - sy)
-    return safeSelectionPreviewCrop(source, sx, sy, sw, sh)
-}
-
 class MapViewerActivity : AppCompatActivity() {
 
     private lateinit var worldDir: File
@@ -621,11 +613,70 @@ class MapViewerActivity : AppCompatActivity() {
             Toast.makeText(this, "Chunk clipboard is empty.", Toast.LENGTH_SHORT).show()
             return
         }
-        val labels = entries.map { "${if (it.dimension == 1) "Nether" else if (it.dimension == 2) "The End" else "Overworld"} (${it.chunkX}, ${it.chunkZ}) — ${it.records.size} records" }.toTypedArray()
-        AlertDialog.Builder(this)
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(16, 8, 16, 8)
+        }
+        val scroll = ScrollView(this).apply {
+            addView(content)
+        }
+
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Choose chunk to paste")
-            .setItems(labels) { _, which -> promptPasteChunk(targetX, targetZ, entries[which]) }
-            .show()
+            .setView(scroll)
+            .setNegativeButton("Cancel", null)
+            .create()
+
+        entries.forEach { entry ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(8, 12, 8, 12)
+                isClickable = true
+                isFocusable = true
+            }
+
+            val preview = ImageView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(112, 112).apply {
+                    rightMargin = 18
+                }
+                scaleType = ImageView.ScaleType.FIT_XY
+                val bytes = entry.previewPng
+                if (bytes != null && bytes.isNotEmpty()) {
+                    setImageBitmap(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                } else {
+                    setImageResource(R.drawable.question_mark)
+                }
+            }
+            row.addView(preview)
+
+            val text = TextView(this).apply {
+                text = "${if (entry.dimension == 1) "Nether" else if (entry.dimension == 2) "The End" else "Overworld"}\n" +
+                    "Chunk (${entry.chunkX}, ${entry.chunkZ})\n" +
+                    "${entry.records.size} LevelDB records"
+                textSize = 16f
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f
+                )
+            }
+            row.addView(text)
+
+            row.setOnClickListener {
+                dialog.dismiss()
+                promptPasteChunk(targetX, targetZ, entry)
+            }
+            content.addView(row)
+            content.addView(View(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1
+                )
+                setBackgroundColor(0x33000000)
+            })
+        }
+
+        dialog.show()
     }
 
     private fun promptPasteChunk(targetX: Int, targetZ: Int, clipboard: ChunkClipboard.Entry) {

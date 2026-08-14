@@ -38,18 +38,31 @@ object MapSelectionExporter {
         selection: WorldSelection,
         dimension: Int,
         requestedPixelsPerBlock: Int,
-        maxPixels: Int=768
+        maxPixels: Int = 768
     ): Bitmap {
-        val ppb=minOf(requestedPixelsPerBlock.coerceIn(1,24), maxOf(1,maxPixels/maxOf(selection.width,selection.height)))
-        val w=selection.width*ppb
-        val h=selection.height*ppb
-        val bitmap=Bitmap.createBitmap(w,h,Bitmap.Config.ARGB_8888)
-        val colors=IntArray(w)
-        var outY=0
-        renderRows(bridge,selection,dimension,ppb){ row ->
-            for (x in row.indices) colors[x]=row[x]
-            repeat(ppb) {
-                bitmap.setPixels(colors,0,w,0,outY,w,1)
+        val ppb = minOf(
+            requestedPixelsPerBlock.coerceIn(1, 24),
+            maxOf(1, maxPixels / maxOf(selection.width, selection.height))
+        )
+        val w = selection.width * ppb
+        val h = selection.height * ppb
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val colors = IntArray(w)
+        var outY = 0
+
+        renderRows(bridge, selection, dimension, ppb) { row ->
+            // renderRows produces exactly ppb output rows for each world Z row.
+            // Keep the preview writer defensive: a malformed/partial chunk must
+            // never make Bitmap.setPixels address a row below/above the bitmap.
+            if (outY >= h) return@renderRows
+            val copyWidth = minOf(w, row.size)
+            if (copyWidth <= 0) return@renderRows
+            java.util.Arrays.fill(colors, 0, w, BlockColors.fallbackUnloaded)
+            System.arraycopy(row, 0, colors, 0, copyWidth)
+            val rowsLeft = h - outY
+            val rowsToWrite = minOf(ppb, rowsLeft)
+            repeat(rowsToWrite) {
+                bitmap.setPixels(colors, 0, w, 0, outY, w, 1)
                 outY++
             }
         }
