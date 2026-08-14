@@ -31,6 +31,23 @@ object SubChunkEditor {
         return encode(decoded)
     }
 
+
+
+    fun clearColumnsToAir(bytes: ByteArray, minX: Int, maxX: Int, minZ: Int, maxZ: Int): ByteArray {
+        require(minX in 0..15 && maxX in 0..15 && minX <= maxX)
+        require(minZ in 0..15 && maxZ in 0..15 && minZ <= maxZ)
+        val decoded = decode(bytes)
+        for (layer in decoded.layers) {
+            val air = findOrAddPalette(layer.palette, "minecraft:air")
+            for (x in minX..maxX) for (z in minZ..maxZ) {
+                for (y in 0 until 16) {
+                    val linear = (x shl 8) or (z shl 4) or y
+                    layer.indices[linear] = air
+                }
+            }
+        }
+        return encode(decoded)
+    }
     private fun findOrAddPalette(palette: MutableList<NbtTag.Compound>, name: String): Int {
         val existing = palette.indexOfFirst {
             (it.entries["name"] as? NbtTag.Str)?.value == name

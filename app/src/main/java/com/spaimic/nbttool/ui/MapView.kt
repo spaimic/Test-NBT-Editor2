@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import com.spaimic.nbttool.selection.WorldSelection
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -33,6 +34,30 @@ class MapView(context: Context) : View(context) {
 
     var onVisibleChunksChanged: ((Set<Pair<Int, Int>>) -> Unit)? = null
     var onTap: ((worldX: Int, worldY: Int, worldZ: Int) -> Unit)? = null
+    var selection: WorldSelection? = null
+        private set
+    var onSelectionChanged: ((WorldSelection?) -> Unit)? = null
+    private var selectionHandle = 0 // 0 none, 1 top, 2 bottom, 3 left, 4 right
+    private var selectionDragStartX = 0
+    private var selectionDragStartZ = 0
+    private val selectionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(55, 40, 140, 255)
+        style = Paint.Style.FILL
+    }
+    private val selectionBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(40, 140, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+    }
+    private val selectionHandlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+    private val selectionHandleOutlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.rgb(30, 100, 220)
+        style = Paint.Style.STROKE
+        strokeWidth = 5f
+    }
 
     var preferredCenterBlock: Pair<Int, Int>? = null
         set(value) { field = value; centered = false; requestVisible() }
@@ -496,6 +521,26 @@ class MapView(context: Context) : View(context) {
             canvas.drawBitmap(steveBitmap, null, RectF(sx - size / 2, sz - size, sx + size / 2, sz), null)
         }
 
+        selection?.let { s ->
+            val left = screenX(s.minX.toFloat())
+            val top = screenZ(s.minZ.toFloat())
+            val right = screenX((s.maxX + 1).toFloat())
+            val bottom = screenZ((s.maxZ + 1).toFloat())
+            canvas.drawRect(left, top, right, bottom, selectionPaint)
+            canvas.drawRect(left, top, right, bottom, selectionBorderPaint)
+            val r = 22f
+            val points = arrayOf(
+                left + (right-left)/2f to top,
+                left + (right-left)/2f to bottom,
+                left to top + (bottom-top)/2f,
+                right to top + (bottom-top)/2f
+            )
+            for ((x,y) in points) {
+                canvas.drawCircle(x,y,r,selectionHandlePaint)
+                canvas.drawCircle(x,y,r,selectionHandleOutlinePaint)
+            }
+        }
+
         // A lightweight coordinate readout is useful even before tapping.
         val cx = floor(cameraX).toInt()
         val cz = floor(cameraZ).toInt()
@@ -506,64 +551,109 @@ class MapView(context: Context) : View(context) {
         scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                downX = event.x; downY = event.y
-                lastX = event.x; lastY = event.y
-                dragging = false
-                pinching = false
-                hadMultiTouch = false
+                downX=event.x; downY=event.y
+                lastX=event.x; lastY=event.y
+                dragging=false; pinching=false; hadMultiTouch=false
+                selectionHandle = if (selection != null) hitSelectionHandle(event.x,event.y) else 0
+                if (selectionHandle != 0) {
+                    val s=selection!!
+                    selectionDragStartX = when(selectionHandle) {
+                        3,4 -> if (selectionHandle==3) s.maxX else s.minX
+                        else -> s.minX
+                    }
+                    selectionDragStartZ = when(selectionHandle) {
+                        1,2 -> if (selectionHandle==1) s.maxZ else s.minZ
+                        else -> s.minZ
+                    }
+                }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                hadMultiTouch = true
-                pinching = true
-                dragging = false
-                ignoreNextSinglePointerMove = true
+                hadMultiTouch=true; pinching=true; dragging=false
+                selectionHandle=0
+                ignoreNextSinglePointerMove=true
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
-                // Never pan with a two-finger gesture. Build 112 also ignores the
-                // first one-finger MOVE after a pinch so the surviving finger's
-                // coordinate jump cannot move the camera after zooming stops.
-                if (!pinching && !scaleDetector.isInProgress && event.pointerCount == 1) {
-                    if (ignoreNextSinglePointerMove) {
-                        lastX = event.x
-                        lastY = event.y
-                        ignoreNextSinglePointerMove = false
-                        return true
+                if (selectionHandle != 0 && event.pointerCount==1 && !scaleDetector.isInProgress) {
+                    val wx=floor(cameraX+(event.x-width/2f)/zoom).toInt()
+                    val wz=floor(cameraZ+(event.y-height/2f)/zoom).toInt()
+                    val s=selection!!
+                    selection = when(selectionHandle) {
+                        1 -> { // top: move minZ, keep maxZ fixed
+                            val newMin=minOf(s.maxZ, maxOf(s.maxZ-WorldSelection.MAX_SIZE+1, wz))
+                            WorldSelection(s.minX,newMin,s.maxX,s.maxZ)
+                        }
+                        2 -> { // bottom: move maxZ, keep minZ fixed
+                            val newMax=maxOf(s.minZ, minOf(s.minZ+WorldSelection.MAX_SIZE-1, wz))
+                            WorldSelection(s.minX,s.minZ,s.maxX,newMax)
+                        }
+                        3 -> { // left: move minX, keep maxX fixed
+                            val newMin=minOf(s.maxX, maxOf(s.maxX-WorldSelection.MAX_SIZE+1, wx))
+                            WorldSelection(newMin,s.minZ,s.maxX,s.maxZ)
+                        }
+                        4 -> { // right: move maxX, keep minX fixed
+                            val newMax=maxOf(s.minX, minOf(s.minX+WorldSelection.MAX_SIZE-1, wx))
+                            WorldSelection(s.minX,s.minZ,newMax,s.maxZ)
+                        }
+                        else -> s
                     }
-                    val dx = event.x - lastX
-                    val dz = event.y - lastY
-                    if (kotlin.math.abs(event.x - downX) > 12 || kotlin.math.abs(event.y - downY) > 12) dragging = true
-                    cameraX -= dx / zoom
-                    cameraZ -= dz / zoom
-                    lastX = event.x; lastY = event.y
-                    requestVisible()
+                    onSelectionChanged?.invoke(selection)
+                    invalidate()
+                    return true
+                }
+                if (!pinching && !scaleDetector.isInProgress && event.pointerCount==1) {
+                    if(ignoreNextSinglePointerMove){lastX=event.x;lastY=event.y;ignoreNextSinglePointerMove=false;return true}
+                    val dx=event.x-lastX; val dz=event.y-lastY
+                    if(kotlin.math.abs(event.x-downX)>12 || kotlin.math.abs(event.y-downY)>12) dragging=true
+                    cameraX-=dx/zoom; cameraZ-=dz/zoom
+                    lastX=event.x;lastY=event.y;requestVisible()
                 }
                 return true
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                hadMultiTouch = true
-                pinching = true
-                ignoreNextSinglePointerMove = true
-                // Do not use the ACTION_POINTER_UP coordinate as a pan delta.
-                return true
+                hadMultiTouch=true; pinching=true; ignoreNextSinglePointerMove=true; selectionHandle=0; return true
             }
             MotionEvent.ACTION_UP -> {
-                val wasGesture = hadMultiTouch || pinching
-                pinching = false
-                ignoreNextSinglePointerMove = false
-                if (!wasGesture && !dragging) handleTap(event.x, event.y)
-                hadMultiTouch = false
+                val wasGesture=hadMultiTouch||pinching
+                pinching=false; ignoreNextSinglePointerMove=false
+                if(selectionHandle!=0){ selectionHandle=0; return true }
+                if(!wasGesture && !dragging) handleTap(event.x,event.y)
+                hadMultiTouch=false
                 return true
             }
-            MotionEvent.ACTION_CANCEL -> {
-                pinching = false
-                hadMultiTouch = false
-                ignoreNextSinglePointerMove = false
-                return true
-            }
+            MotionEvent.ACTION_CANCEL -> { selectionHandle=0;pinching=false;hadMultiTouch=false;ignoreNextSinglePointerMove=false;return true }
         }
         return true
+    }
+
+    private fun hitSelectionHandle(x:Float,y:Float):Int {
+        val s=selection ?: return 0
+        val left=screenX(s.minX.toFloat()); val top=screenZ(s.minZ.toFloat())
+        val right=screenX((s.maxX+1).toFloat()); val bottom=screenZ((s.maxZ+1).toFloat())
+        val pts=arrayOf(
+            left+(right-left)/2f to top, left+(right-left)/2f to bottom,
+            left to top+(bottom-top)/2f, right to top+(bottom-top)/2f
+        )
+        val r=36f
+        for(i in pts.indices) {
+            val dx=x-pts[i].first; val dy=y-pts[i].second
+            if(dx*dx+dy*dy<=r*r) return i+1
+        }
+        return 0
+    }
+
+    fun startSelection(worldX:Int, worldZ:Int) {
+        if(selection!=null) return
+        selection=WorldSelection.centeredAt(worldX,worldZ)
+        onSelectionChanged?.invoke(selection)
+        invalidate()
+    }
+
+    fun clearSelection() {
+        selection=null
+        onSelectionChanged?.invoke(null)
+        invalidate()
     }
 
     fun currentCameraBlockX(): Int = floor(cameraX).toInt()

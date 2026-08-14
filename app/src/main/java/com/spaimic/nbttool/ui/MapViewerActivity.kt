@@ -7,8 +7,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.os.Environment
 import android.view.Gravity
 import android.widget.*
+import android.graphics.Bitmap
+import com.spaimic.nbttool.export.MapSelectionExporter
+import com.spaimic.nbttool.selection.WorldSelection
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.chunk.ChunkScanner
 import com.spaimic.nbttool.chunk.ChunkClipboard
@@ -110,6 +114,10 @@ class MapViewerActivity : AppCompatActivity() {
         mapView.onTap = { x, y, z ->
             coordText.text = "X: $x\nY: $y\nZ: $z"
             showChunkDialog(x, z)
+        }
+        mapView.onSelectionChanged = { s ->
+            coordText.text = if (s == null) "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
+                else "${dimensionName()} • Selection ${s.width}×${s.height} • X ${s.minX}..${s.maxX} • Z ${s.minZ}..${s.maxZ}"
         }
 
         loadAndScan()
@@ -301,6 +309,7 @@ class MapViewerActivity : AppCompatActivity() {
         val clipboardEntries = ChunkClipboard.list(this)
         val options = arrayListOf(
             "Chunk Information",
+            "🟦 Start Selection",
             "💎 Show All Diamond Coordinates",
         )
         if (selectedDbDimension() == 1) options.add("🏺 Show All Ancient Debris Coordinates")
@@ -312,11 +321,19 @@ class MapViewerActivity : AppCompatActivity() {
             "Delete Chunk",
             "Chunk Block Editor"
         ))
+        if (mapView.selection != null) {
+            options.addAll(listOf(
+                "📸 Selection: Take Picture of Map",
+                "🗑️ Selection: Delete Area",
+                "❌ Clear Selection"
+            ))
+        }
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
             .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
                     "Chunk Information" -> showChunkInformation(chunkX, chunkZ)
+                    "🟦 Start Selection" -> startSelection(worldX, worldZ)
                     "💎 Show All Diamond Coordinates" -> showDiamondCoordinates(chunkX, chunkZ)
                     "🏺 Show All Ancient Debris Coordinates" -> showAncientDebrisCoordinates(chunkX, chunkZ)
                     "Show Entities" -> {
@@ -344,8 +361,116 @@ class MapViewerActivity : AppCompatActivity() {
                         i.putExtra(ChunkBlockEditorActivity.EXTRA_DIMENSION, selectedDbDimension())
                         startActivity(i)
                     }
+                    "📸 Selection: Take Picture of Map" -> promptSelectionPicture()
+                    "🗑️ Selection: Delete Area" -> promptDeleteSelection()
+                    "❌ Clear Selection" -> mapView.clearSelection()
                 }
             }.show()
+    }
+
+    private fun startSelection(worldX: Int, worldZ: Int) {
+        if (mapView.selection != null) {
+            Toast.makeText(this, "A selection already exists. Clear it before starting another.", Toast.LENGTH_LONG).show()
+            return
+        }
+        mapView.startSelection(worldX, worldZ)
+        Toast.makeText(this, "64×64 selection started at ($worldX, $worldZ). Drag the four handles to resize.", Toast.LENGTH_LONG).show()
+    }
+
+    private fun promptSelectionPicture() {
+        val s = mapView.selection ?: return
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText("12")
+            hint = "Pixels per block (1–24)"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("📸 Take Picture of Map")
+            .setMessage("Selection: ${s.width} × ${s.height} blocks\nChoose pixels per block (1–24).")
+            .setView(input)
+            .setPositiveButton("Preview") { _, _ ->
+                val ppb = input.text.toString().toIntOrNull()?.coerceIn(1,24) ?: 12
+                previewSelectionPicture(s, ppb)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun previewSelectionPicture(s: WorldSelection, ppb: Int) {
+        val bridge = LevelDbSession.bridge ?: run {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("Rendering preview…").setMessage("Please wait.").setView(ProgressBar(this)).setNegativeButton("Cancel", null).create()
+        dialog.show()
+        Thread {
+            try {
+                val preview = MapSelectionExporter.preview(bridge,s,selectedDbDimension(),ppb)
+                runOnUiThread {
+                    dialog.dismiss()
+                    val image = ImageView(this).apply {
+                        setImageBitmap(preview)
+                        adjustViewBounds=true
+                        scaleType=ImageView.ScaleType.FIT_CENTER
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("Map Picture Preview")
+                        .setMessage("${s.width} × ${s.height} blocks • ${ppb} px/block")
+                        .setView(image)
+                        .setPositiveButton("Save PNG") { _, _ -> saveSelectionPicture(s,ppb) }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { dialog.dismiss(); showErrorDialog(this,"Failed to render selection preview",e) }
+            }
+        }.start()
+    }
+
+    private fun saveSelectionPicture(s: WorldSelection, ppb: Int) {
+        val bridge = LevelDbSession.bridge ?: return
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!dir.exists()) dir.mkdirs()
+        val file = File(dir, "NBTTool_Map_${s.minX}_${s.minZ}_${s.maxX}_${s.maxZ}_${ppb}px.png")
+        Thread {
+            try {
+                runOnUiThread { Toast.makeText(this,"Saving map picture…",Toast.LENGTH_LONG).show() }
+                MapSelectionExporter.export(bridge,s,selectedDbDimension(),ppb,file) { }
+                runOnUiThread { Toast.makeText(this,"Saved to ${file.absolutePath}",Toast.LENGTH_LONG).show() }
+            } catch (e: Throwable) {
+                runOnUiThread { showErrorDialog(this,"Failed to save map picture",e) }
+            }
+        }.start()
+    }
+
+    private fun promptDeleteSelection() {
+        val s=mapView.selection ?: return
+        val input=EditText(this).apply { hint="Type DELETE to confirm" }
+        AlertDialog.Builder(this)
+            .setTitle("Delete selected area?")
+            .setMessage("Clear every block in the selected ${s.width} × ${s.height} area to air. Fully covered chunks also have their entities and block entities removed, just like Delete Chunk. This cannot be undone.")
+            .setView(input)
+            .setPositiveButton("Delete") { _, _ ->
+                if(input.text.toString()=="DELETE") deleteSelection(s)
+                else Toast.makeText(this,"Didn't match DELETE — nothing was changed.",Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Cancel",null).show()
+    }
+
+    private fun deleteSelection(s: WorldSelection) {
+        val bridge=LevelDbSession.bridge ?: return
+        Thread {
+            try {
+                com.spaimic.nbttool.chunk.AreaDeleter.clearSelection(bridge,s,selectedDbDimension())
+                runOnUiThread {
+                    Toast.makeText(this,"Selected area cleared to air.",Toast.LENGTH_LONG).show()
+                    mapView.clearSelection()
+                    rescanMap()
+                }
+            } catch(e:Throwable) {
+                runOnUiThread { showErrorDialog(this,"Failed to delete selected area",e) }
+            }
+        }.start()
     }
 
     private fun showDiamondCoordinates(chunkX: Int, chunkZ: Int) {
