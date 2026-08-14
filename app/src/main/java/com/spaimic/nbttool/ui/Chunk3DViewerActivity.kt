@@ -163,12 +163,12 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             val color = BlockColors.colorForDimension(name, dimension)
             // +X, -X, +Y, -Y, +Z, -Z. u/v coordinates are chosen so each face
             // lies on a fixed plane and can be greedily merged in integer cells.
-            if (airReachable(reachable, ix(p.x + 1, p.y, p.z), p.x + 1, p.y, p.z, minY)) addCell(0, p.x + 1, p.y, p.z, color)
-            if (airReachable(reachable, ix(p.x - 1, p.y, p.z), p.x - 1, p.y, p.z, minY)) addCell(1, p.x, p.y, p.z, color)
-            if (airReachable(reachable, ix(p.x, p.y + 1, p.z), p.x, p.y + 1, p.z, minY)) addCell(2, p.y + 1, p.x, p.z, color)
-            if (airReachable(reachable, ix(p.x, p.y - 1, p.z), p.x, p.y - 1, p.z, minY)) addCell(3, p.y, p.x, p.z, color)
-            if (airReachable(reachable, ix(p.x, p.y, p.z + 1), p.x, p.y, p.z + 1, minY)) addCell(4, p.z + 1, p.x, p.y, color)
-            if (airReachable(reachable, ix(p.x, p.y, p.z - 1), p.x, p.y, p.z - 1, minY)) addCell(5, p.z, p.x, p.y, color)
+            if (airReachable(reachable, ix(p.x + 1, p.y, p.z), p.x + 1, p.y, p.z, minY, maxY)) addCell(0, p.x + 1, p.y, p.z, color)
+            if (airReachable(reachable, ix(p.x - 1, p.y, p.z), p.x - 1, p.y, p.z, minY, maxY)) addCell(1, p.x, p.y, p.z, color)
+            if (airReachable(reachable, ix(p.x, p.y + 1, p.z), p.x, p.y + 1, p.z, minY, maxY)) addCell(2, p.y + 1, p.x, p.z, color)
+            if (airReachable(reachable, ix(p.x, p.y - 1, p.z), p.x, p.y - 1, p.z, minY, maxY)) addCell(3, p.y, p.x, p.z, color)
+            if (airReachable(reachable, ix(p.x, p.y, p.z + 1), p.x, p.y, p.z + 1, minY, maxY)) addCell(4, p.z + 1, p.x, p.y, color)
+            if (airReachable(reachable, ix(p.x, p.y, p.z - 1), p.x, p.y, p.z - 1, minY, maxY)) addCell(5, p.z, p.x, p.y, color)
         }
 
         val result = ArrayList<MeshQuad>()
@@ -195,8 +195,8 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         return result
     }
 
-    private fun airReachable(reachable: BooleanArray, index: Int, x: Int, y: Int, z: Int, minY: Int): Boolean {
-        if (x !in -1..16 || z !in -1..16 || y < minY - 1 || y > blocks.keys.maxOf { it.y } + 1) return true
+    private fun airReachable(reachable: BooleanArray, index: Int, x: Int, y: Int, z: Int, minY: Int, maxY: Int): Boolean {
+        if (x !in -1..16 || z !in -1..16 || y < minY - 1 || y > maxY + 1) return true
         return reachable[index]
     }
 
