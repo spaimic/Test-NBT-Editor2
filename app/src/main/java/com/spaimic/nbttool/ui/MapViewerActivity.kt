@@ -654,6 +654,7 @@ class MapViewerActivity : AppCompatActivity() {
             "The End NBT Data",
             "NBT Tag Clipboard",
             "Chunk Clipboard",
+            "Chunk Block Editor",
             "Open LevelDB Key by Name",
             "Advanced: Browse Extra DB Keys"
         )
@@ -680,8 +681,13 @@ class MapViewerActivity : AppCompatActivity() {
                     10 -> showExactKey("The End NBT Data", "TheEnd")
                     11 -> startActivity(Intent(this, ClipboardActivity::class.java))
                     12 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
-                    13 -> promptOpenLevelDbKeyByName()
-                    14 -> openAllKeysBrowser()
+                    13 -> {
+                        val intent = Intent(this, ChunkBlockEditorActivity::class.java)
+                        intent.putExtra(ChunkBlockEditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
+                        startActivity(intent)
+                    }
+                    14 -> promptOpenLevelDbKeyByName()
+                    15 -> openAllKeysBrowser()
                 }
             }
             .show()

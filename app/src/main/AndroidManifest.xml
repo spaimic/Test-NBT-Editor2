@@ -44,6 +44,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.ChunkBlockEditorActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.ClipboardActivity"
             android:exported="false" />
 
