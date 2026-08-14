@@ -276,6 +276,13 @@ class Chunk3DViewerActivity : AppCompatActivity() {
 
     private fun openSelected() {
         if (selectedX !in 0..15 || selectedZ !in 0..15) return
+        // Close a viewer-owned LevelDB handle before opening the block editor.
+        // Otherwise the editor can collide with the still-held file lock.
+        if (ownsBridge) {
+            try { bridge?.close() } catch (_: Exception) {}
+            bridge = null
+            ownsBridge = false
+        }
         val i = Intent(this, ChunkBlockEditorActivity::class.java)
         i.putExtra(ChunkBlockEditorActivity.EXTRA_WORLD_PATH, worldDir.absolutePath)
         i.putExtra(ChunkBlockEditorActivity.EXTRA_CHUNK_X, chunkX)
@@ -358,7 +365,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
                             val dx = x - lastX
                             val dy = y - lastY
                             if (abs(dx) > 2f || abs(dy) > 2f) moved = true
-                            rotY += dx * 0.009f
+                            rotY -= dx * 0.009f
                             rotX = (rotX + dy * 0.006f).coerceIn(-1.45f, 1.45f)
                             lastX = x
                             lastY = y
