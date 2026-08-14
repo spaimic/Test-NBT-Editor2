@@ -147,7 +147,7 @@ object MapImageImporter {
         session.markDirty(mapKey)
         session.markDirty(playerKey)
 
-        return Result(mapId, slot, MAP_SIZE, MAP_SIZE)
+        return Result(mapId, free.slot, MAP_SIZE, MAP_SIZE)
     }
 
     private fun parseMapId(name: String): Long? =
