@@ -1,4 +1,7 @@
 package com.spaimic.nbttool.ui
+import android.view.View
+import android.view.ViewGroup
+import com.spaimic.nbttool.R
 
 import android.app.AlertDialog
 import android.content.ClipData
