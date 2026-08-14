@@ -174,15 +174,37 @@ object MapImageImporter {
         return player.entries.values.asSequence().mapNotNull(::search).firstOrNull()
     }
 
+    /**
+     * Build 128: determine occupied inventory slots using both Slot and Name.
+     *
+     * Bedrock's Inventory list is sparse: an absent entry does not mean the
+     * slot is occupied, and the list itself should never be assumed to contain
+     * 36 entries. The Slot byte identifies the physical slot while Name is the
+     * authoritative indication that an entry actually contains an item.
+     *
+     * Missing/empty Name => the slot is treated as empty.
+     * Non-empty Name => the slot is occupied.
+     */
     private fun findFreeInventorySlot(inventory: NbtTag.ListTag): Int? {
-        val used = HashSet<Int>()
+        val occupied = BooleanArray(36)
+
         for (item in inventory.items) {
-            if (item is NbtTag.Compound) {
-                val slot = (item.entries["Slot"] as? NbtTag.Byte)?.value?.toInt()
-                if (slot != null && slot in 0..35) used.add(slot)
+            val compound = item as? NbtTag.Compound ?: continue
+
+            val slot = (compound.entries["Slot"] as? NbtTag.Byte)?.value?.toInt()
+                ?: continue
+
+            if (slot !in 0..35) continue
+
+            val name = (compound.entries["Name"] as? NbtTag.Str)?.value ?: ""
+
+            // Empty/missing Name means this entry does not represent an item.
+            if (name.isNotEmpty()) {
+                occupied[slot] = true
             }
         }
-        return (0..35).firstOrNull { it !in used }
+
+        return (0..35).firstOrNull { !occupied[it] }
     }
 
     private fun setMapId(root: NbtTag.Compound, mapId: Long) {
