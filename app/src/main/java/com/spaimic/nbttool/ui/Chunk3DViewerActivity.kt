@@ -288,6 +288,9 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         i.putExtra(ChunkBlockEditorActivity.EXTRA_CHUNK_X, chunkX)
         i.putExtra(ChunkBlockEditorActivity.EXTRA_CHUNK_Z, chunkZ)
         i.putExtra(ChunkBlockEditorActivity.EXTRA_DIMENSION, dimension)
+        // Pass the exact selected BlockChunk so the editor opens it immediately.
+        i.putExtra(ChunkBlockEditorActivity.EXTRA_SELECTED_X, selectedX)
+        i.putExtra(ChunkBlockEditorActivity.EXTRA_SELECTED_Z, selectedZ)
         startActivity(i)
         finish()
     }

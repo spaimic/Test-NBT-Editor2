@@ -30,6 +30,9 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
     private var selectedX = -1
     private var selectedZ = -1
     private var selectedY = Int.MIN_VALUE
+
+    private var initialSelectedX = -1
+    private var initialSelectedZ = -1
     private var dirty = false
     private var hideAir = false
     private var columnScrollY = 0
@@ -49,6 +52,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         chunkX = intent.getIntExtra(EXTRA_CHUNK_X, 0)
         chunkZ = intent.getIntExtra(EXTRA_CHUNK_Z, 0)
         dimension = intent.getIntExtra(EXTRA_DIMENSION, 0)
+        initialSelectedX = intent.getIntExtra(EXTRA_SELECTED_X, -1)
+        initialSelectedZ = intent.getIntExtra(EXTRA_SELECTED_Z, -1)
         loadChunkMetadata()
     }
 
@@ -77,7 +82,13 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
                     // String cube for every subchunk just to find column tops.
                     SubChunkParser.scanHighestColumns(bytes, highest, sy)
                 }
-                runOnUiThread { showGrid() }
+                runOnUiThread {
+                    if (initialSelectedX in 0..15 && initialSelectedZ in 0..15) {
+                        openColumn(initialSelectedX, initialSelectedZ)
+                    } else {
+                        showGrid()
+                    }
+                }
             } catch (e: Throwable) {
                 runOnUiThread { if (!isFinishing && !isDestroyed) showErrorDialog(this, "Failed to load chunk", e) }
             }
@@ -457,6 +468,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         const val EXTRA_CHUNK_X = "chunk_x"
         const val EXTRA_CHUNK_Z = "chunk_z"
         const val EXTRA_DIMENSION = "dimension"
+        const val EXTRA_SELECTED_X = "selected_x"
+        const val EXTRA_SELECTED_Z = "selected_z"
         private const val MENU_SEARCH = 1
         private const val MENU_REPLACE = 2
         private const val MENU_HIDE_AIR = 3
