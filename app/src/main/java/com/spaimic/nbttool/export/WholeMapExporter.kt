@@ -201,6 +201,16 @@ object WholeMapExporter {
      * order. This keeps memory bounded instead of allocating the entire world as a
      * giant Bitmap, while removing the old one-chunk-at-a-time bottleneck.
      */
+    /**
+     * Build 171 whole-map renderer.
+     *
+     * Unlike the old Z-strip batches, this keeps a bounded sliding window of
+     * chunk jobs across the ENTIRE map. Workers stay continuously fed while the
+     * writer consumes chunks in deterministic Z/X order.
+     *
+     * The output format and PNG writer are deliberately unchanged from the
+     * successful Build 163 baseline.
+     */
     private fun renderRows(
         bridge: LevelDbBridge,
         b: WholeMapBounds,
@@ -213,132 +223,150 @@ object WholeMapExporter {
         val rowWidthLong = b.widthBlocks * ppb
         require(rowWidthLong <= Int.MAX_VALUE)
         val rowWidth = rowWidthLong.toInt()
-        val chunkWidth = (b.maxChunkX - b.minChunkX + 1L).coerceAtLeast(1L)
+
+        val chunkWidth = (b.maxChunkX.toLong() - b.minChunkX.toLong() + 1L)
+            .coerceAtLeast(1L)
+        val chunkHeight = (b.maxChunkZ.toLong() - b.minChunkZ.toLong() + 1L)
+            .coerceAtLeast(1L)
+        val totalChunks = (chunkWidth * chunkHeight).coerceAtLeast(1L)
+
         val poolSize = minOf(
             RENDER_THREADS,
-            chunkWidth.toInt().coerceAtLeast(1)
+            chunkWidth.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
+        )
+        val executor = Executors.newFixedThreadPool(poolSize)
+
+        // Keep a small global window instead of batching by Z-strip. This prevents
+        // the worker pool from becoming idle while the caller consumes one strip.
+        val maxInFlight = (poolSize * 8).coerceIn(poolSize, 64)
+        val completion = java.util.concurrent.ExecutorCompletionService<ChunkResult>(executor)
+
+        data class Job(
+            val x: Int,
+            val z: Int
+        )
+        data class Completed(
+            val x: Int,
+            val z: Int,
+            val result: ChunkResult
         )
 
-        /*
-         * Build 168: keep the renderer fed across several Z-strips instead of
-         * submitting one strip and then waiting for every chunk in that strip.
-         *
-         * A bounded batch means later strips can be loading/decoding while the
-         * current strip is being converted into PNG rows. This is the important
-         * architectural difference from the old strip-gated pipeline.
-         *
-         * We deliberately keep the batch small so a huge world does not create
-         * millions of Future objects or retain a giant bitmap in memory.
-         */
-        val stripsInFlight = 4
-        val executor = Executors.newFixedThreadPool(poolSize)
+        val nextJob = java.util.ArrayDeque<Job>()
+        for (cz in b.minChunkZ..b.maxChunkZ) {
+            for (cx in b.minChunkX..b.maxChunkX) {
+                nextJob.addLast(Job(cx, cz))
+            }
+        }
+
+        val completedByCoord = HashMap<Long, ChunkResult>(maxInFlight * 2)
+        var submitted = 0L
+        var completed = 0L
+
+        fun coordKey(x: Int, z: Int): Long =
+            (x.toLong() shl 32) xor (z.toLong() and 0xFFFFFFFFL)
+
+        fun submitOne(job: Job) {
+            completion.submit(Callable {
+                val localUnknown = HashSet<String>()
+                val localReasons = HashMap<String, Int>()
+                val localExamples = HashMap<String, String>()
+                val loaded = ChunkScanner.loadChunkDirect(
+                    bridge,
+                    job.x,
+                    job.z,
+                    localUnknown,
+                    localReasons,
+                    localExamples,
+                    dimension,
+                    includeMarkers = false
+                )
+                Completed(
+                    job.x,
+                    job.z,
+                    ChunkResult(
+                        loaded?.grid,
+                        localUnknown,
+                        localReasons,
+                        localExamples
+                    )
+                )
+            })
+            submitted++
+        }
+
+        fun refillWindow() {
+            while (!nextJob.isEmpty() && submitted - completed < maxInFlight) {
+                checkCancelled(isCancelled)
+                submitOne(nextJob.removeFirst())
+            }
+        }
+
         val unknown = HashSet<String>()
         val reasons = HashMap<String, Int>()
         val examples = HashMap<String, String>()
-        var worldRow = 0L
-        val totalChunks = b.chunkCount.coerceAtLeast(1L)
-        var completedChunks = 0L
-        onChunkProgress(0)
-
-        data class StripResult(
-            val z: Int,
-            val grids: HashMap<Int, Array<Array<ColumnInfo>>>
-        )
 
         try {
-            var batchStartZ = b.minChunkZ
-            while (batchStartZ <= b.maxChunkZ) {
+            refillWindow()
+            onChunkProgress(0)
+
+            var worldRow = 0L
+
+            // Consume output strictly in map order while the completion workers
+            // continue loading/decoding the rest of the world.
+            for (cz in b.minChunkZ..b.maxChunkZ) {
                 checkCancelled(isCancelled)
-                val batchEndZ = minOf(
-                    b.maxChunkZ.toLong(),
-                    batchStartZ.toLong() + stripsInFlight - 1L
-                ).toInt()
+                val grids = HashMap<Int, Array<Array<ColumnInfo>>>(chunkWidth.toInt())
 
-                /*
-                 * Submit ALL chunk loads for this small batch before waiting for
-                 * the first strip. Workers can therefore load strip N+1 while
-                 * the caller consumes strip N.
-                 */
-                val futures = HashMap<Pair<Int, Int>, Future<ChunkResult>>()
-                for (cz in batchStartZ..batchEndZ) {
-                    for (cx in b.minChunkX..b.maxChunkX) {
-                        checkCancelled(isCancelled)
-                        futures[cx to cz] = executor.submit(Callable {
-                            val localUnknown = HashSet<String>()
-                            val localReasons = HashMap<String, Int>()
-                            val localExamples = HashMap<String, String>()
-                            val loaded = ChunkScanner.loadChunkDirect(
-                                bridge, cx, cz,
-                                localUnknown, localReasons, localExamples,
-                                dimension, includeMarkers = false
-                            )
-                            ChunkResult(
-                                loaded?.grid,
-                                localUnknown,
-                                localReasons,
-                                localExamples
-                            )
-                        })
-                    }
-                }
-
-                for (cz in batchStartZ..batchEndZ) {
+                for (cx in b.minChunkX..b.maxChunkX) {
                     checkCancelled(isCancelled)
-                    val grids = HashMap<Int, Array<Array<ColumnInfo>>>()
+                    val key = coordKey(cx, cz)
 
-                    for (cx in b.minChunkX..b.maxChunkX) {
-                        checkCancelled(isCancelled)
-                        val future = futures.remove(cx to cz)
-                            ?: throw IllegalStateException("Missing chunk future for $cx,$cz")
-                        val result = future.get()
-
-                        completedChunks++
-                        val chunkPercent =
-                            (completedChunks * 45L / totalChunks)
-                                .toInt().coerceIn(0, 45)
-                        onChunkProgress(chunkPercent)
-
-                        unknown.addAll(result.unknown)
-                        result.reasons.forEach { (key, value) ->
-                            reasons[key] = (reasons[key] ?: 0) + value
+                    while (!completedByCoord.containsKey(key)) {
+                        val future = completion.take()
+                        val done = future.get()
+                        completedByCoord[coordKey(done.x, done.z)] = done.result
+                        completed++
+                        unknown.addAll(done.result.unknown)
+                        done.result.reasons.forEach { (k, v) ->
+                            reasons[k] = (reasons[k] ?: 0) + v
                         }
-                        result.examples.forEach { (key, value) ->
-                            examples.putIfAbsent(key, value)
+                        done.result.examples.forEach { (k, v) ->
+                            examples.putIfAbsent(k, v)
                         }
-                        result.grid?.let { grids[cx] = it }
+                        refillWindow()
                     }
 
-                    val rgb = IntArray(rowWidth)
-                    for (lz in 0..15) {
-                        checkCancelled(isCancelled)
-                        var cursor = 0
-                        for (cx in b.minChunkX..b.maxChunkX) {
-                            val grid = grids[cx]
-                            for (lx in 0..15) {
-                                val color =
-                                    grid?.get(lx)?.get(lz)?.color
-                                        ?: BlockColors.fallbackUnloaded
-                                repeat(ppb) {
-                                    rgb[cursor++] = color
-                                }
-                            }
-                        }
+                    val result = completedByCoord.remove(key)
+                        ?: throw IllegalStateException("Missing chunk result for $cx,$cz")
 
-                        /*
-                         * The row is repeated ppb times because one block becomes
-                         * ppb vertical pixels. Reuse the same row buffer; the PNG
-                         * writer copies only what it needs for its previous-row
-                         * comparison.
-                         */
-                        repeat(ppb) {
-                            checkCancelled(isCancelled)
-                            consume(rgb, worldRow)
-                            worldRow++
+                    result.grid?.let { grids[cx] = it }
+                }
+
+                val rgb = IntArray(rowWidth)
+                for (lz in 0..15) {
+                    checkCancelled(isCancelled)
+                    var cursor = 0
+                    for (cx in b.minChunkX..b.maxChunkX) {
+                        val grid = grids[cx]
+                        for (lx in 0..15) {
+                            val color = grid?.get(lx)?.get(lz)?.color
+                                ?: BlockColors.fallbackUnloaded
+                            repeat(ppb) { rgb[cursor++] = color }
                         }
+                    }
+
+                    repeat(ppb) {
+                        checkCancelled(isCancelled)
+                        consume(rgb, worldRow)
+                        worldRow++
                     }
                 }
 
-                batchStartZ = batchEndZ + 1
+                onChunkProgress(
+                    ((completed * 45L) / totalChunks)
+                        .toInt()
+                        .coerceIn(0, 45)
+                )
             }
         } finally {
             executor.shutdownNow()
