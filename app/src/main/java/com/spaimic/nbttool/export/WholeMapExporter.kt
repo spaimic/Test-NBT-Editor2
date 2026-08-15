@@ -300,62 +300,75 @@ object WholeMapExporter {
      * pixel instead of three RGB bytes. This keeps the PNG lossless while
      * making large map captures much smaller.
      */
-    private class PngWriter(raw: OutputStream, private val width: Int, private val height: Int) : AutoCloseable {
-        private val out = java.io.BufferedOutputStream(raw, 128 * 1024)
+    /**
+     * Streaming true-color PNG writer.
+     *
+     * The indexed writer used in earlier builds depended on a hardcoded palette.
+     * MapShading can generate runtime colors that are not known ahead of time.
+     * Standard RGB PNG output is used here so every 24-bit map color is valid.
+     */
+    private class PngWriter(
+        raw: OutputStream,
+        private val width: Int,
+        private val height: Int
+    ) : AutoCloseable {
+        private val out = java.io.BufferedOutputStream(raw, 256 * 1024)
         private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
         private val buf = ByteArray(1024 * 1024)
-        private val rawRow = ByteArray(width + 1)
-        private val palette = intArrayOf(0x000000, 0x7FB238, 0xF7E9A3, 0xC7C7C7, 0xFF0000, 0xA0A0FF, 0xA7A7A7, 0x007C00, 0xFFFFFF, 0xA4A8B8, 0x976D4D, 0x707070, 0x4040FF, 0x8F7748, 0xFFFCF5, 0xD87F33, 0xB24CD8, 0x6699D8, 0xE5E533, 0x7FCC19, 0xF27FA5, 0x4C4C4C, 0x999999, 0x4C7F99, 0x7F3FB2, 0x334CB2, 0x664C33, 0x667F33, 0x993333, 0x191919, 0xFAEE4D, 0x5CDBD5, 0x4A80FF, 0x00D93A, 0x815631, 0x700200, 0xD1B1A1, 0x9F5224, 0x95576C, 0x706C8A, 0xBA8524, 0x677535, 0xA04D4E, 0x392923, 0x876B62, 0x575C5C, 0x7A4958, 0x4C3E5C, 0x4C3223, 0x4C522A, 0x8E3C2E, 0x251610, 0xBD3031, 0x943F61, 0x5C191D, 0x167E86, 0x3A8E8C, 0x562C3E, 0x14B485, 0x646464, 0xD8AF93, 0x7FA796, 0x92BC58, 0x3F5C18, 0x455A2E, 0x345234, 0x1E5AF5, 0x4E711E, 0xE0ADB1, 0xD9A8AC, 0xB25C65, 0x92473F, 0xE0CE5E, 0xDFDAD1, 0xBEB9B0, 0x0D1217, 0xCFD5D6, 0xE06100, 0xA9309F, 0x5FACDE, 0xF0AF15, 0x7EBD29, 0xE0667E, 0x36393D, 0x7D7D73, 0x158991, 0x64209C, 0x2C2E8F, 0x603B24, 0x495B24, 0x8E2020, 0x080A0F, 0x787878, 0x373737, 0x5A5A5A, 0x4AA1A3, 0x696662, 0x61584C, 0x886A5C, 0xD87F52, 0xEE8DAC, 0xD6BE37, 0xA83636)
-        private val paletteIndex = HashMap<Int, Int>(palette.size * 2)
+        private val rawRow = ByteArray(width * 3 + 1)
         private var rows = 0
         private var closed = false
 
         init {
-            for (i in palette.indices) paletteIndex[palette[i]] = i
-            out.write(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
+            out.write(byteArrayOf(
+                137.toByte(), 80, 78, 71, 13, 10, 26, 10
+            ))
+
             val ihdr = ByteArray(13)
             writeInt(ihdr, 0, width)
             writeInt(ihdr, 4, height)
-            ihdr[8] = 8       // indexed palette, one byte per pixel
-            ihdr[9] = 3       // PNG color type 3
+            ihdr[8] = 8       // 8 bits per channel
+            ihdr[9] = 2       // true-color RGB
             writeChunk("IHDR", ihdr, ihdr.size)
-
-            // PLTE is RGB triples, exactly as required by PNG color type 3.
-            val plte = ByteArray(palette.size * 3)
-            var j = 0
-            for (c in palette) {
-                plte[j++] = ((c ushr 16) and 255).toByte()
-                plte[j++] = ((c ushr 8) and 255).toByte()
-                plte[j++] = (c and 255).toByte()
-            }
-            writeChunk("PLTE", plte, plte.size)
         }
 
         fun writeRow(colors: IntArray) {
             require(!closed) { "PNG writer is closed" }
-            require(colors.size == width) { "Expected $width pixels, got ${colors.size}" }
-            // Sub-filter the palette indices. Consecutive pixels belonging to
-            // the same Minecraft block become zero, which compresses extremely
-            // well while remaining completely lossless.
-            rawRow[0] = 1
-            var previous = 0
-            var j = 1
-            for (c in colors) {
-                // Android Color.rgb()/Color.parseColor() values are ARGB ints
-                // (for example 0xFF373737), while the PNG palette stores RGB
-                // values (0x373737). Normalize before the lookup so fallback
-                // and map-renderer colors are encoded correctly.
-                val rgb = c and 0xFFFFFF
-                val index = paletteIndex[rgb] ?: throw IllegalStateException(
-                    "Map color 0x${rgb.toString(16).padStart(6, '0')} is not in the export palette"
-                )
-                rawRow[j++] = (index - previous).toByte()
-                previous = index
+            require(colors.size == width) {
+                "Expected $width pixels, got ${colors.size}"
             }
+
+            // PNG Sub filter on the actual RGB byte stream. This keeps arbitrary
+            // renderer colors valid while retaining lossless compression.
+            rawRow[0] = 1
+            var outPos = 1
+            var previousR = 0
+            var previousG = 0
+            var previousB = 0
+
+            for (color in colors) {
+                val rgb = color and 0xFFFFFF
+                val r = (rgb ushr 16) and 0xFF
+                val g = (rgb ushr 8) and 0xFF
+                val b = rgb and 0xFF
+
+                rawRow[outPos++] = (r - previousR).toByte()
+                rawRow[outPos++] = (g - previousG).toByte()
+                rawRow[outPos++] = (b - previousB).toByte()
+
+                previousR = r
+                previousG = g
+                previousB = b
+            }
+
             deflater.setInput(rawRow)
             while (!deflater.needsInput()) {
                 val n = deflater.deflate(buf)
-                if (n > 0) writeChunk("IDAT", buf, n) else break
+                if (n > 0) {
+                    writeChunk("IDAT", buf, n)
+                } else {
+                    break
+                }
             }
             rows++
         }
@@ -367,7 +380,11 @@ object WholeMapExporter {
                     deflater.finish()
                     while (!deflater.finished()) {
                         val n = deflater.deflate(buf)
-                        if (n > 0) writeChunk("IDAT", buf, n) else break
+                        if (n > 0) {
+                            writeChunk("IDAT", buf, n)
+                        } else {
+                            break
+                        }
                     }
                     writeChunk("IEND", ByteArray(0), 0)
                 }
@@ -380,12 +397,13 @@ object WholeMapExporter {
         }
 
         private fun writeChunk(type: String, data: ByteArray, len: Int) {
-            val tb = type.toByteArray(Charsets.US_ASCII)
+            val typeBytes = type.toByteArray(Charsets.US_ASCII)
             writeInt(len)
-            out.write(tb)
+            out.write(typeBytes)
             if (len > 0) out.write(data, 0, len)
+
             val crc = CRC32()
-            crc.update(tb)
+            crc.update(typeBytes)
             if (len > 0) crc.update(data, 0, len)
             writeInt(crc.value.toInt())
         }
@@ -397,11 +415,11 @@ object WholeMapExporter {
             out.write(v and 255)
         }
 
-        private fun writeInt(a: ByteArray, o: Int, v: Int) {
-            a[o] = (v ushr 24).toByte()
-            a[o + 1] = (v ushr 16).toByte()
-            a[o + 2] = (v ushr 8).toByte()
-            a[o + 3] = v.toByte()
+        private fun writeInt(a: ByteArray, offset: Int, v: Int) {
+            a[offset] = (v ushr 24).toByte()
+            a[offset + 1] = (v ushr 16).toByte()
+            a[offset + 2] = (v ushr 8).toByte()
+            a[offset + 3] = v.toByte()
         }
     }
 }
