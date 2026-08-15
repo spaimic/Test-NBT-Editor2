@@ -341,8 +341,13 @@ object WholeMapExporter {
             var previous = 0
             var j = 1
             for (c in colors) {
-                val index = paletteIndex[c] ?: throw IllegalStateException(
-                    "Map color 0x${(c and 0xFFFFFF).toString(16)} is not in the export palette"
+                // Android Color.rgb()/Color.parseColor() values are ARGB ints
+                // (for example 0xFF373737), while the PNG palette stores RGB
+                // values (0x373737). Normalize before the lookup so fallback
+                // and map-renderer colors are encoded correctly.
+                val rgb = c and 0xFFFFFF
+                val index = paletteIndex[rgb] ?: throw IllegalStateException(
+                    "Map color 0x${rgb.toString(16).padStart(6, '0')} is not in the export palette"
                 )
                 rawRow[j++] = (index - previous).toByte()
                 previous = index
