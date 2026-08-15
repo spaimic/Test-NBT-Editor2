@@ -46,9 +46,9 @@ data class WholeMapBounds(
 object WholeMapExporter {
     const val MIN_PIXELS_PER_BLOCK = 2
     /** Same upper UI scale as the original Blocktopograph picture picker. */
-    const val MAX_PIXELS_PER_BLOCK = 32
-    /** Safety limit is strictly below five billion pixels. */
-    const val MAX_TOTAL_PIXELS = 5_000_000_000L
+    const val MAX_PIXELS_PER_BLOCK = 24
+    /** Hard safety limit: exports must stay strictly below one billion pixels. */
+    const val MAX_TOTAL_PIXELS = 1_000_000_000L
     private const val RENDER_THREADS = 5
 
     /** Highest integer pixels/block allowed by the image-size safety limits. */
@@ -113,8 +113,8 @@ object WholeMapExporter {
                 bridge, bounds, dimension, pixelsPerBlock,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 80 + ((worldRow.toLong() + 1L) * 15L / height.toLong())
-                        .toInt().coerceIn(80, 95)
+                    val percent = 70 + ((worldRow.toLong() + 1L) * 29L / height.toLong())
+                        .toInt().coerceIn(70, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
@@ -160,7 +160,7 @@ object WholeMapExporter {
                 bridge, bounds, dimension, ppb,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 80 + ((worldRow.toLong() + 1L) * 20L / height.toLong()).toInt().coerceIn(0, 20)
+                    val percent = 70 + ((worldRow.toLong() + 1L) * 29L / height.toLong()).toInt().coerceIn(70, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
@@ -178,8 +178,11 @@ object WholeMapExporter {
         }
         checkCancelled(isCancelled)
         val data = bytes.toByteArray()
-        return BitmapFactory.decodeByteArray(data, 0, data.size)
+        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
             ?: throw IllegalStateException("Unable to decode whole-map preview")
+        checkCancelled(isCancelled)
+        onProgress(100)
+        return bitmap
     }
 
     private data class ChunkResult(
@@ -249,7 +252,7 @@ object WholeMapExporter {
                     completedChunks++
                     // Loading/decoding chunks is the expensive part. Report this
                     // phase early, then row encoding continues toward the end.
-                    val chunkPercent = (completedChunks * 80L / totalChunks).toInt().coerceIn(0, 80)
+                    val chunkPercent = (completedChunks * 70L / totalChunks).toInt().coerceIn(0, 70)
                     onChunkProgress(chunkPercent)
                     unknown.addAll(result.unknown)
                     result.reasons.forEach { (key, value) -> reasons[key] = (reasons[key] ?: 0) + value }
@@ -311,12 +314,26 @@ object WholeMapExporter {
         fun writeRow(colors: IntArray) {
             require(!closed) { "PNG writer is closed" }
             require(colors.size == width) { "Expected $width pixels, got ${colors.size}" }
-            rawRow[0] = 0 // PNG filter: None
+            // PNG Sub filtering is especially effective for this map because each
+            // Minecraft block is repeated horizontally pixelsPerBlock times. The
+            // repeated RGB triples therefore become mostly zero bytes before zlib
+            // compression, substantially reducing PNG size without changing a
+            // single visible pixel.
+            rawRow[0] = 1 // PNG filter: Sub
             var j = 1
+            var prevR = 0
+            var prevG = 0
+            var prevB = 0
             for (c in colors) {
-                rawRow[j++] = android.graphics.Color.red(c).toByte()
-                rawRow[j++] = android.graphics.Color.green(c).toByte()
-                rawRow[j++] = android.graphics.Color.blue(c).toByte()
+                val r = android.graphics.Color.red(c)
+                val g = android.graphics.Color.green(c)
+                val b = android.graphics.Color.blue(c)
+                rawRow[j++] = (r - prevR).toByte()
+                rawRow[j++] = (g - prevG).toByte()
+                rawRow[j++] = (b - prevB).toByte()
+                prevR = r
+                prevG = g
+                prevB = b
             }
             deflater.setInput(rawRow)
             while (!deflater.needsInput()) {

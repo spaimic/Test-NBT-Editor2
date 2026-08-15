@@ -34,6 +34,7 @@ import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * The screen you land on after tapping a world: a top-down terrain-colored map
@@ -559,6 +560,7 @@ class MapViewerActivity : AppCompatActivity() {
             progress = 0
             isIndeterminate = false
         }
+        val lastProgress = AtomicInteger(0)
         val progressText = TextView(this).apply {
             text = "Generating preview: 0%"
             gravity = Gravity.CENTER
@@ -591,8 +593,9 @@ class MapViewerActivity : AppCompatActivity() {
                     ppb,
                     onProgress = { value ->
                         runOnUiThread {
-                            progress.progress = value
-                            progressText.text = "Generating preview: $value%"
+                            val safe = lastProgress.updateAndGet { old -> maxOf(old, value.coerceIn(0, 100)) }
+                            progress.progress = safe
+                            progressText.text = "Generating preview: $safe%"
                         }
                     },
                     isCancelled = { cancelled.get() }
@@ -642,6 +645,7 @@ class MapViewerActivity : AppCompatActivity() {
             progress = 0
             isIndeterminate = false
         }
+        val lastProgress = AtomicInteger(0)
         val progressText = TextView(this).apply {
             text = "Rendering/encoding: 0%"
             gravity = Gravity.CENTER
@@ -676,8 +680,9 @@ class MapViewerActivity : AppCompatActivity() {
                         output,
                         onProgress = { value ->
                             runOnUiThread {
-                                progress.progress = value
-                                progressText.text = "Rendering/encoding: $value%"
+                                val safe = lastProgress.updateAndGet { old -> maxOf(old, value.coerceIn(0, 99)) }
+                                progress.progress = safe
+                                progressText.text = "Rendering/encoding: $safe%"
                             }
                         },
                         isCancelled = { cancelled.get() }
@@ -685,6 +690,7 @@ class MapViewerActivity : AppCompatActivity() {
                 }
                 runOnUiThread {
                     if (cancelled.get()) return@runOnUiThread
+                    lastProgress.set(100)
                     progress.progress = 100
                     progressText.text = "Complete: 100%"
                     dialog.dismiss()
