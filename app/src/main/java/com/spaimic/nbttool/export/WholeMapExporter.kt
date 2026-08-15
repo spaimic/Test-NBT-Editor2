@@ -49,7 +49,7 @@ object WholeMapExporter {
     const val MAX_PIXELS_PER_BLOCK = 24
     /** Hard safety limit: exports must stay strictly below one billion pixels. */
     const val MAX_TOTAL_PIXELS = 1_000_000_000L
-    private const val RENDER_THREADS = 6
+    private val RENDER_THREADS: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 12)
 
     /** Highest integer pixels/block allowed by the image-size safety limits. */
     fun maximumPixelsPerBlock(bounds: WholeMapBounds): Int {
@@ -113,14 +113,14 @@ object WholeMapExporter {
                 bridge, bounds, dimension, pixelsPerBlock,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = (20L + ((worldRow + 1L) * 79L / height.toLong())).toInt().coerceIn(20, 99)
+                    val percent = ((worldRow + 1L) * 99L / height.toLong()).toInt().coerceIn(0, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
                     }
                 },
                 onChunkProgress = { percent ->
-                    val mapped = (percent * 20 / 100).coerceIn(0, 20)
+                    val mapped = (percent * 15 / 100).coerceIn(0, 15)
                     if (mapped != lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
@@ -160,14 +160,14 @@ object WholeMapExporter {
                 bridge, bounds, dimension, ppb,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = (20L + ((worldRow + 1L) * 79L / height.toLong())).toInt().coerceIn(20, 99)
+                    val percent = ((worldRow + 1L) * 99L / height.toLong()).toInt().coerceIn(0, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
                     }
                 },
                 onChunkProgress = { percent ->
-                    val mapped = (percent * 20 / 100).coerceIn(0, 20)
+                    val mapped = (percent * 15 / 100).coerceIn(0, 15)
                     if (mapped != lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
