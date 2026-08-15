@@ -647,7 +647,7 @@ class MapViewerActivity : AppCompatActivity() {
         }
         val lastProgress = AtomicInteger(0)
         val progressText = TextView(this).apply {
-            text = "Rendering/encoding: 0%"
+            text = "Generating & saving: 0%"
             gravity = Gravity.CENTER
             setPadding(0, 12, 0, 0)
         }
@@ -662,7 +662,7 @@ class MapViewerActivity : AppCompatActivity() {
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Saving entire map…")
-            .setMessage("The PNG is rendered chunk-by-chunk and saved only after the image is complete.")
+            .setMessage("Generating and saving the PNG. The percentage covers the complete export; 100% appears only after the PNG is finalized.")
             .setView(progressBox)
             .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .create()
@@ -682,7 +682,7 @@ class MapViewerActivity : AppCompatActivity() {
                             runOnUiThread {
                                 val safe = lastProgress.updateAndGet { old -> maxOf(old, value.coerceIn(0, 99)) }
                                 progress.progress = safe
-                                progressText.text = "Rendering/encoding: $safe%"
+                                progressText.text = "Generating & saving: $safe%"
                             }
                         },
                         isCancelled = { cancelled.get() }

@@ -49,7 +49,7 @@ object WholeMapExporter {
     const val MAX_PIXELS_PER_BLOCK = 24
     /** Hard safety limit: exports must stay strictly below one billion pixels. */
     const val MAX_TOTAL_PIXELS = 1_000_000_000L
-    private const val RENDER_THREADS = 5
+    private const val RENDER_THREADS = 6
 
     /** Highest integer pixels/block allowed by the image-size safety limits. */
     fun maximumPixelsPerBlock(bounds: WholeMapBounds): Int {
@@ -113,17 +113,17 @@ object WholeMapExporter {
                 bridge, bounds, dimension, pixelsPerBlock,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 45 + ((worldRow.toLong() + 1L) * 54L / height.toLong())
-                        .toInt().coerceIn(45, 99)
+                    val percent = (20L + ((worldRow + 1L) * 79L / height.toLong())).toInt().coerceIn(20, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
                     }
                 },
                 onChunkProgress = { percent ->
-                    if (percent != lastProgress) {
-                        lastProgress = percent
-                        onProgress(percent)
+                    val mapped = (percent * 20 / 100).coerceIn(0, 20)
+                    if (mapped != lastProgress) {
+                        lastProgress = mapped
+                        onProgress(mapped)
                     }
                 },
                 isCancelled = isCancelled
@@ -160,16 +160,17 @@ object WholeMapExporter {
                 bridge, bounds, dimension, ppb,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 45 + ((worldRow.toLong() + 1L) * 54L / height.toLong()).toInt().coerceIn(45, 99)
+                    val percent = (20L + ((worldRow + 1L) * 79L / height.toLong())).toInt().coerceIn(20, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
                     }
                 },
                 onChunkProgress = { percent ->
-                    if (percent != lastProgress) {
-                        lastProgress = percent
-                        onProgress(percent)
+                    val mapped = (percent * 20 / 100).coerceIn(0, 20)
+                    if (mapped != lastProgress) {
+                        lastProgress = mapped
+                        onProgress(mapped)
                     }
                 },
                 isCancelled = isCancelled
@@ -307,68 +308,80 @@ object WholeMapExporter {
      * MapShading can generate runtime colors that are not known ahead of time.
      * Standard RGB PNG output is used here so every 24-bit map color is valid.
      */
+    /**
+     * Streaming true-color PNG writer with an adaptive row filter.
+     *
+     * The same map row is emitted repeatedly for pixels-per-block > 1. When a
+     * row is identical to the previous row, the PNG Up filter turns the whole
+     * row into zeros, which compresses dramatically better than filtering each
+     * row independently. For the first/different row we use Sub filtering.
+     * No hardcoded color palette is involved, so runtime MapShading colors are
+     * always supported.
+     */
     private class PngWriter(
         raw: OutputStream,
         private val width: Int,
         private val height: Int
     ) : AutoCloseable {
-        private val out = java.io.BufferedOutputStream(raw, 256 * 1024)
+        private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
         private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
         private val buf = ByteArray(1024 * 1024)
         private val rawRow = ByteArray(width * 3 + 1)
+        private val previousColors = IntArray(width)
+        private var hasPrevious = false
         private var rows = 0
         private var closed = false
 
         init {
-            out.write(byteArrayOf(
-                137.toByte(), 80, 78, 71, 13, 10, 26, 10
-            ))
-
+            out.write(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
             val ihdr = ByteArray(13)
             writeInt(ihdr, 0, width)
             writeInt(ihdr, 4, height)
-            ihdr[8] = 8       // 8 bits per channel
-            ihdr[9] = 2       // true-color RGB
+            ihdr[8] = 8
+            ihdr[9] = 2
             writeChunk("IHDR", ihdr, ihdr.size)
         }
 
         fun writeRow(colors: IntArray) {
             require(!closed) { "PNG writer is closed" }
-            require(colors.size == width) {
-                "Expected $width pixels, got ${colors.size}"
-            }
+            require(colors.size == width) { "Expected $width pixels, got ${colors.size}" }
 
-            // PNG Sub filter on the actual RGB byte stream. This keeps arbitrary
-            // renderer colors valid while retaining lossless compression.
-            rawRow[0] = 1
-            var outPos = 1
-            var previousR = 0
-            var previousG = 0
-            var previousB = 0
+            val sameAsPrevious = hasPrevious && colors.contentEquals(previousColors)
+            rawRow[0] = if (sameAsPrevious) 2 else 1 // Up or Sub
 
-            for (color in colors) {
-                val rgb = color and 0xFFFFFF
+            var pos = 1
+            var prevR = 0
+            var prevG = 0
+            var prevB = 0
+            for (i in colors.indices) {
+                val rgb = colors[i] and 0xFFFFFF
                 val r = (rgb ushr 16) and 0xFF
                 val g = (rgb ushr 8) and 0xFF
                 val b = rgb and 0xFF
 
-                rawRow[outPos++] = (r - previousR).toByte()
-                rawRow[outPos++] = (g - previousG).toByte()
-                rawRow[outPos++] = (b - previousB).toByte()
-
-                previousR = r
-                previousG = g
-                previousB = b
+                if (sameAsPrevious) {
+                    val prev = previousColors[i] and 0xFFFFFF
+                    rawRow[pos++] = (r - ((prev ushr 16) and 0xFF)).toByte()
+                    rawRow[pos++] = (g - ((prev ushr 8) and 0xFF)).toByte()
+                    rawRow[pos++] = (b - (prev and 0xFF)).toByte()
+                } else {
+                    rawRow[pos++] = (r - prevR).toByte()
+                    rawRow[pos++] = (g - prevG).toByte()
+                    rawRow[pos++] = (b - prevB).toByte()
+                }
+                prevR = r
+                prevG = g
+                prevB = b
             }
+
+            System.arraycopy(colors, 0, previousColors, 0, width)
+            hasPrevious = true
 
             deflater.setInput(rawRow)
             while (!deflater.needsInput()) {
                 val n = deflater.deflate(buf)
-                if (n > 0) {
-                    writeChunk("IDAT", buf, n)
-                } else {
-                    break
-                }
+                if (n <= 0) break
+                writeChunk("IDAT", buf, n)
             }
             rows++
         }
@@ -376,15 +389,12 @@ object WholeMapExporter {
         override fun close() {
             if (closed) return
             try {
-                if (rows >= height) {
+                if (rows == height) {
                     deflater.finish()
                     while (!deflater.finished()) {
                         val n = deflater.deflate(buf)
-                        if (n > 0) {
-                            writeChunk("IDAT", buf, n)
-                        } else {
-                            break
-                        }
+                        if (n <= 0) break
+                        writeChunk("IDAT", buf, n)
                     }
                     writeChunk("IEND", ByteArray(0), 0)
                 }
@@ -401,7 +411,6 @@ object WholeMapExporter {
             writeInt(len)
             out.write(typeBytes)
             if (len > 0) out.write(data, 0, len)
-
             val crc = CRC32()
             crc.update(typeBytes)
             if (len > 0) crc.update(data, 0, len)
