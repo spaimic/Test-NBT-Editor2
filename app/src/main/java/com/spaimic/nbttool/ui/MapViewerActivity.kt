@@ -442,11 +442,11 @@ class MapViewerActivity : AppCompatActivity() {
             try {
                 runOnUiThread { Toast.makeText(this, "Saving map picture…", Toast.LENGTH_LONG).show() }
                 val displayName = "NBTTool_Map_${s.minX}_${s.minZ}_${s.maxX}_${s.maxZ}_${ppb}px.png"
-                savePngToGallery(displayName) { output ->
+                val destination = savePngToGallery(displayName) { output ->
                     MapSelectionExporter.export(bridge, s, selectedDbDimension(), ppb, output) { }
                 }
                 runOnUiThread {
-                    Toast.makeText(this, "Map picture saved to Downloads and added to Gallery.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Map picture saved to $destination.", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Throwable) {
                 runOnUiThread { showErrorDialog(this, "Failed to save map picture", e) }
@@ -553,24 +553,42 @@ class MapViewerActivity : AppCompatActivity() {
         val bridge = LevelDbSession.bridge ?: return
         val dimName = when (selectedDbDimension()) { 1 -> "Nether"; 2 -> "TheEnd"; else -> "Overworld" }
         val displayName = "NBTTool_${dimName}_EntireMap_${ppb}px.png"
-        val progress = ProgressBar(this).apply { max = 100 }
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            isIndeterminate = false
+        }
+        val progressText = TextView(this).apply {
+            text = "0%"
+            gravity = Gravity.CENTER
+            setPadding(0, 12, 0, 0)
+        }
+        val progressBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 8, 24, 8)
+            addView(progress)
+            addView(progressText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Saving entire map…")
             .setMessage("Rendering the complete map. Large worlds may take a long time.")
-            .setView(progress)
+            .setView(progressBox)
             .setNegativeButton("Cancel", null)
             .create()
         dialog.show()
         Thread {
             try {
-                savePngToGallery(displayName) { output ->
+                val destination = savePngToGallery(displayName) { output ->
                     WholeMapExporter.export(bridge, bounds, selectedDbDimension(), ppb, output) { value ->
-                        runOnUiThread { progress.progress = value }
+                        runOnUiThread {
+                            progress.progress = value
+                            progressText.text = "$value%"
+                        }
                     }
                 }
                 runOnUiThread {
                     dialog.dismiss()
-                    Toast.makeText(this, "Entire map picture saved to Downloads and added to Gallery.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Entire map picture saved to $destination.", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Throwable) {
                 runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to save entire map picture", e) }
@@ -579,40 +597,99 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     /**
-     * Writes a PNG through MediaStore on Android 10+ so Gallery/media providers
-     * immediately know that a new image exists. On older Android versions the
-     * file is written to Downloads and explicitly sent to MediaScanner.
+     * Saves an exported PNG using a strict fallback order:
+     * 1) public Download
+     * 2) public Pictures
+     * If both destinations fail, nothing is kept and the exception is reported.
+     *
+     * Android 10+ uses MediaStore.Downloads for Download because Images/Media
+     * does not allow RELATIVE_PATH=Download on some devices. Pictures uses the
+     * Images collection so Gallery can index it as an image. Older Android
+     * versions use normal public directories followed by MediaScanner.
      */
-    private fun savePngToGallery(displayName: String, writer: (java.io.OutputStream) -> Unit) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
-                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                put(MediaStore.Images.Media.IS_PENDING, 1)
+    private fun savePngToGallery(
+        displayName: String,
+        writer: (java.io.OutputStream) -> Unit
+    ): String {
+        var downloadFailure: Throwable? = null
+
+        // First choice: public Download.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("Android could not create a Download file entry")
+                try {
+                    contentResolver.openOutputStream(uri)?.use(writer)
+                        ?: throw IllegalStateException("Could not open Download output stream")
+                    contentResolver.update(
+                        uri,
+                        ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
+                        null,
+                        null
+                    )
+                    return "Download"
+                } catch (e: Throwable) {
+                    contentResolver.delete(uri, null, null)
+                    throw e
+                }
+            } else {
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Could not create Download directory")
+                val file = File(dir, displayName)
+                file.outputStream().use(writer)
+                MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/png"), null)
+                return "Download"
             }
-            val resolver = contentResolver
-            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                ?: throw IllegalStateException("Android could not create the Gallery image entry")
-            try {
-                resolver.openOutputStream(uri)?.use { writer(it) }
-                    ?: throw IllegalStateException("Could not open Gallery image output stream")
-                resolver.update(
-                    uri,
-                    ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
-                    null,
-                    null
-                )
-            } catch (e: Throwable) {
-                resolver.delete(uri, null, null)
-                throw e
+        } catch (e: Throwable) {
+            downloadFailure = e
+        }
+
+        // Fallback: public Pictures. If this fails too, nothing is saved.
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("Android could not create a Pictures image entry")
+                try {
+                    contentResolver.openOutputStream(uri)?.use(writer)
+                        ?: throw IllegalStateException("Could not open Pictures output stream")
+                    contentResolver.update(
+                        uri,
+                        ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                        null,
+                        null
+                    )
+                    return "Pictures"
+                } catch (e: Throwable) {
+                    contentResolver.delete(uri, null, null)
+                    throw e
+                }
+            } else {
+                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+                if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Could not create Pictures directory")
+                val file = File(dir, displayName)
+                file.outputStream().use(writer)
+                MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/png"), null)
+                return "Pictures"
             }
-        } else {
-            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-            if (!dir.exists()) dir.mkdirs()
-            val file = File(dir, displayName)
-            file.outputStream().use(writer)
-            MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/png"), null)
+        } catch (pictureFailure: Throwable) {
+            val message = buildString {
+                append("Could not save PNG to Download or Pictures.")
+                if (downloadFailure != null) append(" Download: ${downloadFailure!!.message ?: downloadFailure!!::class.java.simpleName}.")
+                append(" Pictures: ${pictureFailure.message ?: pictureFailure::class.java.simpleName}.")
+            }
+            throw IllegalStateException(message, pictureFailure)
         }
     }
 
