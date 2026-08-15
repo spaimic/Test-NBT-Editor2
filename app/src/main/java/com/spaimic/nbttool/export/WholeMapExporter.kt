@@ -9,6 +9,7 @@ import com.spaimic.nbttool.chunk.ColumnInfo
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
+import kotlin.math.sqrt
 
 /**
  * Captures the complete rectangular chunk extent present in a dimension.
@@ -31,6 +32,25 @@ data class WholeMapBounds(
 }
 
 object WholeMapExporter {
+    const val MIN_PIXELS_PER_BLOCK = 2
+    const val MAX_PIXELS_PER_BLOCK = 24
+    const val MAX_TOTAL_PIXELS = 5_000_000_000L
+
+    /** Highest integer pixels/block allowed by the image-size safety limit. */
+    fun maximumPixelsPerBlock(bounds: WholeMapBounds): Int {
+        val area = bounds.widthBlocks * bounds.heightBlocks
+        if (area <= 0L) return 0
+        val maxByArea = sqrt((MAX_TOTAL_PIXELS - 1L).toDouble() / area.toDouble()).toInt()
+        val maxByDimension = minOf(
+            Int.MAX_VALUE.toLong() / bounds.widthBlocks,
+            Int.MAX_VALUE.toLong() / bounds.heightBlocks
+        ).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        return minOf(MAX_PIXELS_PER_BLOCK, maxByArea, maxByDimension)
+    }
+
+    fun totalPixels(bounds: WholeMapBounds, pixelsPerBlock: Int): Long =
+        bounds.widthBlocks * bounds.heightBlocks * pixelsPerBlock.toLong() * pixelsPerBlock.toLong()
+
     fun findBounds(bridge: LevelDbBridge, dimension: Int): WholeMapBounds? {
         var minX = Int.MAX_VALUE
         var maxX = Int.MIN_VALUE
@@ -60,7 +80,10 @@ object WholeMapExporter {
         output: OutputStream,
         onProgress: (Int) -> Unit = {}
     ) {
-        require(pixelsPerBlock in 4..24)
+        require(pixelsPerBlock in MIN_PIXELS_PER_BLOCK..MAX_PIXELS_PER_BLOCK)
+        require(totalPixels(bounds, pixelsPerBlock) < MAX_TOTAL_PIXELS) {
+            "Image exceeds ${MAX_TOTAL_PIXELS - 1} pixels: ${totalPixels(bounds, pixelsPerBlock)}"
+        }
         val widthLong = bounds.widthBlocks * pixelsPerBlock
         val heightLong = bounds.heightBlocks * pixelsPerBlock
         require(widthLong <= Int.MAX_VALUE && heightLong <= Int.MAX_VALUE) {
@@ -72,10 +95,10 @@ object WholeMapExporter {
             val totalRows = bounds.heightBlocks.coerceAtLeast(1L)
             renderRows(bridge, bounds, dimension, pixelsPerBlock) { row, worldRow ->
                 png.writeRow(row)
-                val percent = ((worldRow.toLong() * 100L) / totalRows).toInt().coerceIn(0, 100)
+                val percent = ((worldRow.toLong() * 95L) / totalRows).toInt().coerceIn(0, 95)
                 onProgress(percent)
             }
-            onProgress(100)
+            // 100% is emitted by the caller only after PNG encoding and closing complete.
         }
     }
 
@@ -86,7 +109,7 @@ object WholeMapExporter {
         requestedPixelsPerBlock: Int,
         maxPixels: Int = 1024
     ): Bitmap {
-        val requested = requestedPixelsPerBlock.coerceIn(4, 24)
+        val requested = requestedPixelsPerBlock.coerceIn(MIN_PIXELS_PER_BLOCK, MAX_PIXELS_PER_BLOCK)
         val maxBlock = maxOf(bounds.widthBlocks, bounds.heightBlocks)
         val ppb = minOf(requested, maxOf(1, (maxPixels.toLong() / maxBlock).toInt()))
             .coerceIn(1, requested)

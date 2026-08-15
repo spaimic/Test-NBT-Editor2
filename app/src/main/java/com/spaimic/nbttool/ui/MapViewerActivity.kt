@@ -32,6 +32,7 @@ import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The screen you land on after tapping a world: a top-down terrain-colored map
@@ -46,6 +47,7 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var coordText: TextView
     private var currentDimension = 0 // UI: 0 Overworld, 1 Nether, 2 The End
     private var playerOverworldPosition: Pair<Int, Int>? = null
+    private val wholeMapExportRunning = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -459,24 +461,20 @@ class MapViewerActivity : AppCompatActivity() {
             Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
             return
         }
-        val input = EditText(this).apply {
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setText("4")
-            hint = "Pixels per block (4–24)"
+        if (wholeMapExportRunning.get()) {
+            Toast.makeText(this, "An entire-map export is already running. Please wait for it to finish.", Toast.LENGTH_LONG).show()
+            return
         }
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("🌍 Take Entire Map Picture")
-            .setMessage("Captures every chunk stored in the current dimension.\nChoose pixels per block (4–24). Large worlds may automatically require a lower setting to keep the PNG size practical.")
-            .setView(input)
-            .setPositiveButton("Analyze") { _, _ ->
-                val ppb = input.text.toString().toIntOrNull()?.coerceIn(4, 24) ?: 4
-                analyzeWholeMapPicture(bridge, ppb)
-            }
+            .setMessage("First, NBT Tool will analyze the world and calculate the largest safe pixels-per-block value. The export is limited to less than 5 billion pixels.")
+            .setPositiveButton("Analyze") { _, _ -> analyzeWholeMapPicture(bridge) }
             .setNegativeButton("Cancel", null)
-            .show()
+            .create()
+        dialog.show()
     }
 
-    private fun analyzeWholeMapPicture(bridge: LevelDbBridge, ppb: Int) {
+    private fun analyzeWholeMapPicture(bridge: LevelDbBridge) {
         val dialog = AlertDialog.Builder(this)
             .setTitle("Analyzing world map…")
             .setMessage("Finding the complete chunk bounds. Please wait.")
@@ -488,21 +486,59 @@ class MapViewerActivity : AppCompatActivity() {
             try {
                 val bounds = WholeMapExporter.findBounds(bridge, selectedDbDimension())
                     ?: throw IllegalStateException("No chunk data was found in this dimension.")
+                val maxPpb = WholeMapExporter.maximumPixelsPerBlock(bounds)
                 runOnUiThread {
                     dialog.dismiss()
-                    val width = bounds.widthBlocks
-                    val height = bounds.heightBlocks
-                    val requestedWidth = width * ppb.toLong()
-                    val requestedHeight = height * ppb.toLong()
+                    if (maxPpb < WholeMapExporter.MIN_PIXELS_PER_BLOCK) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Map is too large to export")
+                            .setMessage(
+                                "The map is ${bounds.widthBlocks} × ${bounds.heightBlocks} blocks. " +
+                                "Even 2 px/block would exceed the ${WholeMapExporter.MAX_TOTAL_PIXELS - 1} pixel limit."
+                            )
+                            .setPositiveButton("OK", null)
+                            .show()
+                        return@runOnUiThread
+                    }
+
+                    val scale = SeekBar(this).apply {
+                        max = maxPpb - WholeMapExporter.MIN_PIXELS_PER_BLOCK
+                        progress = max - ((maxPpb - WholeMapExporter.MIN_PIXELS_PER_BLOCK) / 4)
+                            .coerceAtLeast(0)
+                        isEnabled = maxPpb > WholeMapExporter.MIN_PIXELS_PER_BLOCK
+                    }
+                    val valueText = TextView(this).apply {
+                        textSize = 18f
+                        gravity = Gravity.CENTER
+                        setPadding(0, 16, 0, 16)
+                    }
+                    fun updateValue() {
+                        val ppb = WholeMapExporter.MIN_PIXELS_PER_BLOCK + scale.progress
+                        val pixels = WholeMapExporter.totalPixels(bounds, ppb)
+                        valueText.text = "$ppb px/block\n${bounds.widthBlocks * ppb} × ${bounds.heightBlocks * ppb} pixels\n${pixels} total pixels"
+                    }
+                    scale.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                        override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) = updateValue()
+                        override fun onStartTrackingTouch(seekBar: SeekBar) {}
+                        override fun onStopTrackingTouch(seekBar: SeekBar) {}
+                    })
+                    updateValue()
+                    val box = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(24, 8, 24, 8)
+                        addView(valueText)
+                        addView(scale)
+                    }
                     AlertDialog.Builder(this)
                         .setTitle("Entire Map Picture")
                         .setMessage(
                             "Bounds: X ${bounds.minX}..${bounds.maxX}, Z ${bounds.minZ}..${bounds.maxZ}\n" +
-                            "World area: ${width} × ${height} blocks\n" +
-                            "Requested image: ${requestedWidth} × ${requestedHeight} pixels\n\n" +
-                            "A preview will be generated before saving."
+                            "World area: ${bounds.widthBlocks} × ${bounds.heightBlocks} blocks\n" +
+                            "Maximum allowed: $maxPpb px/block"
                         )
+                        .setView(box)
                         .setPositiveButton("Preview") { _, _ ->
+                            val ppb = WholeMapExporter.MIN_PIXELS_PER_BLOCK + scale.progress
                             previewWholeMapPicture(bounds, ppb)
                         }
                         .setNegativeButton("Cancel", null)
@@ -535,11 +571,9 @@ class MapViewerActivity : AppCompatActivity() {
                     }
                     AlertDialog.Builder(this)
                         .setTitle("Entire Map Picture Preview")
-                        .setMessage("${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • requested ${ppb} px/block\nPreview is scaled down for display.")
+                        .setMessage("${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • $ppb px/block\n${bounds.widthBlocks * ppb} × ${bounds.heightBlocks * ppb} pixels\nPreview is scaled down for display.")
                         .setView(image)
-                        .setPositiveButton("Save PNG") { _, _ ->
-                            saveWholeMapPicture(bounds, ppb)
-                        }
+                        .setPositiveButton("Save PNG") { _, _ -> saveWholeMapPicture(bounds, ppb) }
                         .setNegativeButton("Cancel", null)
                         .show()
                 }
@@ -551,6 +585,10 @@ class MapViewerActivity : AppCompatActivity() {
 
     private fun saveWholeMapPicture(bounds: WholeMapBounds, ppb: Int) {
         val bridge = LevelDbSession.bridge ?: return
+        if (!wholeMapExportRunning.compareAndSet(false, true)) {
+            Toast.makeText(this, "An entire-map export is already running.", Toast.LENGTH_LONG).show()
+            return
+        }
         val dimName = when (selectedDbDimension()) { 1 -> "Nether"; 2 -> "TheEnd"; else -> "Overworld" }
         val displayName = "NBTTool_${dimName}_EntireMap_${ppb}px.png"
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -559,7 +597,7 @@ class MapViewerActivity : AppCompatActivity() {
             isIndeterminate = false
         }
         val progressText = TextView(this).apply {
-            text = "0%"
+            text = "Rendering: 0%"
             gravity = Gravity.CENTER
             setPadding(0, 12, 0, 0)
         }
@@ -571,10 +609,11 @@ class MapViewerActivity : AppCompatActivity() {
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Saving entire map…")
-            .setMessage("Rendering the complete map. Large worlds may take a long time.")
+            .setMessage("The PNG will be written only after the complete image is encoded. An incomplete .pending file will be removed if the export fails.")
             .setView(progressBox)
             .setNegativeButton("Cancel", null)
             .create()
+        dialog.setOnCancelListener { }
         dialog.show()
         Thread {
             try {
@@ -582,115 +621,22 @@ class MapViewerActivity : AppCompatActivity() {
                     WholeMapExporter.export(bridge, bounds, selectedDbDimension(), ppb, output) { value ->
                         runOnUiThread {
                             progress.progress = value
-                            progressText.text = "$value%"
+                            progressText.text = "Rendering/encoding: $value%"
                         }
                     }
                 }
                 runOnUiThread {
+                    progress.progress = 100
+                    progressText.text = "Complete: 100%"
                     dialog.dismiss()
                     Toast.makeText(this, "Entire map picture saved to $destination.", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Throwable) {
                 runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to save entire map picture", e) }
+            } finally {
+                wholeMapExportRunning.set(false)
             }
         }.start()
-    }
-
-    /**
-     * Saves an exported PNG using a strict fallback order:
-     * 1) public Download
-     * 2) public Pictures
-     * If both destinations fail, nothing is kept and the exception is reported.
-     *
-     * Android 10+ uses MediaStore.Downloads for Download because Images/Media
-     * does not allow RELATIVE_PATH=Download on some devices. Pictures uses the
-     * Images collection so Gallery can index it as an image. Older Android
-     * versions use normal public directories followed by MediaScanner.
-     */
-    private fun savePngToGallery(
-        displayName: String,
-        writer: (java.io.OutputStream) -> Unit
-    ): String {
-        var downloadFailure: Throwable? = null
-
-        // First choice: public Download.
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-                val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                    ?: throw IllegalStateException("Android could not create a Download file entry")
-                try {
-                    contentResolver.openOutputStream(uri)?.use(writer)
-                        ?: throw IllegalStateException("Could not open Download output stream")
-                    contentResolver.update(
-                        uri,
-                        ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },
-                        null,
-                        null
-                    )
-                    return "Download"
-                } catch (e: Throwable) {
-                    contentResolver.delete(uri, null, null)
-                    throw e
-                }
-            } else {
-                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Could not create Download directory")
-                val file = File(dir, displayName)
-                file.outputStream().use(writer)
-                MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/png"), null)
-                return "Download"
-            }
-        } catch (e: Throwable) {
-            downloadFailure = e
-        }
-
-        // Fallback: public Pictures. If this fails too, nothing is saved.
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES)
-                    put(MediaStore.Images.Media.IS_PENDING, 1)
-                }
-                val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                    ?: throw IllegalStateException("Android could not create a Pictures image entry")
-                try {
-                    contentResolver.openOutputStream(uri)?.use(writer)
-                        ?: throw IllegalStateException("Could not open Pictures output stream")
-                    contentResolver.update(
-                        uri,
-                        ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
-                        null,
-                        null
-                    )
-                    return "Pictures"
-                } catch (e: Throwable) {
-                    contentResolver.delete(uri, null, null)
-                    throw e
-                }
-            } else {
-                val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                if (!dir.exists() && !dir.mkdirs()) throw IllegalStateException("Could not create Pictures directory")
-                val file = File(dir, displayName)
-                file.outputStream().use(writer)
-                MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/png"), null)
-                return "Pictures"
-            }
-        } catch (pictureFailure: Throwable) {
-            val message = buildString {
-                append("Could not save PNG to Download or Pictures.")
-                if (downloadFailure != null) append(" Download: ${downloadFailure!!.message ?: downloadFailure!!::class.java.simpleName}.")
-                append(" Pictures: ${pictureFailure.message ?: pictureFailure::class.java.simpleName}.")
-            }
-            throw IllegalStateException(message, pictureFailure)
-        }
     }
 
     private fun promptDeleteSelection() {
