@@ -1,5 +1,7 @@
 package com.spaimic.nbttool.export
 
+private const val BUILD_166_TIMING = true
+
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.spaimic.nbttool.chunk.BlockColors
@@ -49,7 +51,7 @@ object WholeMapExporter {
     const val MAX_PIXELS_PER_BLOCK = 24
     /** Hard safety limit: exports must stay strictly below one billion pixels. */
     const val MAX_TOTAL_PIXELS = 1_000_000_000L
-    private val RENDER_THREADS: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 12)
+    private val RENDER_THREADS: Int = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
 
     /** Highest integer pixels/block allowed by the image-size safety limits. */
     fun maximumPixelsPerBlock(bounds: WholeMapBounds): Int {
@@ -320,8 +322,7 @@ object WholeMapExporter {
      */
     private class PngWriter(
         raw: OutputStream,
-        private var reusableRowBuffer: IntArray? = null
-    private val width: Int,
+        private val width: Int,
         private val height: Int
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
