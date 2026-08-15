@@ -320,7 +320,8 @@ object WholeMapExporter {
      */
     private class PngWriter(
         raw: OutputStream,
-        private val width: Int,
+        private var reusableRowBuffer: IntArray? = null
+    private val width: Int,
         private val height: Int
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
