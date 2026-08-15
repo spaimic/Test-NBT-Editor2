@@ -1,6 +1,7 @@
 package com.spaimic.nbttool.export
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
 import com.spaimic.nbttool.chunk.BlockColors
 import com.spaimic.nbttool.chunk.ChunkScanner
@@ -8,6 +9,7 @@ import com.spaimic.nbttool.chunk.ColumnInfo
 import com.spaimic.nbttool.selection.WorldSelection
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import java.io.BufferedOutputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.OutputStream
 import java.util.zip.Deflater
@@ -33,6 +35,15 @@ object MapSelectionExporter {
         }
     }
 
+    /**
+     * Render the preview through the exact same PNG writer used by export().
+     *
+     * The previous implementation wrote rows directly into an ARGB bitmap.
+     * Although that avoided the old bounds exception, it could produce a
+     * visually different/corrupted preview from the PNG that was actually
+     * exported. Using the same PNG pipeline makes preview and saved image
+     * byte-for-byte equivalent at the chosen preview resolution.
+     */
     fun preview(
         bridge: LevelDbBridge,
         selection: WorldSelection,
@@ -40,33 +51,27 @@ object MapSelectionExporter {
         requestedPixelsPerBlock: Int,
         maxPixels: Int = 768
     ): Bitmap {
+        require(selection.isValid)
         val ppb = minOf(
             requestedPixelsPerBlock.coerceIn(1, 24),
             maxOf(1, maxPixels / maxOf(selection.width, selection.height))
         )
-        val w = selection.width * ppb
-        val h = selection.height * ppb
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val colors = IntArray(w)
-        var outY = 0
+        val width = selection.width * ppb
+        val height = selection.height * ppb
 
-        renderRows(bridge, selection, dimension, ppb) { row ->
-            // renderRows produces exactly ppb output rows for each world Z row.
-            // Keep the preview writer defensive: a malformed/partial chunk must
-            // never make Bitmap.setPixels address a row below/above the bitmap.
-            if (outY >= h) return@renderRows
-            val copyWidth = minOf(w, row.size)
-            if (copyWidth <= 0) return@renderRows
-            java.util.Arrays.fill(colors, 0, w, BlockColors.fallbackUnloaded)
-            System.arraycopy(row, 0, colors, 0, copyWidth)
-            val rowsLeft = h - outY
-            val rowsToWrite = minOf(ppb, rowsLeft)
-            repeat(rowsToWrite) {
-                bitmap.setPixels(colors, 0, w, 0, outY, w, 1)
-                outY++
+        // Use the same PngWriter as the real export path. The preview is capped
+        // by maxPixels, so the in-memory PNG remains bounded even for a 2048x2048
+        // selection.
+        val bytes = ByteArrayOutputStream((width * height).coerceAtMost(2 * 1024 * 1024))
+        PngWriter(bytes, width, height).use { png ->
+            renderRows(bridge, selection, dimension, ppb) { row ->
+                png.writeRow(row)
             }
         }
-        return bitmap
+
+        val data = bytes.toByteArray()
+        return BitmapFactory.decodeByteArray(data, 0, data.size)
+            ?: throw IllegalStateException("Unable to decode rendered map preview")
     }
 
     private fun renderRows(
