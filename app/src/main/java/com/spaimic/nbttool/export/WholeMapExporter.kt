@@ -1,6 +1,5 @@
 package com.spaimic.nbttool.export
 
-private const val BUILD_166_TIMING = true
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -18,6 +17,7 @@ import java.util.concurrent.Future
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import kotlin.math.sqrt
+private const val BUILD_166_TIMING = true
 
 /**
  * Captures the complete rectangular chunk extent present in a dimension.
