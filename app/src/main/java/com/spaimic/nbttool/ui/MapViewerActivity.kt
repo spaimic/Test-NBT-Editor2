@@ -32,6 +32,7 @@ import com.spaimic.nbttool.shizuku.LevelDbBridge
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import com.spaimic.nbttool.worlds.LocalWorldStore
 import java.io.File
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -552,17 +553,52 @@ class MapViewerActivity : AppCompatActivity() {
 
     private fun previewWholeMapPicture(bounds: WholeMapBounds, ppb: Int) {
         val bridge = LevelDbSession.bridge ?: return
+        val cancelled = AtomicBoolean(false)
+        val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            isIndeterminate = false
+        }
+        val progressText = TextView(this).apply {
+            text = "Generating preview: 0%"
+            gravity = Gravity.CENTER
+            setPadding(0, 12, 0, 0)
+        }
+        val progressBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 8, 24, 8)
+            addView(progress)
+            addView(progressText, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
+        }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Rendering entire map preview…")
-            .setMessage("Large worlds can take a while. Please wait.")
-            .setView(ProgressBar(this))
-            .setNegativeButton("Cancel", null)
+            .setMessage("The preview uses the same chunk-based renderer as the final PNG.")
+            .setView(progressBox)
+            .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .create()
+        dialog.setCancelable(false)
+        dialog.setCanceledOnTouchOutside(false)
         dialog.show()
         Thread {
             try {
-                val preview = WholeMapExporter.preview(bridge, bounds, selectedDbDimension(), ppb)
+                val preview = WholeMapExporter.preview(
+                    bridge,
+                    bounds,
+                    selectedDbDimension(),
+                    ppb,
+                    onProgress = { value ->
+                        runOnUiThread {
+                            progress.progress = value
+                            progressText.text = "Generating preview: $value%"
+                        }
+                    },
+                    isCancelled = { cancelled.get() }
+                )
                 runOnUiThread {
+                    if (cancelled.get()) return@runOnUiThread
                     dialog.dismiss()
                     val image = ImageView(this).apply {
                         setImageBitmap(preview)
@@ -571,11 +607,20 @@ class MapViewerActivity : AppCompatActivity() {
                     }
                     AlertDialog.Builder(this)
                         .setTitle("Entire Map Picture Preview")
-                        .setMessage("${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • $ppb px/block\n${bounds.widthBlocks * ppb} × ${bounds.heightBlocks * ppb} pixels\nPreview is scaled down for display.")
+                        .setMessage(
+                            "${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • $ppb px/block\n" +
+                            "${bounds.widthBlocks * ppb} × ${bounds.heightBlocks * ppb} pixels\n" +
+                            "Preview is scaled down for display."
+                        )
                         .setView(image)
                         .setPositiveButton("Save PNG") { _, _ -> saveWholeMapPicture(bounds, ppb) }
                         .setNegativeButton("Cancel", null)
                         .show()
+                }
+            } catch (_: CancellationException) {
+                runOnUiThread {
+                    dialog.dismiss()
+                    Toast.makeText(this, "Entire map preview cancelled.", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Throwable) {
                 runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to render entire map preview", e) }
@@ -589,6 +634,7 @@ class MapViewerActivity : AppCompatActivity() {
             Toast.makeText(this, "An entire-map export is already running.", Toast.LENGTH_LONG).show()
             return
         }
+        val cancelled = AtomicBoolean(false)
         val dimName = when (selectedDbDimension()) { 1 -> "Nether"; 2 -> "TheEnd"; else -> "Overworld" }
         val displayName = "NBTTool_${dimName}_EntireMap_${ppb}px.png"
         val progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
@@ -597,7 +643,7 @@ class MapViewerActivity : AppCompatActivity() {
             isIndeterminate = false
         }
         val progressText = TextView(this).apply {
-            text = "Rendering: 0%"
+            text = "Rendering/encoding: 0%"
             gravity = Gravity.CENTER
             setPadding(0, 12, 0, 0)
         }
@@ -605,31 +651,49 @@ class MapViewerActivity : AppCompatActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(24, 8, 24, 8)
             addView(progress)
-            addView(progressText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(progressText, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ))
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Saving entire map…")
-            .setMessage("The PNG will be written only after the complete image is encoded. An incomplete .pending file will be removed if the export fails.")
+            .setMessage("The PNG is rendered chunk-by-chunk and saved only after the image is complete.")
             .setView(progressBox)
-            .setNegativeButton("Cancel", null)
+            .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .create()
-        dialog.setOnCancelListener { }
+        dialog.setCancelable(false)
+        dialog.setCanceledOnTouchOutside(false)
         dialog.show()
         Thread {
             try {
                 val destination = savePngToGallery(displayName) { output ->
-                    WholeMapExporter.export(bridge, bounds, selectedDbDimension(), ppb, output) { value ->
-                        runOnUiThread {
-                            progress.progress = value
-                            progressText.text = "Rendering/encoding: $value%"
-                        }
-                    }
+                    WholeMapExporter.export(
+                        bridge,
+                        bounds,
+                        selectedDbDimension(),
+                        ppb,
+                        output,
+                        onProgress = { value ->
+                            runOnUiThread {
+                                progress.progress = value
+                                progressText.text = "Rendering/encoding: $value%"
+                            }
+                        },
+                        isCancelled = { cancelled.get() }
+                    )
                 }
                 runOnUiThread {
+                    if (cancelled.get()) return@runOnUiThread
                     progress.progress = 100
                     progressText.text = "Complete: 100%"
                     dialog.dismiss()
                     Toast.makeText(this, "Entire map picture saved to $destination.", Toast.LENGTH_LONG).show()
+                }
+            } catch (_: CancellationException) {
+                runOnUiThread {
+                    dialog.dismiss()
+                    Toast.makeText(this, "Entire map picture cancelled. No incomplete PNG was kept.", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Throwable) {
                 runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to save entire map picture", e) }
