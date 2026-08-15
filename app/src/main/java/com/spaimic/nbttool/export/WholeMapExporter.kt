@@ -213,7 +213,10 @@ object WholeMapExporter {
         val rowWidthLong = b.widthBlocks * ppb
         require(rowWidthLong <= Int.MAX_VALUE)
         val rowWidth = rowWidthLong.toInt()
-        val poolSize = minOf(RENDER_THREADS, chunkWidth)).toInt().coerceAtLeast(1)
+        val chunkWidth = (b.maxChunkX - b.minChunkX + 1L).coerceAtLeast(1L)
+        val poolSize = minOf(
+            RENDER_THREADS,
+            chunkWidth.toInt().coerceAtLeast(1)
         )
 
         /*
@@ -247,7 +250,7 @@ object WholeMapExporter {
             while (batchStartZ <= b.maxChunkZ) {
                 checkCancelled(isCancelled)
                 val batchEndZ = minOf(
-                    b.maxChunkZ,
+                    b.maxChunkZ.toLong(),
                     batchStartZ.toLong() + stripsInFlight - 1L
                 ).toInt()
 
