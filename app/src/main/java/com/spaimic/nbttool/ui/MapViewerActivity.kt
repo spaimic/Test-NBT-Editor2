@@ -639,6 +639,93 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
+    /**
+     * Writes a PNG through MediaStore when available, with Download first and
+     * Pictures as a fallback. The producer owns/finishes the supplied stream.
+     * On failure, incomplete/pending MediaStore entries are removed.
+     */
+    private fun savePngToGallery(
+        displayName: String,
+        producer: (java.io.OutputStream) -> Unit
+    ): String {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+
+            fun attempt(collection: android.net.Uri, relativePath: String): String? {
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(collection, values) ?: return null
+                try {
+                    val output = resolver.openOutputStream(uri)
+                        ?: throw java.io.IOException("Unable to open MediaStore output stream")
+                    output.use { producer(it) }
+
+                    val done = ContentValues().apply {
+                        put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    }
+                    if (resolver.update(uri, done, null, null) <= 0) {
+                        throw java.io.IOException("Unable to finalize MediaStore image")
+                    }
+                    return relativePath + displayName
+                } catch (t: Throwable) {
+                    resolver.delete(uri, null, null)
+                    throw t
+                }
+            }
+
+            try {
+                return attempt(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    Environment.DIRECTORY_DOWNLOADS + "/"
+                ) ?: throw java.io.IOException("Unable to create image in Download")
+            } catch (downloadError: Throwable) {
+                try {
+                    return attempt(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        Environment.DIRECTORY_PICTURES + "/"
+                    ) ?: throw java.io.IOException("Unable to create image in Pictures")
+                } catch (picturesError: Throwable) {
+                    throw java.io.IOException(
+                        "Could not save PNG to Download or Pictures",
+                        picturesError
+                    )
+                }
+            }
+        }
+
+        // Legacy Android: use normal files and explicitly request media scanning.
+        val directories = listOf(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+        )
+        var lastError: Throwable? = null
+        for (directory in directories) {
+            try {
+                if (!directory.exists() && !directory.mkdirs()) {
+                    throw java.io.IOException("Unable to create ${directory.absolutePath}")
+                }
+                val file = File(directory, displayName)
+                file.outputStream().use { producer(it) }
+                MediaScannerConnection.scanFile(
+                    this,
+                    arrayOf(file.absolutePath),
+                    arrayOf("image/png"),
+                    null
+                )
+                return file.absolutePath
+            } catch (t: Throwable) {
+                lastError = t
+                // Never leave a partial PNG behind.
+                try { File(directory, displayName).delete() } catch (_: Throwable) {}
+            }
+        }
+        throw java.io.IOException("Could not save PNG to Download or Pictures", lastError)
+    }
+
     private fun promptDeleteSelection() {
         val s=mapView.selection ?: return
         val input=EditText(this).apply { hint="Type DELETE to confirm" }
