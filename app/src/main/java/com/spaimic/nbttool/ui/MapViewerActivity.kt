@@ -469,7 +469,7 @@ class MapViewerActivity : AppCompatActivity() {
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("🌍 Take Entire Map Picture")
-            .setMessage("First, NBT Tool will analyze the world and calculate the largest safe pixels-per-block value. The export is limited to less than 5 billion pixels.")
+            .setMessage("First, NBT Tool will analyze the world and calculate the largest safe pixels-per-block value. The export is limited to less than 1 billion pixels.")
             .setPositiveButton("Analyze") { _, _ -> analyzeWholeMapPicture(bridge) }
             .setNegativeButton("Cancel", null)
             .create()

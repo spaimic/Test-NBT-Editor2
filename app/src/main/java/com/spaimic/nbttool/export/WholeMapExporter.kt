@@ -113,8 +113,8 @@ object WholeMapExporter {
                 bridge, bounds, dimension, pixelsPerBlock,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 70 + ((worldRow.toLong() + 1L) * 29L / height.toLong())
-                        .toInt().coerceIn(70, 99)
+                    val percent = 45 + ((worldRow.toLong() + 1L) * 54L / height.toLong())
+                        .toInt().coerceIn(45, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
@@ -160,7 +160,7 @@ object WholeMapExporter {
                 bridge, bounds, dimension, ppb,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 70 + ((worldRow.toLong() + 1L) * 29L / height.toLong()).toInt().coerceIn(70, 99)
+                    val percent = 45 + ((worldRow.toLong() + 1L) * 54L / height.toLong()).toInt().coerceIn(45, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
@@ -219,6 +219,7 @@ object WholeMapExporter {
         var worldRow = 0L
         val totalChunks = b.chunkCount.coerceAtLeast(1L)
         var completedChunks = 0L
+        onChunkProgress(0)
 
         try {
             for (cz in b.minChunkZ..b.maxChunkZ) {
@@ -252,7 +253,7 @@ object WholeMapExporter {
                     completedChunks++
                     // Loading/decoding chunks is the expensive part. Report this
                     // phase early, then row encoding continues toward the end.
-                    val chunkPercent = (completedChunks * 70L / totalChunks).toInt().coerceIn(0, 70)
+                    val chunkPercent = (completedChunks * 45L / totalChunks).toInt().coerceIn(0, 45)
                     onChunkProgress(chunkPercent)
                     unknown.addAll(result.unknown)
                     result.reasons.forEach { (key, value) -> reasons[key] = (reasons[key] ?: 0) + value }
@@ -293,47 +294,58 @@ object WholeMapExporter {
      * byte array for every row, and normal zlib compression is used so the final
      * PNG is substantially closer to Android/Blocktopograph's PNG output size.
      */
+    /**
+     * Lossless indexed-color PNG writer. NBT Tool's map renderer uses a small,
+     * fixed map-color palette, so an 8-bit indexed PNG stores one byte per
+     * pixel instead of three RGB bytes. This keeps the PNG lossless while
+     * making large map captures much smaller.
+     */
     private class PngWriter(raw: OutputStream, private val width: Int, private val height: Int) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 128 * 1024)
         private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
         private val buf = ByteArray(1024 * 1024)
-        private val rawRow = ByteArray(width * 3 + 1)
+        private val rawRow = ByteArray(width + 1)
+        private val palette = intArrayOf(0x000000, 0x7FB238, 0xF7E9A3, 0xC7C7C7, 0xFF0000, 0xA0A0FF, 0xA7A7A7, 0x007C00, 0xFFFFFF, 0xA4A8B8, 0x976D4D, 0x707070, 0x4040FF, 0x8F7748, 0xFFFCF5, 0xD87F33, 0xB24CD8, 0x6699D8, 0xE5E533, 0x7FCC19, 0xF27FA5, 0x4C4C4C, 0x999999, 0x4C7F99, 0x7F3FB2, 0x334CB2, 0x664C33, 0x667F33, 0x993333, 0x191919, 0xFAEE4D, 0x5CDBD5, 0x4A80FF, 0x00D93A, 0x815631, 0x700200, 0xD1B1A1, 0x9F5224, 0x95576C, 0x706C8A, 0xBA8524, 0x677535, 0xA04D4E, 0x392923, 0x876B62, 0x575C5C, 0x7A4958, 0x4C3E5C, 0x4C3223, 0x4C522A, 0x8E3C2E, 0x251610, 0xBD3031, 0x943F61, 0x5C191D, 0x167E86, 0x3A8E8C, 0x562C3E, 0x14B485, 0x646464, 0xD8AF93, 0x7FA796, 0x92BC58, 0x3F5C18, 0x455A2E, 0x345234, 0x1E5AF5, 0x4E711E, 0xE0ADB1, 0xD9A8AC, 0xB25C65, 0x92473F, 0xE0CE5E, 0xDFDAD1, 0xBEB9B0, 0x0D1217, 0xCFD5D6, 0xE06100, 0xA9309F, 0x5FACDE, 0xF0AF15, 0x7EBD29, 0xE0667E, 0x36393D, 0x7D7D73, 0x158991, 0x64209C, 0x2C2E8F, 0x603B24, 0x495B24, 0x8E2020, 0x080A0F, 0x787878, 0x373737, 0x5A5A5A, 0x4AA1A3, 0x696662, 0x61584C, 0x886A5C, 0xD87F52, 0xEE8DAC, 0xD6BE37, 0xA83636)
+        private val paletteIndex = HashMap<Int, Int>(palette.size * 2)
         private var rows = 0
         private var closed = false
 
         init {
+            for (i in palette.indices) paletteIndex[palette[i]] = i
             out.write(byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10))
             val ihdr = ByteArray(13)
             writeInt(ihdr, 0, width)
             writeInt(ihdr, 4, height)
-            ihdr[8] = 8
-            ihdr[9] = 2 // RGB
+            ihdr[8] = 8       // indexed palette, one byte per pixel
+            ihdr[9] = 3       // PNG color type 3
             writeChunk("IHDR", ihdr, ihdr.size)
+
+            // PLTE is RGB triples, exactly as required by PNG color type 3.
+            val plte = ByteArray(palette.size * 3)
+            var j = 0
+            for (c in palette) {
+                plte[j++] = ((c ushr 16) and 255).toByte()
+                plte[j++] = ((c ushr 8) and 255).toByte()
+                plte[j++] = (c and 255).toByte()
+            }
+            writeChunk("PLTE", plte, plte.size)
         }
 
         fun writeRow(colors: IntArray) {
             require(!closed) { "PNG writer is closed" }
             require(colors.size == width) { "Expected $width pixels, got ${colors.size}" }
-            // PNG Sub filtering is especially effective for this map because each
-            // Minecraft block is repeated horizontally pixelsPerBlock times. The
-            // repeated RGB triples therefore become mostly zero bytes before zlib
-            // compression, substantially reducing PNG size without changing a
-            // single visible pixel.
-            rawRow[0] = 1 // PNG filter: Sub
+            // Sub-filter the palette indices. Consecutive pixels belonging to
+            // the same Minecraft block become zero, which compresses extremely
+            // well while remaining completely lossless.
+            rawRow[0] = 1
+            var previous = 0
             var j = 1
-            var prevR = 0
-            var prevG = 0
-            var prevB = 0
             for (c in colors) {
-                val r = android.graphics.Color.red(c)
-                val g = android.graphics.Color.green(c)
-                val b = android.graphics.Color.blue(c)
-                rawRow[j++] = (r - prevR).toByte()
-                rawRow[j++] = (g - prevG).toByte()
-                rawRow[j++] = (b - prevB).toByte()
-                prevR = r
-                prevG = g
-                prevB = b
+                val index = paletteIndex[c] ?: throw IllegalStateException(
+                    "Map color 0x${(c and 0xFFFFFF).toString(16)} is not in the export palette"
+                )
+                rawRow[j++] = (index - previous).toByte()
+                previous = index
             }
             deflater.setInput(rawRow)
             while (!deflater.needsInput()) {
@@ -346,9 +358,6 @@ object WholeMapExporter {
         override fun close() {
             if (closed) return
             try {
-                // If rendering was cancelled or failed before every row was
-                // produced, do not spend extra time finishing a useless PNG.
-                // The MediaStore/file layer will remove the incomplete output.
                 if (rows >= height) {
                     deflater.finish()
                     while (!deflater.finished()) {
@@ -367,7 +376,7 @@ object WholeMapExporter {
 
         private fun writeChunk(type: String, data: ByteArray, len: Int) {
             val tb = type.toByteArray(Charsets.US_ASCII)
-            writeInt(dataLength = len)
+            writeInt(len)
             out.write(tb)
             if (len > 0) out.write(data, 0, len)
             val crc = CRC32()
@@ -376,11 +385,11 @@ object WholeMapExporter {
             writeInt(crc.value.toInt())
         }
 
-        private fun writeInt(dataLength: Int) {
-            out.write((dataLength ushr 24) and 255)
-            out.write((dataLength ushr 16) and 255)
-            out.write((dataLength ushr 8) and 255)
-            out.write(dataLength and 255)
+        private fun writeInt(v: Int) {
+            out.write((v ushr 24) and 255)
+            out.write((v ushr 16) and 255)
+            out.write((v ushr 8) and 255)
+            out.write(v and 255)
         }
 
         private fun writeInt(a: ByteArray, o: Int, v: Int) {
