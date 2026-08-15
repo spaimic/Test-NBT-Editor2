@@ -1,4 +1,7 @@
 package com.spaimic.nbttool.ui
+import android.content.ContentValues
+import android.provider.MediaStore
+import android.media.MediaScannerConnection
 import android.view.View
 import android.view.ViewGroup
 import com.spaimic.nbttool.R
@@ -16,6 +19,8 @@ import android.widget.*
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.spaimic.nbttool.export.MapSelectionExporter
+import com.spaimic.nbttool.export.WholeMapExporter
+import com.spaimic.nbttool.export.WholeMapBounds
 import com.spaimic.nbttool.selection.WorldSelection
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.chunk.ChunkScanner
@@ -433,18 +438,182 @@ class MapViewerActivity : AppCompatActivity() {
 
     private fun saveSelectionPicture(s: WorldSelection, ppb: Int) {
         val bridge = LevelDbSession.bridge ?: return
-        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        if (!dir.exists()) dir.mkdirs()
-        val file = File(dir, "NBTTool_Map_${s.minX}_${s.minZ}_${s.maxX}_${s.maxZ}_${ppb}px.png")
         Thread {
             try {
-                runOnUiThread { Toast.makeText(this,"Saving map picture…",Toast.LENGTH_LONG).show() }
-                MapSelectionExporter.export(bridge,s,selectedDbDimension(),ppb,file) { }
-                runOnUiThread { Toast.makeText(this,"Saved to ${file.absolutePath}",Toast.LENGTH_LONG).show() }
+                runOnUiThread { Toast.makeText(this, "Saving map picture…", Toast.LENGTH_LONG).show() }
+                val displayName = "NBTTool_Map_${s.minX}_${s.minZ}_${s.maxX}_${s.maxZ}_${ppb}px.png"
+                savePngToGallery(displayName) { output ->
+                    MapSelectionExporter.export(bridge, s, selectedDbDimension(), ppb, output) { }
+                }
+                runOnUiThread {
+                    Toast.makeText(this, "Map picture saved to Downloads and added to Gallery.", Toast.LENGTH_LONG).show()
+                }
             } catch (e: Throwable) {
-                runOnUiThread { showErrorDialog(this,"Failed to save map picture",e) }
+                runOnUiThread { showErrorDialog(this, "Failed to save map picture", e) }
             }
         }.start()
+    }
+
+    private fun promptWholeMapPicture() {
+        val bridge = LevelDbSession.bridge ?: run {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        val input = EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            setText("4")
+            hint = "Pixels per block (4–24)"
+        }
+        AlertDialog.Builder(this)
+            .setTitle("🌍 Take Entire Map Picture")
+            .setMessage("Captures every chunk stored in the current dimension.\nChoose pixels per block (4–24). Large worlds may automatically require a lower setting to keep the PNG size practical.")
+            .setView(input)
+            .setPositiveButton("Analyze") { _, _ ->
+                val ppb = input.text.toString().toIntOrNull()?.coerceIn(4, 24) ?: 4
+                analyzeWholeMapPicture(bridge, ppb)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun analyzeWholeMapPicture(bridge: LevelDbBridge, ppb: Int) {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Analyzing world map…")
+            .setMessage("Finding the complete chunk bounds. Please wait.")
+            .setView(ProgressBar(this))
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.show()
+        Thread {
+            try {
+                val bounds = WholeMapExporter.findBounds(bridge, selectedDbDimension())
+                    ?: throw IllegalStateException("No chunk data was found in this dimension.")
+                runOnUiThread {
+                    dialog.dismiss()
+                    val width = bounds.widthBlocks
+                    val height = bounds.heightBlocks
+                    val requestedWidth = width * ppb.toLong()
+                    val requestedHeight = height * ppb.toLong()
+                    AlertDialog.Builder(this)
+                        .setTitle("Entire Map Picture")
+                        .setMessage(
+                            "Bounds: X ${bounds.minX}..${bounds.maxX}, Z ${bounds.minZ}..${bounds.maxZ}\n" +
+                            "World area: ${width} × ${height} blocks\n" +
+                            "Requested image: ${requestedWidth} × ${requestedHeight} pixels\n\n" +
+                            "A preview will be generated before saving."
+                        )
+                        .setPositiveButton("Preview") { _, _ ->
+                            previewWholeMapPicture(bounds, ppb)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to analyze entire map", e) }
+            }
+        }.start()
+    }
+
+    private fun previewWholeMapPicture(bounds: WholeMapBounds, ppb: Int) {
+        val bridge = LevelDbSession.bridge ?: return
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Rendering entire map preview…")
+            .setMessage("Large worlds can take a while. Please wait.")
+            .setView(ProgressBar(this))
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.show()
+        Thread {
+            try {
+                val preview = WholeMapExporter.preview(bridge, bounds, selectedDbDimension(), ppb)
+                runOnUiThread {
+                    dialog.dismiss()
+                    val image = ImageView(this).apply {
+                        setImageBitmap(preview)
+                        adjustViewBounds = true
+                        scaleType = ImageView.ScaleType.FIT_CENTER
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("Entire Map Picture Preview")
+                        .setMessage("${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • requested ${ppb} px/block\nPreview is scaled down for display.")
+                        .setView(image)
+                        .setPositiveButton("Save PNG") { _, _ ->
+                            saveWholeMapPicture(bounds, ppb)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to render entire map preview", e) }
+            }
+        }.start()
+    }
+
+    private fun saveWholeMapPicture(bounds: WholeMapBounds, ppb: Int) {
+        val bridge = LevelDbSession.bridge ?: return
+        val dimName = when (selectedDbDimension()) { 1 -> "Nether"; 2 -> "TheEnd"; else -> "Overworld" }
+        val displayName = "NBTTool_${dimName}_EntireMap_${ppb}px.png"
+        val progress = ProgressBar(this).apply { max = 100 }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Saving entire map…")
+            .setMessage("Rendering the complete map. Large worlds may take a long time.")
+            .setView(progress)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.show()
+        Thread {
+            try {
+                savePngToGallery(displayName) { output ->
+                    WholeMapExporter.export(bridge, bounds, selectedDbDimension(), ppb, output) { value ->
+                        runOnUiThread { progress.progress = value }
+                    }
+                }
+                runOnUiThread {
+                    dialog.dismiss()
+                    Toast.makeText(this, "Entire map picture saved to Downloads and added to Gallery.", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { dialog.dismiss(); showErrorDialog(this, "Failed to save entire map picture", e) }
+            }
+        }.start()
+    }
+
+    /**
+     * Writes a PNG through MediaStore on Android 10+ so Gallery/media providers
+     * immediately know that a new image exists. On older Android versions the
+     * file is written to Downloads and explicitly sent to MediaScanner.
+     */
+    private fun savePngToGallery(displayName: String, writer: (java.io.OutputStream) -> Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, displayName)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val resolver = contentResolver
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Android could not create the Gallery image entry")
+            try {
+                resolver.openOutputStream(uri)?.use { writer(it) }
+                    ?: throw IllegalStateException("Could not open Gallery image output stream")
+                resolver.update(
+                    uri,
+                    ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                    null,
+                    null
+                )
+            } catch (e: Throwable) {
+                resolver.delete(uri, null, null)
+                throw e
+            }
+        } else {
+            val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!dir.exists()) dir.mkdirs()
+            val file = File(dir, displayName)
+            file.outputStream().use(writer)
+            MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf("image/png"), null)
+        }
     }
 
     private fun promptDeleteSelection() {
@@ -851,6 +1020,7 @@ class MapViewerActivity : AppCompatActivity() {
             "The End NBT Data",
             "NBT Tag Clipboard",
             "Chunk Clipboard",
+            "🌍 Take Entire Map Picture",
             "Open LevelDB Key by Name",
             "Advanced: Browse Extra DB Keys"
         )
@@ -877,8 +1047,9 @@ class MapViewerActivity : AppCompatActivity() {
                     10 -> showExactKey("The End NBT Data", "TheEnd")
                     11 -> startActivity(Intent(this, ClipboardActivity::class.java))
                     12 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
-                    13 -> promptOpenLevelDbKeyByName()
-                    14 -> openAllKeysBrowser()
+                    13 -> promptWholeMapPicture()
+                    14 -> promptOpenLevelDbKeyByName()
+                    15 -> openAllKeysBrowser()
                 }
             }
             .show()

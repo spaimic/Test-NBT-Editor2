@@ -35,6 +35,24 @@ object MapSelectionExporter {
         }
     }
 
+    fun export(
+        bridge: LevelDbBridge,
+        selection: WorldSelection,
+        dimension: Int,
+        pixelsPerBlock: Int,
+        output: OutputStream,
+        onProgress: (Int)->Unit = {}
+    ) {
+        require(selection.isValid)
+        require(pixelsPerBlock in 1..24)
+        val width=selection.width*pixelsPerBlock
+        val height=selection.height*pixelsPerBlock
+        PngWriter(output,width,height).use { png ->
+            renderRows(bridge,selection,dimension,pixelsPerBlock){ row -> png.writeRow(row) }
+            onProgress(100)
+        }
+    }
+
     /**
      * Render the preview through the exact same PNG writer used by export().
      *
