@@ -258,7 +258,7 @@ object WholeMapExporter {
             }
         }
 
-        val completedByCoord = HashMap<Long, ChunkResult>(maxInFlight * 2)
+        val completedByCoord = HashMap<Long, Completed>(maxInFlight * 2)
         var submitted = 0L
         var completed = 0L
 
@@ -324,7 +324,7 @@ object WholeMapExporter {
                     while (!completedByCoord.containsKey(key)) {
                         val future = completion.take()
                         val done = future.get()
-                        completedByCoord[coordKey(done.x, done.z)] = done.result
+                        completedByCoord[coordKey(done.x, done.z)] = done
                         completed++
                         unknown.addAll(done.result.unknown)
                         done.result.reasons.forEach { (k, v) ->
@@ -336,10 +336,10 @@ object WholeMapExporter {
                         refillWindow()
                     }
 
-                    val result = completedByCoord.remove(key)
+                    val completedResult = completedByCoord.remove(key)
                         ?: throw IllegalStateException("Missing chunk result for $cx,$cz")
 
-                    result.grid?.let { grids[cx] = it }
+                    completedResult.result.grid?.let { grids[cx] = it }
                 }
 
                 val rgb = IntArray(rowWidth)
