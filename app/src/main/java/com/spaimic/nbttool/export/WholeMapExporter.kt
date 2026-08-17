@@ -243,16 +243,16 @@ object WholeMapExporter {
             chunkWidthLong.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
         )
 
-        val executor = Executors.newFixedThreadPool(poolSize)
-        val completion =
-            java.util.concurrent.ExecutorCompletionService<CompletedChunk>(executor)
-
         data class Job(val x: Int, val z: Int)
         data class CompletedChunk(
             val x: Int,
             val z: Int,
             val result: ChunkResult
         )
+
+        val executor = Executors.newFixedThreadPool(poolSize)
+        val completion =
+            java.util.concurrent.ExecutorCompletionService<CompletedChunk>(executor)
 
         val pendingJobs = java.util.ArrayDeque<Job>()
         for (cz in b.minChunkZ..b.maxChunkZ) {
