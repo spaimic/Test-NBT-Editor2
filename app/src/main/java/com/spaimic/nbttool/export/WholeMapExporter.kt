@@ -259,28 +259,52 @@ object WholeMapExporter {
         fun coordKey(x: Int, z: Int): Long =
             (x.toLong() shl 32) xor (z.toLong() and 0xFFFFFFFFL)
 
-        // Bounds how many chunks' raw bytes can be alive at once (queued in the
-        // executor, or completed but not yet consumed by the row-writing loop
-        // below) — one permit per in-flight chunk, released only once its
-        // result has actually been consumed. Build 175 read the whole export
-        // region's raw subchunk bytes into memory before rendering a single
-        // pixel, which OOM'd on large worlds. This keeps the "one sequential
-        // LevelDB pass instead of one per chunk" speed win from Build 175
-        // (see LevelDbBridge.scanChunkRecordsStreaming) while capping memory
-        // to roughly maxInFlight chunks' worth of raw bytes at any moment,
-        // same as the old one-job-at-a-time-per-thread footprint.
+        // Bounds how many chunks' raw bytes can be queued/decoding at once —
+        // one permit per submitted chunk, released the moment that chunk's
+        // Callable finishes parsing (see submitChunk below), NOT when the
+        // row-writing loop later consumes its (small, already-parsed) result.
+        // Build 175 read the whole export region's raw subchunk bytes into
+        // memory before rendering a single pixel, which OOM'd on large
+        // worlds. An earlier version of this fix released permits on
+        // row-major consumption instead of on parse completion, which
+        // deadlocked: the scan discovers chunks in LevelDB's raw key order
+        // (scrambled, not row-major), so it could fill every permit with
+        // coordinates the row-writer doesn't need yet, then block forever
+        // waiting for a release only the still-blocked writer could trigger.
+        // Releasing on parse completion keeps this bounding what it's
+        // actually meant to bound (raw bytes in flight) with no ordering
+        // dependency on the consumer.
         val inFlight = java.util.concurrent.Semaphore(maxInFlight)
 
         fun submitChunk(x: Int, z: Int, subchunks: List<Pair<Int, ByteArray>>, biome: ByteArray?) {
             inFlight.acquire()
             completion.submit(Callable {
-                val localUnknown = HashSet<String>()
-                val localReasons = HashMap<String, Int>()
-                val localExamples = HashMap<String, String>()
-                val grid = ChunkScanner.loadChunkFromRawData(
-                    subchunks, biome, dimension, localUnknown, localReasons, localExamples
-                )
-                CompletedChunk(x, z, ChunkResult(grid, localUnknown, localReasons, localExamples))
+                try {
+                    val localUnknown = HashSet<String>()
+                    val localReasons = HashMap<String, Int>()
+                    val localExamples = HashMap<String, String>()
+                    val grid = ChunkScanner.loadChunkFromRawData(
+                        subchunks, biome, dimension, localUnknown, localReasons, localExamples
+                    )
+                    CompletedChunk(x, z, ChunkResult(grid, localUnknown, localReasons, localExamples))
+                } finally {
+                    // Release as soon as the raw bytes are no longer needed —
+                    // NOT when the row-writer below happens to consume this
+                    // coordinate. The scan discovers chunks in LevelDB's raw
+                    // key order (scrambled by little-endian coordinate
+                    // encoding), not row-major order, so the row-writer (which
+                    // always wants the top-left-most remaining coordinate
+                    // next) will very often need a chunk the scan hasn't
+                    // reached yet. Releasing only on row-major consumption
+                    // deadlocks: the scan fills all `maxInFlight` permits with
+                    // scattered coordinates the writer doesn't need yet, then
+                    // blocks forever waiting for a release that only the
+                    // still-blocked writer could trigger. Releasing here
+                    // keeps the semaphore bounding what it's actually meant to
+                    // bound — raw bytes in flight — without an ordering
+                    // dependency on consumption.
+                    inFlight.release()
+                }
             })
         }
 
@@ -371,7 +395,6 @@ object WholeMapExporter {
                         ?: throw IllegalStateException(
                             "Missing chunk result for $cx,$cz"
                         )
-                    inFlight.release()
 
                     result.grid?.let { grids[cx] = it }
                 }
