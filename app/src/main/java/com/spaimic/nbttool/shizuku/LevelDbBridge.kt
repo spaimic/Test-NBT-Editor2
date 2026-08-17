@@ -1,5 +1,7 @@
 package com.spaimic.nbttool.shizuku
 
+import com.spaimic.nbttool.chunk.ChunkKeys
+
 import org.iq80.leveldb.CompressionType
 import org.iq80.leveldb.DB
 import org.iq80.leveldb.Options
