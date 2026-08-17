@@ -183,6 +183,49 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
     fun readOverworldSubchunks(chunkX: Int, chunkZ: Int): List<Pair<Int, ByteArray>> =
         readSubchunks(chunkX, chunkZ, 0)
 
+    data class ChunkRecordScan(
+        val subchunksByCoord: Map<Long, List<Pair<Int, ByteArray>>>,
+        val biomeByCoord: Map<Long, ByteArray>
+    )
+
+    /**
+     * One sequential pass over the whole database collecting every subchunk
+     * and biome record for [dimension] within the given chunk-coordinate
+     * bounds, bucketed by chunk coordinate (see [chunkCoordKey]).
+     *
+     * This exists so a whole-map export pays LevelDB's per-call iterator and
+     * snapshot setup cost (`db.iterator()` takes a global lock and rebuilds a
+     * merging iterator across every SST file) exactly ONCE for the entire
+     * export, instead of once per chunk via [readSubchunks]/[read]. See
+     * ChunkScanner.loadChunkFromRawData, which consumes this result with zero
+     * further LevelDB access.
+     */
+    fun scanChunkRecords(
+        dimension: Int,
+        minChunkX: Int, maxChunkX: Int,
+        minChunkZ: Int, maxChunkZ: Int
+    ): ChunkRecordScan {
+        val subchunks = HashMap<Long, MutableList<Pair<Int, ByteArray>>>()
+        val biome = HashMap<Long, ByteArray>()
+        forEachRawEntry { key, value ->
+            val info = com.spaimic.nbttool.chunk.ChunkKeys.parse(key) ?: return@forEachRawEntry
+            if (info.dimension != dimension) return@forEachRawEntry
+            if (info.chunkX < minChunkX || info.chunkX > maxChunkX) return@forEachRawEntry
+            if (info.chunkZ < minChunkZ || info.chunkZ > maxChunkZ) return@forEachRawEntry
+            when (info.tag) {
+                com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX -> {
+                    val subY = info.subChunkY ?: return@forEachRawEntry
+                    subchunks.getOrPut(chunkCoordKey(info.chunkX, info.chunkZ)) { ArrayList() }
+                        .add(subY to value)
+                }
+                com.spaimic.nbttool.chunk.ChunkKeys.TAG_DATA_3D -> {
+                    biome[chunkCoordKey(info.chunkX, info.chunkZ)] = value
+                }
+            }
+        }
+        return ChunkRecordScan(subchunks, biome)
+    }
+
     fun close() = db.close()
 
     fun decodeKeyName(key: ByteArray): String {
@@ -192,6 +235,10 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
     }
 
     companion object {
+        /** Packs a chunk (x, z) pair into one Long key for hash-map bucketing. */
+        fun chunkCoordKey(x: Int, z: Int): Long =
+            (x.toLong() shl 32) xor (z.toLong() and 0xFFFFFFFFL)
+
         /** Opens `<worldDir>/db` in place. */
         fun open(worldDir: File): LevelDbBridge {
             // Iq80DBFactory.USE_MMAP is a `static final` decided from this system property at

@@ -250,6 +250,20 @@ object WholeMapExporter {
             val result: ChunkResult
         )
 
+        // Single sequential LevelDB pass for the whole export region, done up
+        // front on this thread. This is the whole point: the vendored
+        // org.iq80.leveldb port takes a global lock and rebuilds a merging
+        // iterator across every SST file on EVERY db.iterator()/db.get() call,
+        // so calling that once per chunk (as loadChunkDirect() used to, via
+        // readSubchunks()+read()) serializes and dominates export time no
+        // matter how many worker threads are decoding. Doing it once here
+        // means the worker pool below spends all its time on genuinely
+        // parallel CPU work (subchunk parsing/coloring) instead.
+        val scan = bridge.scanChunkRecords(
+            dimension, b.minChunkX, b.maxChunkX, b.minChunkZ, b.maxChunkZ
+        )
+        checkCancelled(isCancelled)
+
         val executor = Executors.newFixedThreadPool(poolSize)
         val completion =
             java.util.concurrent.ExecutorCompletionService<CompletedChunk>(executor)
@@ -276,22 +290,21 @@ object WholeMapExporter {
                 val localReasons = HashMap<String, Int>()
                 val localExamples = HashMap<String, String>()
 
-                val loaded = ChunkScanner.loadChunkDirect(
-                    bridge,
-                    job.x,
-                    job.z,
+                val key = coordKey(job.x, job.z)
+                val grid = ChunkScanner.loadChunkFromRawData(
+                    scan.subchunksByCoord[key] ?: emptyList(),
+                    scan.biomeByCoord[key],
+                    dimension,
                     localUnknown,
                     localReasons,
-                    localExamples,
-                    dimension,
-                    includeMarkers = false
+                    localExamples
                 )
 
                 CompletedChunk(
                     job.x,
                     job.z,
                     ChunkResult(
-                        loaded?.grid,
+                        grid,
                         localUnknown,
                         localReasons,
                         localExamples

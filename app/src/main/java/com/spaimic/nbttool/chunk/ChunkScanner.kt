@@ -286,6 +286,125 @@ object ChunkScanner {
     }
 
     /**
+     * Renders one chunk's grid purely from already-fetched raw records — zero
+     * LevelDB access happens in here.
+     *
+     * The whole-map exporter batches every subchunk/biome record for the
+     * entire export region into memory with a SINGLE sequential LevelDB scan
+     * up front (see WholeMapExporter.renderRows), instead of calling
+     * loadChunkDirect() per chunk. Each call to loadChunkDirect() triggers a
+     * fresh bridge.readSubchunks()/bridge.read(), and each of those creates a
+     * brand-new LevelDB iterator/snapshot — expensive setup work (the vendored
+     * org.iq80.leveldb port takes a global lock and rebuilds a merging
+     * iterator over every SST file on every single call). Doing that once per
+     * chunk, potentially thousands of times per export, dominates whole-map
+     * export time far more than the actual per-chunk parsing/rendering CPU
+     * work does. This function lets the worker pool spend its time on that
+     * CPU work only, with no per-chunk database round trips at all.
+     */
+    fun loadChunkFromRawData(
+        subchunks: List<Pair<Int, ByteArray>>,
+        biomeBytes: ByteArray?,
+        dimension: Int,
+        unknownBlockNames: MutableSet<String> = HashSet(),
+        failureReasonCounts: MutableMap<String, Int> = HashMap(),
+        failureReasonExamples: MutableMap<String, String> = HashMap()
+    ): Array<Array<ColumnInfo>>? {
+        if (subchunks.isEmpty()) return null
+
+        if (dimension == 1) {
+            val blocks = Array(16) { Array(16) { Array(256) { "minecraft:air" } } }
+            var hadSuccessfulSubchunk = false
+            for ((subY, bytes) in subchunks) {
+                val parsed = SubChunkParser.parse(bytes)
+                when (parsed) {
+                    is SubChunkParser.ParseResult.Failure -> {
+                        failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
+                        failureReasonExamples.putIfAbsent(parsed.reason, parsed.hexSample)
+                    }
+                    is SubChunkParser.ParseResult.Success -> {
+                        hadSuccessfulSubchunk = true
+                        val baseY = subY * 16
+                        for (x in 0 until 16) for (z in 0 until 16) for (innerY in 0 until 16) {
+                            val worldY = baseY + innerY
+                            if (worldY !in 0 until 256) continue
+                            val name = parsed.blocks[x][z][innerY]
+                            blocks[x][z][worldY] = name
+                            if (name != "minecraft:air" && !BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                        }
+                    }
+                }
+            }
+            if (!hadSuccessfulSubchunk) return null
+            return NetherRenderer.render(blocks)
+        }
+
+        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
+        val found = Array(16) { BooleanArray(16) }
+        val fallback = Array(16) { arrayOfNulls<ColumnInfo>(16) }
+        var remaining = 256
+        var hadSuccessfulSubchunk = false
+        val biomeData = try {
+            biomeBytes?.let { BiomeMapParser.parse(it) }
+        } catch (_: Exception) { null }
+
+        val subchunkByY = subchunks.associate { it.first to it.second }
+        for (subY in 19 downTo -4) {
+            if (remaining == 0) break
+            val bytes = subchunkByY[subY] ?: continue
+            when (val parsed = SubChunkParser.parse(bytes)) {
+                is SubChunkParser.ParseResult.Failure -> {
+                    failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
+                    failureReasonExamples.putIfAbsent(parsed.reason, parsed.hexSample)
+                }
+                is SubChunkParser.ParseResult.Success -> {
+                    hadSuccessfulSubchunk = true
+                    for (x in 0 until 16) for (z in 0 until 16) {
+                        if (found[x][z]) continue
+                        for (y in 15 downTo 0) {
+                            val name = parsed.blocks[x][z][y]
+                            if (name == "minecraft:air") continue
+
+                            if (fallback[x][z] == null) {
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                val surfaceY = subY * 16 + y
+                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                val baseColor = BlockColors.colorForDimension(name, dimension)
+                                val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
+                                fallback[x][z] = ColumnInfo(tinted, surfaceY, name)
+                            }
+
+                            if (!BlockColors.isMapTransparent(name)) {
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                val surfaceY = subY * 16 + y
+                                val biomeId = BiomeMapParser.biomeAt(biomeData, surfaceY, x, z, subY)
+                                val baseColor = BlockColors.colorForDimension(name, dimension)
+                                val tinted = if (dimension == 0) BiomeTint.apply(name, baseColor, biomeId) else baseColor
+                                grid[x][z] = ColumnInfo(tinted, surfaceY, name)
+                                found[x][z] = true
+                                remaining--
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (x in 0 until 16) {
+            for (z in 0 until 16) {
+                if (!found[x][z]) {
+                    fallback[x][z]?.let {
+                        grid[x][z] = it
+                        found[x][z] = true
+                    }
+                }
+            }
+        }
+        if (!hadSuccessfulSubchunk) return null
+        return grid
+    }
+
+    /**
      * Fast startup path: read one chunk directly from LevelDB without waiting for
      * the global index. A single iterator seek retrieves all subchunks for the
      * requested chunk. Entity/block-entity markers are intentionally deferred
