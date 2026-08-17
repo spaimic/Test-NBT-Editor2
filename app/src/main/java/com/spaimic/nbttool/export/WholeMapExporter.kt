@@ -211,6 +211,14 @@ object WholeMapExporter {
      * The output format and PNG writer are deliberately unchanged from the
      * successful Build 163 baseline.
      */
+    /**
+     * Build 173 whole-map renderer.
+     *
+     * Uses a bounded sliding window of chunk-load jobs across the whole map.
+     * Every completed future carries its own (x,z) coordinate, while the
+     * coordinate map stores only ChunkResult. This keeps Kotlin types simple
+     * and avoids the Completed/ChunkResult mismatch from Builds 171/172.
+     */
     private fun renderRows(
         bridge: LevelDbBridge,
         b: WholeMapBounds,
@@ -220,56 +228,54 @@ object WholeMapExporter {
         onChunkProgress: (Int) -> Unit = {},
         isCancelled: () -> Boolean
     ) {
-        val rowWidthLong = b.widthBlocks * ppb
-        require(rowWidthLong <= Int.MAX_VALUE)
+        val rowWidthLong = b.widthBlocks * ppb.toLong()
+        require(rowWidthLong <= Int.MAX_VALUE.toLong())
         val rowWidth = rowWidthLong.toInt()
 
-        val chunkWidth = (b.maxChunkX.toLong() - b.minChunkX.toLong() + 1L)
-            .coerceAtLeast(1L)
-        val chunkHeight = (b.maxChunkZ.toLong() - b.minChunkZ.toLong() + 1L)
-            .coerceAtLeast(1L)
-        val totalChunks = (chunkWidth * chunkHeight).coerceAtLeast(1L)
+        val chunkWidthLong =
+            (b.maxChunkX.toLong() - b.minChunkX.toLong() + 1L).coerceAtLeast(1L)
+        val chunkHeightLong =
+            (b.maxChunkZ.toLong() - b.minChunkZ.toLong() + 1L).coerceAtLeast(1L)
+        val totalChunks = (chunkWidthLong * chunkHeightLong).coerceAtLeast(1L)
 
         val poolSize = minOf(
             RENDER_THREADS,
-            chunkWidth.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
+            chunkWidthLong.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
         )
+
         val executor = Executors.newFixedThreadPool(poolSize)
+        val completion =
+            java.util.concurrent.ExecutorCompletionService<CompletedChunk>(executor)
 
-        // Keep a small global window instead of batching by Z-strip. This prevents
-        // the worker pool from becoming idle while the caller consumes one strip.
-        val maxInFlight = (poolSize * 8).coerceIn(poolSize, 64)
-        val completion = java.util.concurrent.ExecutorCompletionService<ChunkResult>(executor)
-
-        data class Job(
-            val x: Int,
-            val z: Int
-        )
-        data class Completed(
+        data class Job(val x: Int, val z: Int)
+        data class CompletedChunk(
             val x: Int,
             val z: Int,
             val result: ChunkResult
         )
 
-        val nextJob = java.util.ArrayDeque<Job>()
+        val pendingJobs = java.util.ArrayDeque<Job>()
         for (cz in b.minChunkZ..b.maxChunkZ) {
             for (cx in b.minChunkX..b.maxChunkX) {
-                nextJob.addLast(Job(cx, cz))
+                pendingJobs.addLast(Job(cx, cz))
             }
         }
 
-        val completedByCoord = HashMap<Long, Completed>(maxInFlight * 2)
+        val maxInFlight = (poolSize * 8).coerceIn(poolSize, 64)
+        val completedByCoord = HashMap<Long, ChunkResult>(maxInFlight * 2)
+
         var submitted = 0L
         var completed = 0L
 
         fun coordKey(x: Int, z: Int): Long =
             (x.toLong() shl 32) xor (z.toLong() and 0xFFFFFFFFL)
 
-        fun submitOne(job: Job) {
+        fun submit(job: Job) {
             completion.submit(Callable {
                 val localUnknown = HashSet<String>()
                 val localReasons = HashMap<String, Int>()
                 val localExamples = HashMap<String, String>()
+
                 val loaded = ChunkScanner.loadChunkDirect(
                     bridge,
                     job.x,
@@ -280,7 +286,8 @@ object WholeMapExporter {
                     dimension,
                     includeMarkers = false
                 )
-                Completed(
+
+                CompletedChunk(
                     job.x,
                     job.z,
                     ChunkResult(
@@ -294,10 +301,10 @@ object WholeMapExporter {
             submitted++
         }
 
-        fun refillWindow() {
-            while (!nextJob.isEmpty() && submitted - completed < maxInFlight) {
+        fun refill() {
+            while (!pendingJobs.isEmpty() && submitted - completed < maxInFlight) {
                 checkCancelled(isCancelled)
-                submitOne(nextJob.removeFirst())
+                submit(pendingJobs.removeFirst())
             }
         }
 
@@ -306,52 +313,70 @@ object WholeMapExporter {
         val examples = HashMap<String, String>()
 
         try {
-            refillWindow()
+            refill()
             onChunkProgress(0)
 
             var worldRow = 0L
 
-            // Consume output strictly in map order while the completion workers
-            // continue loading/decoding the rest of the world.
             for (cz in b.minChunkZ..b.maxChunkZ) {
                 checkCancelled(isCancelled)
-                val grids = HashMap<Int, Array<Array<ColumnInfo>>>(chunkWidth.toInt())
+                val grids = HashMap<Int, Array<Array<ColumnInfo>>>(
+                    chunkWidthLong.toInt().coerceAtMost(1024)
+                )
 
                 for (cx in b.minChunkX..b.maxChunkX) {
                     checkCancelled(isCancelled)
                     val key = coordKey(cx, cz)
 
                     while (!completedByCoord.containsKey(key)) {
-                        val future = completion.take()
-                        val done = future.get()
-                        completedByCoord[coordKey(done.x, done.z)] = done
+                        checkCancelled(isCancelled)
+
+                        val done = completion.take().get()
+                        completedByCoord[coordKey(done.x, done.z)] = done.result
                         completed++
+
                         unknown.addAll(done.result.unknown)
-                        done.result.reasons.forEach { (k, v) ->
+                        for ((k, v) in done.result.reasons) {
                             reasons[k] = (reasons[k] ?: 0) + v
                         }
-                        done.result.examples.forEach { (k, v) ->
+                        for ((k, v) in done.result.examples) {
                             examples.putIfAbsent(k, v)
                         }
-                        refillWindow()
+
+                        refill()
+
+                        onChunkProgress(
+                            ((completed * 45L) / totalChunks)
+                                .toInt()
+                                .coerceIn(0, 45)
+                        )
                     }
 
-                    val completedResult = completedByCoord.remove(key)
-                        ?: throw IllegalStateException("Missing chunk result for $cx,$cz")
+                    val result = completedByCoord.remove(key)
+                        ?: throw IllegalStateException(
+                            "Missing chunk result for $cx,$cz"
+                        )
 
-                    completedResult.result.grid?.let { grids[cx] = it }
+                    result.grid?.let { grids[cx] = it }
                 }
 
                 val rgb = IntArray(rowWidth)
+
                 for (lz in 0..15) {
                     checkCancelled(isCancelled)
+
                     var cursor = 0
+
                     for (cx in b.minChunkX..b.maxChunkX) {
                         val grid = grids[cx]
+
                         for (lx in 0..15) {
                             val color = grid?.get(lx)?.get(lz)?.color
                                 ?: BlockColors.fallbackUnloaded
-                            repeat(ppb) { rgb[cursor++] = color }
+
+                            repeat(ppb) {
+                                rgb[cursor++] = color
+                            }
                         }
                     }
 
@@ -361,12 +386,6 @@ object WholeMapExporter {
                         worldRow++
                     }
                 }
-
-                onChunkProgress(
-                    ((completed * 45L) / totalChunks)
-                        .toInt()
-                        .coerceIn(0, 45)
-                )
             }
         } finally {
             executor.shutdownNow()
