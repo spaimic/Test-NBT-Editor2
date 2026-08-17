@@ -121,8 +121,15 @@ object WholeMapExporter {
                         onProgress(percent)
                     }
                 },
-                onChunkProgress = { percent ->
-                    val mapped = (percent * 15 / 100).coerceIn(0, 15)
+                onScanProgress = { scan ->
+                    val mapped = (scan * 30 / 100).coerceIn(0, 30)
+                    if (mapped != lastProgress) {
+                        lastProgress = mapped
+                        onProgress(mapped)
+                    }
+                },
+                onChunkProgress = { chunk ->
+                    val mapped = (30 + chunk * 50 / 100).coerceIn(30, 80)
                     if (mapped != lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
@@ -150,39 +157,54 @@ object WholeMapExporter {
     ): Bitmap {
         val requested = requestedPixelsPerBlock.coerceIn(MIN_PIXELS_PER_BLOCK, MAX_PIXELS_PER_BLOCK)
         val maxBlock = maxOf(bounds.widthBlocks, bounds.heightBlocks)
-        val ppb = minOf(requested, maxOf(1, (maxPixels.toLong() / maxBlock).toInt()))
-            .coerceIn(1, requested)
-        val width = (bounds.widthBlocks * ppb).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        val height = (bounds.heightBlocks * ppb).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val ppb = minOf(
+            requested,
+            maxOf(1, (maxPixels.toLong() / maxBlock).toInt())
+        ).coerceIn(1, requested)
+
+        val width = (bounds.widthBlocks * ppb)
+            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+        val height = (bounds.heightBlocks * ppb)
+            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
         require(width > 0 && height > 0)
-        val bytes = ByteArrayOutputStream((width * height).coerceAtMost(4 * 1024 * 1024))
-        PngWriter(bytes, width, height).use { png ->
-            var lastProgress = -1
-            renderRows(
-                bridge, bounds, dimension, ppb,
-                consume = { row, worldRow ->
-                    png.writeRow(row)
-                    val percent = ((worldRow + 1L) * 99L / height.toLong()).toInt().coerceIn(0, 99)
-                    if (percent != lastProgress) {
-                        lastProgress = percent
-                        onProgress(percent)
-                    }
-                },
-                onChunkProgress = { percent ->
-                    val mapped = (percent * 15 / 100).coerceIn(0, 15)
-                    if (mapped != lastProgress) {
-                        lastProgress = mapped
-                        onProgress(mapped)
-                    }
-                },
-                isCancelled = isCancelled
-            )
-            checkCancelled(isCancelled)
-        }
-        checkCancelled(isCancelled)
-        val data = bytes.toByteArray()
-        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size)
-            ?: throw IllegalStateException("Unable to decode whole-map preview")
+
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        var lastProgress = -1
+
+        renderRows(
+            bridge,
+            bounds,
+            dimension,
+            ppb,
+            consume = { row, worldRow ->
+                checkCancelled(isCancelled)
+                bitmap.setPixels(row, 0, width, 0, worldRow.toInt(), width, 1)
+
+                // Rendering rows are the 30..99% portion; the DB scan reports 0..30%.
+                val percent = 30 + ((worldRow + 1L) * 69L / height.toLong())
+                    .toInt().coerceIn(30, 99)
+                if (percent != lastProgress) {
+                    lastProgress = percent
+                    onProgress(percent)
+                }
+            },
+            onScanProgress = { scan ->
+                val mapped = (scan * 30 / 100).coerceIn(0, 30)
+                if (mapped != lastProgress) {
+                    lastProgress = mapped
+                    onProgress(mapped)
+                }
+            },
+            onChunkProgress = { chunk ->
+                val mapped = (30 + chunk * 50 / 100).coerceIn(30, 80)
+                if (mapped != lastProgress) {
+                    lastProgress = mapped
+                    onProgress(mapped)
+                }
+            },
+            isCancelled = isCancelled
+        )
+
         checkCancelled(isCancelled)
         onProgress(100)
         return bitmap
@@ -225,6 +247,7 @@ object WholeMapExporter {
         dimension: Int,
         ppb: Int,
         consume: (IntArray, Long) -> Unit,
+        onScanProgress: (Int) -> Unit = {},
         onChunkProgress: (Int) -> Unit = {},
         isCancelled: () -> Boolean
     ) {
@@ -322,7 +345,10 @@ object WholeMapExporter {
         val scanThread = Thread({
             try {
                 bridge.scanChunkRecordsStreaming(
-                    dimension, b.minChunkX, b.maxChunkX, b.minChunkZ, b.maxChunkZ
+                    dimension,
+                    b.minChunkX, b.maxChunkX,
+                    b.minChunkZ, b.maxChunkZ,
+                    onProgress = onScanProgress
                 ) { x, z, subchunks, biome ->
                     checkCancelled(isCancelled)
                     discovered.add(coordKey(x, z))

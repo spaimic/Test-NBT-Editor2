@@ -199,52 +199,104 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
      * WholeMapExporter.renderRows, which additionally bounds how far this
      * scan can run ahead of the chunks it has actually consumed.
      */
+    /**
+     * Single sequential LevelDB pass for whole-map capture.
+     *
+     * Keys for one exact (x,z,dimension) share a common byte prefix in the
+     * LevelDB sort order, so all relevant records for a chunk arrive together.
+     * We parse the binary key inline to avoid allocating ChunkKeys.Info for every
+     * database entry. This is intentionally read-only and uses one iterator.
+     */
     fun scanChunkRecordsStreaming(
         dimension: Int,
         minChunkX: Int, maxChunkX: Int,
         minChunkZ: Int, maxChunkZ: Int,
+        onProgress: (Int) -> Unit = {},
         onChunk: (chunkX: Int, chunkZ: Int, subchunks: List<Pair<Int, ByteArray>>, biome: ByteArray?) -> Unit
     ) {
+        fun i32le(key: ByteArray, o: Int): Int =
+            (key[o].toInt() and 0xFF) or
+                ((key[o + 1].toInt() and 0xFF) shl 8) or
+                ((key[o + 2].toInt() and 0xFF) shl 16) or
+                ((key[o + 3].toInt() and 0xFF) shl 24)
+
         var curX = 0
         var curZ = 0
         var curStarted = false
         var curInBounds = false
-        var curSubchunks = ArrayList<Pair<Int, ByteArray>>()
+        var curSubchunks = ArrayList<Pair<Int, ByteArray>>(8)
         var curBiome: ByteArray? = null
+        var discovered = 0L
+        val totalExpected =
+            ((maxChunkX.toLong() - minChunkX.toLong() + 1L).coerceAtLeast(1L) *
+                (maxChunkZ.toLong() - minChunkZ.toLong() + 1L).coerceAtLeast(1L))
+        var lastProgress = -1
+
+        fun reportProgress() {
+            val p = (discovered * 100L / totalExpected)
+                .toInt().coerceIn(0, 100)
+            if (p != lastProgress) {
+                lastProgress = p
+                onProgress(p)
+            }
+        }
 
         fun flush() {
             if (curStarted && curInBounds && (curSubchunks.isNotEmpty() || curBiome != null)) {
                 onChunk(curX, curZ, curSubchunks, curBiome)
+                discovered++
+                reportProgress()
             }
         }
 
-        forEachRawEntry { key, value ->
-            val info = com.spaimic.nbttool.chunk.ChunkKeys.parse(key) ?: return@forEachRawEntry
-            if (info.dimension != dimension) return@forEachRawEntry
+        db.iterator().use { iterator ->
+            iterator.seekToFirst()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                val key = entry.key
+                val value = entry.value
 
-            if (!curStarted || info.chunkX != curX || info.chunkZ != curZ) {
-                flush()
-                curX = info.chunkX
-                curZ = info.chunkZ
-                curInBounds = curX in minChunkX..maxChunkX && curZ in minChunkZ..maxChunkZ
-                curSubchunks = ArrayList()
-                curBiome = null
-                curStarted = true
-            }
+                val isOverworld = key.size == 9 || key.size == 10
+                val isDimension = key.size == 13 || key.size == 14
+                if (!isOverworld && !isDimension) continue
 
-            if (!curInBounds) return@forEachRawEntry
+                val x = i32le(key, 0)
+                val z = i32le(key, 4)
+                val dim = if (isOverworld) 0 else i32le(key, 8)
+                if (dim != dimension) continue
 
-            when (info.tag) {
-                com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX -> {
-                    val subY = info.subChunkY ?: return@forEachRawEntry
-                    curSubchunks.add(subY to value)
+                val tagOffset = if (isOverworld) 8 else 12
+                val tag = key[tagOffset].toInt() and 0xFF
+
+                // Only records used by map rendering. Ignoring all other tags
+                // also avoids needless allocations/dispatch for entities etc.
+                if (tag != ChunkKeys.TAG_SUBCHUNK_PREFIX && tag != ChunkKeys.TAG_DATA_3D) {
+                    continue
                 }
-                com.spaimic.nbttool.chunk.ChunkKeys.TAG_DATA_3D -> {
+
+                if (!curStarted || x != curX || z != curZ) {
+                    flush()
+                    curX = x
+                    curZ = z
+                    curInBounds = x in minChunkX..maxChunkX && z in minChunkZ..maxChunkZ
+                    curSubchunks = ArrayList(8)
+                    curBiome = null
+                    curStarted = true
+                }
+
+                if (!curInBounds) continue
+
+                if (tag == ChunkKeys.TAG_SUBCHUNK_PREFIX) {
+                    if (key.size != tagOffset + 2) continue
+                    curSubchunks.add(key[tagOffset + 1].toInt() to value)
+                } else {
                     curBiome = value
                 }
             }
         }
+
         flush()
+        onProgress(100)
     }
 
     fun close() = db.close()

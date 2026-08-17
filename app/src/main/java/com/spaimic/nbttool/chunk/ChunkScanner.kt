@@ -348,10 +348,14 @@ object ChunkScanner {
             biomeBytes?.let { BiomeMapParser.parse(it) }
         } catch (_: Exception) { null }
 
-        val subchunkByY = subchunks.associate { it.first to it.second }
+        val subchunkByY = arrayOfNulls<ByteArray>(24)
+        for ((subY, bytes) in subchunks) {
+            val index = subY + 4
+            if (index in subchunkByY.indices) subchunkByY[index] = bytes
+        }
         for (subY in 19 downTo -4) {
             if (remaining == 0) break
-            val bytes = subchunkByY[subY] ?: continue
+            val bytes = subchunkByY[subY + 4] ?: continue
             when (val parsed = SubChunkParser.parse(bytes)) {
                 is SubChunkParser.ParseResult.Failure -> {
                     failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
