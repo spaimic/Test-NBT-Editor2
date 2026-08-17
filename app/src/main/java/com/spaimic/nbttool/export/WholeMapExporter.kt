@@ -243,90 +243,93 @@ object WholeMapExporter {
             chunkWidthLong.coerceAtMost(Int.MAX_VALUE.toLong()).toInt().coerceAtLeast(1)
         )
 
-        data class Job(val x: Int, val z: Int)
         data class CompletedChunk(
             val x: Int,
             val z: Int,
             val result: ChunkResult
         )
 
-        // Single sequential LevelDB pass for the whole export region, done up
-        // front on this thread. This is the whole point: the vendored
-        // org.iq80.leveldb port takes a global lock and rebuilds a merging
-        // iterator across every SST file on EVERY db.iterator()/db.get() call,
-        // so calling that once per chunk (as loadChunkDirect() used to, via
-        // readSubchunks()+read()) serializes and dominates export time no
-        // matter how many worker threads are decoding. Doing it once here
-        // means the worker pool below spends all its time on genuinely
-        // parallel CPU work (subchunk parsing/coloring) instead.
-        val scan = bridge.scanChunkRecords(
-            dimension, b.minChunkX, b.maxChunkX, b.minChunkZ, b.maxChunkZ
-        )
-        checkCancelled(isCancelled)
-
         val executor = Executors.newFixedThreadPool(poolSize)
         val completion =
             java.util.concurrent.ExecutorCompletionService<CompletedChunk>(executor)
 
-        val pendingJobs = java.util.ArrayDeque<Job>()
-        for (cz in b.minChunkZ..b.maxChunkZ) {
-            for (cx in b.minChunkX..b.maxChunkX) {
-                pendingJobs.addLast(Job(cx, cz))
-            }
-        }
-
         val maxInFlight = (poolSize * 8).coerceIn(poolSize, 64)
         val completedByCoord = HashMap<Long, ChunkResult>(maxInFlight * 2)
-
-        var submitted = 0L
-        var completed = 0L
 
         fun coordKey(x: Int, z: Int): Long =
             (x.toLong() shl 32) xor (z.toLong() and 0xFFFFFFFFL)
 
-        fun submit(job: Job) {
+        // Bounds how many chunks' raw bytes can be alive at once (queued in the
+        // executor, or completed but not yet consumed by the row-writing loop
+        // below) — one permit per in-flight chunk, released only once its
+        // result has actually been consumed. Build 175 read the whole export
+        // region's raw subchunk bytes into memory before rendering a single
+        // pixel, which OOM'd on large worlds. This keeps the "one sequential
+        // LevelDB pass instead of one per chunk" speed win from Build 175
+        // (see LevelDbBridge.scanChunkRecordsStreaming) while capping memory
+        // to roughly maxInFlight chunks' worth of raw bytes at any moment,
+        // same as the old one-job-at-a-time-per-thread footprint.
+        val inFlight = java.util.concurrent.Semaphore(maxInFlight)
+
+        fun submitChunk(x: Int, z: Int, subchunks: List<Pair<Int, ByteArray>>, biome: ByteArray?) {
+            inFlight.acquire()
             completion.submit(Callable {
                 val localUnknown = HashSet<String>()
                 val localReasons = HashMap<String, Int>()
                 val localExamples = HashMap<String, String>()
-
-                val key = coordKey(job.x, job.z)
                 val grid = ChunkScanner.loadChunkFromRawData(
-                    scan.subchunksByCoord[key] ?: emptyList(),
-                    scan.biomeByCoord[key],
-                    dimension,
-                    localUnknown,
-                    localReasons,
-                    localExamples
+                    subchunks, biome, dimension, localUnknown, localReasons, localExamples
                 )
-
-                CompletedChunk(
-                    job.x,
-                    job.z,
-                    ChunkResult(
-                        grid,
-                        localUnknown,
-                        localReasons,
-                        localExamples
-                    )
-                )
+                CompletedChunk(x, z, ChunkResult(grid, localUnknown, localReasons, localExamples))
             })
-            submitted++
         }
 
-        fun refill() {
-            while (!pendingJobs.isEmpty() && submitted - completed < maxInFlight) {
-                checkCancelled(isCancelled)
-                submit(pendingJobs.removeFirst())
+        val scanError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+
+        // Scans the whole database exactly once (on this dedicated thread, in
+        // parallel with the row-writing/consumer loop below) and submits a
+        // render job the moment each chunk's records are fully read — never
+        // holding more than `maxInFlight` chunks' raw bytes at a time thanks
+        // to the semaphore. Chunk coordinates the scan never sees at all (no
+        // data in the world) are unloaded/unexplored chunks; a synthetic empty
+        // result is submitted for those afterward so every coordinate in
+        // bounds still gets exactly one CompletedChunk, same as before.
+        val discovered = HashSet<Long>()
+        val scanThread = Thread({
+            try {
+                bridge.scanChunkRecordsStreaming(
+                    dimension, b.minChunkX, b.maxChunkX, b.minChunkZ, b.maxChunkZ
+                ) { x, z, subchunks, biome ->
+                    checkCancelled(isCancelled)
+                    discovered.add(coordKey(x, z))
+                    submitChunk(x, z, subchunks, biome)
+                }
+                for (cz in b.minChunkZ..b.maxChunkZ) {
+                    for (cx in b.minChunkX..b.maxChunkX) {
+                        checkCancelled(isCancelled)
+                        val key = coordKey(cx, cz)
+                        if (key !in discovered) {
+                            inFlight.acquire()
+                            completion.submit(Callable {
+                                CompletedChunk(cx, cz, ChunkResult(null, emptySet(), emptyMap(), emptyMap()))
+                            })
+                        }
+                    }
+                }
+            } catch (t: Throwable) {
+                scanError.set(t)
             }
-        }
+        }, "WholeMapExporter-scan")
+        scanThread.isDaemon = true
+        scanThread.start()
+
+        var completed = 0L
 
         val unknown = HashSet<String>()
         val reasons = HashMap<String, Int>()
         val examples = HashMap<String, String>()
 
         try {
-            refill()
             onChunkProgress(0)
 
             var worldRow = 0L
@@ -343,6 +346,7 @@ object WholeMapExporter {
 
                     while (!completedByCoord.containsKey(key)) {
                         checkCancelled(isCancelled)
+                        scanError.get()?.let { throw it }
 
                         val done = completion.take().get()
                         completedByCoord[coordKey(done.x, done.z)] = done.result
@@ -356,8 +360,6 @@ object WholeMapExporter {
                             examples.putIfAbsent(k, v)
                         }
 
-                        refill()
-
                         onChunkProgress(
                             ((completed * 45L) / totalChunks)
                                 .toInt()
@@ -369,6 +371,7 @@ object WholeMapExporter {
                         ?: throw IllegalStateException(
                             "Missing chunk result for $cx,$cz"
                         )
+                    inFlight.release()
 
                     result.grid?.let { grids[cx] = it }
                 }
@@ -401,6 +404,7 @@ object WholeMapExporter {
                 }
             }
         } finally {
+            scanThread.interrupt()
             executor.shutdownNow()
         }
     }

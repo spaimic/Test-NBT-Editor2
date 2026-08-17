@@ -183,47 +183,68 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
     fun readOverworldSubchunks(chunkX: Int, chunkZ: Int): List<Pair<Int, ByteArray>> =
         readSubchunks(chunkX, chunkZ, 0)
 
-    data class ChunkRecordScan(
-        val subchunksByCoord: Map<Long, List<Pair<Int, ByteArray>>>,
-        val biomeByCoord: Map<Long, ByteArray>
-    )
-
     /**
-     * One sequential pass over the whole database collecting every subchunk
-     * and biome record for [dimension] within the given chunk-coordinate
-     * bounds, bucketed by chunk coordinate (see [chunkCoordKey]).
+     * One sequential pass over the whole database, emitting each chunk's
+     * subchunk + biome records to [onChunk] as soon as that chunk's block of
+     * keys ends. LevelDB keys sharing the same chunk-coordinate prefix are
+     * always contiguous under byte-wise comparison (that's how sorted-key
+     * stores compare byte strings), so this never needs to buffer more than
+     * one chunk's raw bytes at a time — unlike materializing every chunk's
+     * bytes into a map up front, which OOMs on large worlds.
      *
-     * This exists so a whole-map export pays LevelDB's per-call iterator and
-     * snapshot setup cost (`db.iterator()` takes a global lock and rebuilds a
-     * merging iterator across every SST file) exactly ONCE for the entire
-     * export, instead of once per chunk via [readSubchunks]/[read]. See
-     * ChunkScanner.loadChunkFromRawData, which consumes this result with zero
-     * further LevelDB access.
+     * This is the memory-safe counterpart to a per-chunk readSubchunks()/
+     * read() call: still only ONE iterator/snapshot setup for the whole
+     * region (see [forEachRawEntry]), just without ever holding the whole
+     * export region's raw bytes in memory at once. See
+     * WholeMapExporter.renderRows, which additionally bounds how far this
+     * scan can run ahead of the chunks it has actually consumed.
      */
-    fun scanChunkRecords(
+    fun scanChunkRecordsStreaming(
         dimension: Int,
         minChunkX: Int, maxChunkX: Int,
-        minChunkZ: Int, maxChunkZ: Int
-    ): ChunkRecordScan {
-        val subchunks = HashMap<Long, MutableList<Pair<Int, ByteArray>>>()
-        val biome = HashMap<Long, ByteArray>()
+        minChunkZ: Int, maxChunkZ: Int,
+        onChunk: (chunkX: Int, chunkZ: Int, subchunks: List<Pair<Int, ByteArray>>, biome: ByteArray?) -> Unit
+    ) {
+        var curX = 0
+        var curZ = 0
+        var curStarted = false
+        var curInBounds = false
+        var curSubchunks = ArrayList<Pair<Int, ByteArray>>()
+        var curBiome: ByteArray? = null
+
+        fun flush() {
+            if (curStarted && curInBounds && (curSubchunks.isNotEmpty() || curBiome != null)) {
+                onChunk(curX, curZ, curSubchunks, curBiome)
+            }
+        }
+
         forEachRawEntry { key, value ->
             val info = com.spaimic.nbttool.chunk.ChunkKeys.parse(key) ?: return@forEachRawEntry
             if (info.dimension != dimension) return@forEachRawEntry
-            if (info.chunkX < minChunkX || info.chunkX > maxChunkX) return@forEachRawEntry
-            if (info.chunkZ < minChunkZ || info.chunkZ > maxChunkZ) return@forEachRawEntry
+
+            if (!curStarted || info.chunkX != curX || info.chunkZ != curZ) {
+                flush()
+                curX = info.chunkX
+                curZ = info.chunkZ
+                curInBounds = curX in minChunkX..maxChunkX && curZ in minChunkZ..maxChunkZ
+                curSubchunks = ArrayList()
+                curBiome = null
+                curStarted = true
+            }
+
+            if (!curInBounds) return@forEachRawEntry
+
             when (info.tag) {
                 com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX -> {
                     val subY = info.subChunkY ?: return@forEachRawEntry
-                    subchunks.getOrPut(chunkCoordKey(info.chunkX, info.chunkZ)) { ArrayList() }
-                        .add(subY to value)
+                    curSubchunks.add(subY to value)
                 }
                 com.spaimic.nbttool.chunk.ChunkKeys.TAG_DATA_3D -> {
-                    biome[chunkCoordKey(info.chunkX, info.chunkZ)] = value
+                    curBiome = value
                 }
             }
         }
-        return ChunkRecordScan(subchunks, biome)
+        flush()
     }
 
     fun close() = db.close()
@@ -235,10 +256,6 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
     }
 
     companion object {
-        /** Packs a chunk (x, z) pair into one Long key for hash-map bucketing. */
-        fun chunkCoordKey(x: Int, z: Int): Long =
-            (x.toLong() shl 32) xor (z.toLong() and 0xFFFFFFFFL)
-
         /** Opens `<worldDir>/db` in place. */
         fun open(worldDir: File): LevelDbBridge {
             // Iq80DBFactory.USE_MMAP is a `static final` decided from this system property at
