@@ -170,13 +170,18 @@ object WholeMapExporter {
     ) {
         require(outputPixelsPerBlock in MIN_PIXELS_PER_BLOCK..MAX_PIXELS_PER_BLOCK)
 
-        val previewPpbX = preview.width / bounds.widthBlocks.coerceAtLeast(1)
-        val previewPpbY = preview.height / bounds.heightBlocks.coerceAtLeast(1)
+        // Bitmap dimensions are Int while WholeMapBounds dimensions are Long.
+        // Convert the derived preview scale back to Int before using it in
+        // Bitmap/getPixels and array indexing APIs.
+        val previewPpbX = (preview.width.toLong() / bounds.widthBlocks.coerceAtLeast(1L))
+            .toInt()
+        val previewPpbY = (preview.height.toLong() / bounds.heightBlocks.coerceAtLeast(1L))
+            .toInt()
         require(previewPpbX >= 1 && previewPpbX == previewPpbY) {
             "Preview dimensions do not match whole-map block bounds"
         }
-        require(preview.width == bounds.widthBlocks * previewPpbX)
-        require(preview.height == bounds.heightBlocks * previewPpbX)
+        require(preview.width.toLong() == bounds.widthBlocks * previewPpbX.toLong())
+        require(preview.height.toLong() == bounds.heightBlocks * previewPpbX.toLong())
 
         val widthLong = bounds.widthBlocks.toLong() * outputPixelsPerBlock
         val heightLong = bounds.heightBlocks.toLong() * outputPixelsPerBlock
@@ -187,8 +192,9 @@ object WholeMapExporter {
 
         val width = widthLong.toInt()
         val height = heightLong.toInt()
-        val blockWidth = bounds.widthBlocks
-        val blockHeight = bounds.heightBlocks
+        require(bounds.widthBlocks <= Int.MAX_VALUE.toLong() && bounds.heightBlocks <= Int.MAX_VALUE.toLong())
+        val blockWidth = bounds.widthBlocks.toInt()
+        val blockHeight = bounds.heightBlocks.toInt()
         val previewRow = IntArray(preview.width)
         val blockColors = IntArray(blockWidth)
         val outputRow = IntArray(width)
