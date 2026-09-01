@@ -122,15 +122,17 @@ object WholeMapExporter {
                     }
                 },
                 onScanProgress = { scan ->
-                    val mapped = (scan * 30 / 100).coerceIn(0, 30)
-                    if (mapped != lastProgress) {
+                    // Scan and rendering overlap, so progress is a single 0..100
+                    // estimate instead of a separate 0..30 scan phase.
+                    val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                    if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
                     }
                 },
                 onChunkProgress = { chunk ->
-                    val mapped = (30 + chunk * 50 / 100).coerceIn(30, 80)
-                    if (mapped != lastProgress) {
+                    val mapped = (20 + chunk * 60 / 100).coerceIn(20, 80)
+                    if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
                     }
@@ -180,24 +182,24 @@ object WholeMapExporter {
                 checkCancelled(isCancelled)
                 bitmap.setPixels(row, 0, width, 0, worldRow.toInt(), width, 1)
 
-                // Rendering rows are the 30..99% portion; the DB scan reports 0..30%.
-                val percent = 30 + ((worldRow + 1L) * 69L / height.toLong())
-                    .toInt().coerceIn(30, 99)
-                if (percent != lastProgress) {
+                // Row assembly is the final 20% of the unified 0..100 progress.
+                val percent = 80 + ((worldRow + 1L) * 19L / height.toLong())
+                    .toInt().coerceIn(80, 99)
+                if (percent > lastProgress) {
                     lastProgress = percent
                     onProgress(percent)
                 }
             },
             onScanProgress = { scan ->
-                val mapped = (scan * 30 / 100).coerceIn(0, 30)
-                if (mapped != lastProgress) {
+                val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
                 }
             },
             onChunkProgress = { chunk ->
-                val mapped = (30 + chunk * 50 / 100).coerceIn(30, 80)
-                if (mapped != lastProgress) {
+                val mapped = (20 + chunk * 60 / 100).coerceIn(20, 80)
+                if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
                 }
@@ -361,7 +363,13 @@ object WholeMapExporter {
                         if (key !in discovered) {
                             inFlight.acquire()
                             completion.submit(Callable {
-                                CompletedChunk(cx, cz, ChunkResult(null, emptySet(), emptyMap(), emptyMap()))
+                                try {
+                                    CompletedChunk(cx, cz, ChunkResult(null, emptySet(), emptyMap(), emptyMap()))
+                                } finally {
+                                    // Synthetic empty chunks consume the same in-flight permit.
+                                    // Release it when the task completes, just like real chunks.
+                                    inFlight.release()
+                                }
                             })
                         }
                     }
