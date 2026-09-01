@@ -111,27 +111,30 @@ object WholeMapExporter {
         val height = heightLong.toInt()
         PngWriter(output, width, height).use { png ->
             var lastProgress = -1
+            onProgress(0)
             renderRows(
                 bridge, bounds, dimension, pixelsPerBlock,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = ((worldRow + 1L) * 99L / height.toLong()).toInt().coerceIn(0, 99)
+                    val percent = 75 + ((worldRow + 1L) * 24L / height.toLong())
+                        .toInt().coerceIn(75, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
                     }
                 },
                 onScanProgress = { scan ->
-                    // Scan and rendering overlap, so progress is a single 0..100
-                    // estimate instead of a separate 0..30 scan phase.
-                    val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                    // Scan and rendering overlap, so progress is one unified 0..100
+                    // scale. The scan only owns the first 15%, then workers
+                    // and row assembly advance the same scale.
+                    val mapped = (scan * 15 / 100).coerceIn(0, 15)
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
                     }
                 },
                 onChunkProgress = { chunk ->
-                    val mapped = (20 + chunk * 60 / 100).coerceIn(20, 80)
+                    val mapped = (15 + chunk * 60 / 100).coerceIn(15, 75)
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
@@ -172,6 +175,7 @@ object WholeMapExporter {
 
         val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         var lastProgress = -1
+        onProgress(0)
 
         renderRows(
             bridge,
@@ -182,23 +186,23 @@ object WholeMapExporter {
                 checkCancelled(isCancelled)
                 bitmap.setPixels(row, 0, width, 0, worldRow.toInt(), width, 1)
 
-                // Row assembly is the final 20% of the unified 0..100 progress.
-                val percent = 80 + ((worldRow + 1L) * 19L / height.toLong())
-                    .toInt().coerceIn(80, 99)
+                // Row assembly is the final 25% of the unified 0..100 progress.
+                val percent = 75 + ((worldRow + 1L) * 24L / height.toLong())
+                    .toInt().coerceIn(75, 99)
                 if (percent > lastProgress) {
                     lastProgress = percent
                     onProgress(percent)
                 }
             },
             onScanProgress = { scan ->
-                val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                val mapped = (scan * 15 / 100).coerceIn(0, 15)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
                 }
             },
             onChunkProgress = { chunk ->
-                val mapped = (20 + chunk * 60 / 100).coerceIn(20, 80)
+                val mapped = (15 + chunk * 60 / 100).coerceIn(15, 75)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)

@@ -444,10 +444,16 @@ object ChunkScanner {
         var remaining = 256
         var hadSuccessfulSubchunk = false
 
-        // The bridge already sorts subchunks from highest Y to lowest Y. Keep
-        // that order: the first non-transparent block encountered is the map
-        // surface, matching the existing renderer's result.
-        for ((subY, bytes) in subchunks) {
+        // Whole-map streaming records arrive in LevelDB key order, NOT in
+        // vertical Y order. The subchunk index is the final key byte and its
+        // byte-wise order is not the same as descending signed Y order.
+        // Build 180/181 incorrectly assumed the streaming list was already
+        // highest-to-lowest, which made the renderer start at negative/low
+        // subchunks and produced an underground/cave-looking map.
+        // Always normalize the order here so the fast renderer matches the
+        // normal 2D Map Viewer surface selection.
+        val orderedSubchunks = subchunks.sortedByDescending { it.first }
+        for ((subY, bytes) in orderedSubchunks) {
             if (remaining == 0) break
 
             val compact = SubChunkParser.parseCompact(bytes)
