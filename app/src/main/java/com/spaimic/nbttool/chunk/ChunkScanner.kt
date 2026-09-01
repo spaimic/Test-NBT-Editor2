@@ -409,6 +409,178 @@ object ChunkScanner {
     }
 
     /**
+     * Build 180 fast whole-map renderer.
+     *
+     * This is deliberately separate from the normal editor scanner. The old
+     * whole-map path expanded every subchunk into a 16x16x16 String cube before
+     * finding the surface. That is convenient for editing, but very expensive
+     * when repeated over thousands of chunks. This path keeps Bedrock's packed
+     * words intact, resolves palette entries only when a column needs them, and
+     * allocates no per-block String/array objects.
+     */
+    fun loadChunkFromRawDataFast(
+        subchunks: List<Pair<Int, ByteArray>>,
+        biomeBytes: ByteArray?,
+        dimension: Int,
+        unknownBlockNames: MutableSet<String> = HashSet(),
+        failureReasonCounts: MutableMap<String, Int> = HashMap(),
+        failureReasonExamples: MutableMap<String, String> = HashMap()
+    ): Array<Array<ColumnInfo>>? {
+        if (subchunks.isEmpty()) return null
+
+        // Keep the old Nether renderer for now: cave-layer rendering genuinely
+        // needs more than a single surface sample. Build 180's fast path targets
+        // the Overworld/End whole-map capture, which is the common expensive case.
+        if (dimension == 1) {
+            return loadChunkFromRawData(
+                subchunks, biomeBytes, dimension,
+                unknownBlockNames, failureReasonCounts, failureReasonExamples
+            )
+        }
+
+        val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
+        val found = Array(16) { BooleanArray(16) }
+        val fallback = arrayOfNulls<ColumnInfo>(256)
+        var remaining = 256
+        var hadSuccessfulSubchunk = false
+
+        // The bridge already sorts subchunks from highest Y to lowest Y. Keep
+        // that order: the first non-transparent block encountered is the map
+        // surface, matching the existing renderer's result.
+        for ((subY, bytes) in subchunks) {
+            if (remaining == 0) break
+
+            val compact = SubChunkParser.parseCompact(bytes)
+            if (compact == null) {
+                failureReasonCounts["compact subchunk parse failed"] =
+                    (failureReasonCounts["compact subchunk parse failed"] ?: 0) + 1
+                val n = minOf(24, bytes.size)
+                failureReasonExamples.putIfAbsent(
+                    "compact subchunk parse failed",
+                    "size=${bytes.size} bytes: " +
+                        (0 until n).joinToString(" ") { "%02x".format(bytes[it]) }
+                )
+                continue
+            }
+            hadSuccessfulSubchunk = true
+
+            // Resolve palette metadata once per storage layer. During the hot
+            // 256-column loop we only need integer color/flags and the name for
+            // the one block that becomes visible.
+            data class PaletteMeta(
+                val names: Array<String>,
+                val colors: IntArray,
+                val transparent: BooleanArray
+            )
+            val meta = ArrayList<PaletteMeta>(compact.layers.size)
+            for (layer in compact.layers) {
+                val colors = IntArray(layer.palette.size)
+                val transparent = BooleanArray(layer.palette.size)
+                for (i in layer.palette.indices) {
+                    val name = layer.palette[i]
+                    colors[i] = BlockColors.colorForDimension(name, dimension)
+                    transparent[i] = BlockColors.isMapTransparent(name)
+                }
+                meta.add(PaletteMeta(layer.palette, colors, transparent))
+            }
+
+            for (z in 0 until 16) {
+                for (x in 0 until 16) {
+                    val column = (z shl 4) or x
+                    if (found[x][z]) continue
+
+                    // Find the highest non-air block in the effective storage.
+                    // Later Bedrock storage layers have precedence when they
+                    // contain a non-air value, matching mergeLayerInto().
+                    var y = 15
+                    while (y >= 0) {
+                        val linear = SubChunkParser.linearIndex(x, z, y)
+                        var selectedLayer = -1
+                        var selectedPalette = -1
+                        var layerIndex = compact.layers.lastIndex
+                        while (layerIndex >= 0) {
+                            val layer = compact.layers[layerIndex]
+                            val paletteIndex = layer.indexAt(linear)
+                            val name = meta[layerIndex].names.getOrNull(paletteIndex)
+                            if (name != null && name != "minecraft:air" && name != "air") {
+                                selectedLayer = layerIndex
+                                selectedPalette = paletteIndex
+                                break
+                            }
+                            layerIndex--
+                        }
+
+                        if (selectedLayer >= 0) {
+                            val layerMeta = meta[selectedLayer]
+                            val name = layerMeta.names.getOrElse(selectedPalette) { "minecraft:unknown" }
+                            val worldY = subY * 16 + y
+                            val baseColor = layerMeta.colors.getOrElse(
+                                selectedPalette
+                            ) { BlockColors.fallbackUnparsed }
+
+                            if (fallback[column] == null) {
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                fallback[column] = ColumnInfo(baseColor, worldY, name)
+                            }
+
+                            if (!layerMeta.transparent.getOrElse(selectedPalette) { false }) {
+                                if (!BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                                grid[x][z] = ColumnInfo(baseColor, worldY, name)
+                                found[x][z] = true
+                                remaining--
+                            }
+                            break
+                        }
+                        y--
+                    }
+                }
+            }
+        }
+
+        for (z in 0 until 16) {
+            for (x in 0 until 16) {
+                if (!found[x][z]) {
+                    fallback[(z shl 4) or x]?.let {
+                        grid[x][z] = it
+                        found[x][z] = true
+                    }
+                }
+            }
+        }
+
+        // Apply biome tint only to the final 256 visible columns. This avoids
+        // decoding the complete 24x4096 biome volume for every chunk.
+        if (dimension == 0 && biomeBytes != null) {
+            val subYForColumn = IntArray(256)
+            val localYForColumn = IntArray(256)
+            val biomeIds = IntArray(256) { -1 }
+            for (z in 0 until 16) for (x in 0 until 16) {
+                val column = (z shl 4) or x
+                val y = grid[x][z].surfaceY
+                val sy = Math.floorDiv(y, 16)
+                subYForColumn[column] = sy
+                localYForColumn[column] = y - sy * 16
+            }
+            BiomeMapParser.biomeAtColumnsFast(
+                biomeBytes, subYForColumn, localYForColumn, biomeIds
+            )
+            for (z in 0 until 16) for (x in 0 until 16) {
+                val column = (z shl 4) or x
+                val info = grid[x][z]
+                val biomeId = biomeIds[column].takeIf { it >= 0 }
+                if (biomeId != null) {
+                    grid[x][z] = info.copy(
+                        color = BiomeTint.apply(info.material, info.color, biomeId)
+                    )
+                }
+            }
+        }
+
+        if (!hadSuccessfulSubchunk) return null
+        return grid
+    }
+
+    /**
      * Fast startup path: read one chunk directly from LevelDB without waiting for
      * the global index. A single iterator seek retrieves all subchunks for the
      * requested chunk. Entity/block-entity markers are intentionally deferred

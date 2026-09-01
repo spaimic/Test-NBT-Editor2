@@ -17,7 +17,7 @@ import java.util.concurrent.Future
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import kotlin.math.sqrt
-private const val BUILD_166_TIMING = true
+private const val BUILD_180_FAST_RENDER = true
 
 /**
  * Captures the complete rectangular chunk extent present in a dimension.
@@ -306,7 +306,7 @@ object WholeMapExporter {
                     val localUnknown = HashSet<String>()
                     val localReasons = HashMap<String, Int>()
                     val localExamples = HashMap<String, String>()
-                    val grid = ChunkScanner.loadChunkFromRawData(
+                    val grid = ChunkScanner.loadChunkFromRawDataFast(
                         subchunks, biome, dimension, localUnknown, localReasons, localExamples
                     )
                     CompletedChunk(x, z, ChunkResult(grid, localUnknown, localReasons, localExamples))
@@ -499,7 +499,8 @@ object WholeMapExporter {
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
         private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
-        private val buf = ByteArray(1024 * 1024)
+        private val buf = ByteArray(256 * 1024)
+        private val idatBuffer = ByteArrayOutputStream(1024 * 1024)
         private val rawRow = ByteArray(width * 3 + 1)
         private val previousColors = IntArray(width)
         private var hasPrevious = false
@@ -555,7 +556,8 @@ object WholeMapExporter {
             while (!deflater.needsInput()) {
                 val n = deflater.deflate(buf)
                 if (n <= 0) break
-                writeChunk("IDAT", buf, n)
+                idatBuffer.write(buf, 0, n)
+                if (idatBuffer.size() >= 1024 * 1024) flushIdat()
             }
             rows++
         }
@@ -568,8 +570,10 @@ object WholeMapExporter {
                     while (!deflater.finished()) {
                         val n = deflater.deflate(buf)
                         if (n <= 0) break
-                        writeChunk("IDAT", buf, n)
+                        idatBuffer.write(buf, 0, n)
+                        if (idatBuffer.size() >= 1024 * 1024) flushIdat()
                     }
+                    flushIdat()
                     writeChunk("IEND", ByteArray(0), 0)
                 }
                 out.flush()
@@ -578,6 +582,13 @@ object WholeMapExporter {
                 deflater.end()
                 out.close()
             }
+        }
+
+        private fun flushIdat() {
+            if (idatBuffer.size() == 0) return
+            val bytes = idatBuffer.toByteArray()
+            writeChunk("IDAT", bytes, bytes.size)
+            idatBuffer.reset()
         }
 
         private fun writeChunk(type: String, data: ByteArray, len: Int) {

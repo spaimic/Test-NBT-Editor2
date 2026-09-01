@@ -22,6 +22,69 @@ object SubChunkParser {
         data class Failure(val reason: String, val hexSample: String) : ParseResult()
     }
 
+    /**
+     * Allocation-light representation used by the whole-map exporter.  Unlike
+     * ParseResult.Success this keeps the packed storage words and palette names
+     * instead of expanding 4096 cells into a 3-D String array.
+     */
+    data class CompactLayer(
+        val bitsPerBlock: Int,
+        val words: IntArray,
+        val palette: Array<String>
+    ) {
+        fun indexAt(linearIndex: Int): Int {
+            if (bitsPerBlock == 0) return 0
+            val perWord = 32 / bitsPerBlock
+            val word = words[linearIndex / perWord]
+            val shift = (linearIndex % perWord) * bitsPerBlock
+            return if (bitsPerBlock == 32) word else (word ushr shift) and ((1 shl bitsPerBlock) - 1)
+        }
+
+        fun nameAt(linearIndex: Int): String {
+            val paletteIndex = indexAt(linearIndex)
+            return palette.getOrNull(paletteIndex) ?: "minecraft:unknown"
+        }
+    }
+
+    data class CompactSubChunk(val layers: List<CompactLayer>)
+
+    /** Fast whole-map path: parse packed storages without expanding them. */
+    fun parseCompact(value: ByteArray): CompactSubChunk? {
+        return try {
+            val stream = DataInputStream(ByteArrayInputStream(value))
+            val version = stream.readUnsignedByte()
+            if (version != 8 && version != 9) return null
+            val layerCount = stream.readUnsignedByte()
+            if (version == 9) stream.readUnsignedByte()
+            if (layerCount !in 1..8) return null
+            val layers = ArrayList<CompactLayer>(layerCount)
+            for (i in 0 until layerCount) {
+                val layer = decodeCompactLayerStrict(stream)
+                if (layer == null) {
+                    // Match the normal parser's resilience: a bad later overlay
+                    // must not discard a valid base storage.
+                    if (i == 0) return null
+                    break
+                }
+                layers.add(layer)
+            }
+            if (layers.isEmpty()) null else CompactSubChunk(layers)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun linearIndex(x: Int, z: Int, y: Int): Int = (x shl 8) or (z shl 4) or y
+
+    /** Returns the effective block name at one packed cell, respecting storage-layer precedence. */
+    fun effectiveName(compact: CompactSubChunk, linearIndex: Int): String {
+        for (i in compact.layers.indices.reversed()) {
+            val name = compact.layers[i].nameAt(linearIndex)
+            if (!isAirName(name)) return name
+        }
+        return "minecraft:air"
+    }
+
     fun parse(value: ByteArray): ParseResult {
         fun fail(reason: String): ParseResult.Failure {
             val n = minOf(24, value.size)
@@ -185,7 +248,7 @@ object SubChunkParser {
         val layerCount = stream.readUnsignedByte()
         if (version == 9) stream.readUnsignedByte()
         if (layerCount !in 1..8) return result
-        val layers = ArrayList<CompactLayer>(layerCount)
+        val layers = ArrayList<LegacyCompactLayer>(layerCount)
         repeat(layerCount) { decodeCompactLayer(stream)?.let { layers.add(it) } }
         for (y in 0..15) {
             var name = "minecraft:air"
@@ -199,9 +262,7 @@ object SubChunkParser {
         return result
     }
 
-    private data class CompactLayer(val indices: IntArray, val palette: List<String>)
-
-    private fun decodeCompactLayer(stream: DataInputStream): CompactLayer? {
+    private fun decodeCompactLayer(stream: DataInputStream): LegacyCompactLayer? {
         val flag = stream.readUnsignedByte()
         val bitsPerBlock = flag ushr 1
         if (bitsPerBlock > 32) return null
@@ -226,7 +287,26 @@ object SubChunkParser {
             val compound = NbtIO.readCompoundFromStream(stream)
             palette.add((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
         }
-        return CompactLayer(indices, palette)
+        return LegacyCompactLayer(indices, palette)
+    }
+
+    private data class LegacyCompactLayer(val indices: IntArray, val palette: List<String>)
+
+    private fun decodeCompactLayerStrict(stream: DataInputStream): CompactLayer? {
+        val flag = stream.readUnsignedByte()
+        val bitsPerBlock = flag ushr 1
+        if (bitsPerBlock > 32) return null
+        val perWord = if (bitsPerBlock == 0) 0 else 32 / bitsPerBlock
+        val wordCount = if (bitsPerBlock == 0) 0 else (4096 + perWord - 1) / perWord
+        val words = IntArray(wordCount)
+        for (i in 0 until wordCount) words[i] = readIntLE(stream)
+        val paletteSize = readIntLE(stream)
+        if (paletteSize !in 1..65536) return null
+        val palette = Array(paletteSize) {
+            val compound = NbtIO.readCompoundFromStream(stream)
+            (compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown"
+        }
+        return CompactLayer(bitsPerBlock, words, palette)
     }
 
     private fun isAirName(name: String): Boolean = name == "minecraft:air" || name == "air"
