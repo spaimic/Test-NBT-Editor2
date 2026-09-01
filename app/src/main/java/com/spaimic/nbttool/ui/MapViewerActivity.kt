@@ -616,7 +616,7 @@ class MapViewerActivity : AppCompatActivity() {
                             "Preview is scaled down for display."
                         )
                         .setView(image)
-                        .setPositiveButton("Save PNG") { _, _ -> saveWholeMapPicture(bounds, ppb) }
+                        .setPositiveButton("Save PNG") { _, _ -> saveWholeMapPicture(bounds, ppb, preview) }
                         .setNegativeButton("Cancel", null)
                         .show()
                 }
@@ -631,8 +631,7 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun saveWholeMapPicture(bounds: WholeMapBounds, ppb: Int) {
-        val bridge = LevelDbSession.bridge ?: return
+    private fun saveWholeMapPicture(bounds: WholeMapBounds, ppb: Int, preview: Bitmap) {
         if (!wholeMapExportRunning.compareAndSet(false, true)) {
             Toast.makeText(this, "An entire-map export is already running.", Toast.LENGTH_LONG).show()
             return
@@ -647,7 +646,7 @@ class MapViewerActivity : AppCompatActivity() {
         }
         val lastProgress = AtomicInteger(0)
         val progressText = TextView(this).apply {
-            text = "Generating & saving: 0%"
+            text = "Encoding PNG: 0%"
             gravity = Gravity.CENTER
             setPadding(0, 12, 0, 0)
         }
@@ -662,7 +661,7 @@ class MapViewerActivity : AppCompatActivity() {
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("Saving entire map…")
-            .setMessage("Generating and saving the PNG. The percentage covers the complete export; 100% appears only after the PNG is finalized.")
+            .setMessage("Encoding the already-generated map preview into the final PNG. 100% appears only after the PNG is finalized.")
             .setView(progressBox)
             .setNegativeButton("Cancel") { _, _ -> cancelled.set(true) }
             .create()
@@ -672,17 +671,16 @@ class MapViewerActivity : AppCompatActivity() {
         Thread {
             try {
                 val destination = savePngToGallery(displayName) { output ->
-                    WholeMapExporter.export(
-                        bridge,
+                    WholeMapExporter.exportFromPreview(
+                        preview,
                         bounds,
-                        selectedDbDimension(),
                         ppb,
                         output,
                         onProgress = { value ->
                             runOnUiThread {
                                 val safe = lastProgress.updateAndGet { old -> maxOf(old, value.coerceIn(0, 99)) }
                                 progress.progress = safe
-                                progressText.text = "Generating & saving: $safe%"
+                                progressText.text = "Encoding PNG: $safe%"
                             }
                         },
                         isCancelled = { cancelled.get() }

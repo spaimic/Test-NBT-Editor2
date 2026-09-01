@@ -453,25 +453,6 @@ object ChunkScanner {
         // Always normalize the order here so the fast renderer matches the
         // normal 2D Map Viewer surface selection.
         val orderedSubchunks = subchunks.sortedByDescending { it.first }
-
-        // Modern DATA_3D stores a 16x16 heightmap in its first 512 bytes.
-        // Use it as a surface hint so we can skip entire subchunks that are
-        // guaranteed to be above the visible terrain. A value of -64 is a
-        // Bedrock sentinel, so those columns deliberately fall back to the
-        // exhaustive scan to preserve the exact Map Viewer result.
-        val heightHints = IntArray(256) { Int.MIN_VALUE }
-        if (biomeBytes != null && biomeBytes.size >= 512) {
-            for (column in 0 until 256) {
-                val off = column * 2
-                // Bedrock writes the 16-bit heightmap little-endian.
-                val stored = (biomeBytes[off].toInt() and 0xFF) or
-                    ((biomeBytes[off + 1].toInt() and 0xFF) shl 8)
-                val signed = if (stored and 0x8000 != 0) stored - 0x10000 else stored
-                val height = if (dimension == 0) signed - 64 else signed
-                if (height != -64) heightHints[column] = height
-            }
-        }
-
         for ((subY, bytes) in orderedSubchunks) {
             if (remaining == 0) break
 
@@ -513,14 +494,6 @@ object ChunkScanner {
                 for (x in 0 until 16) {
                     val column = (z shl 4) or x
                     if (found[x][z]) continue
-
-                    // If the heightmap says the surface is below this entire
-                    // subchunk, there is no reason to decode it for this column.
-                    // This is the main preview-speed optimization: typical
-                    // Overworld terrain near Y=64 now touches only a handful of
-                    // subchunks instead of all ~20.
-                    val hint = heightHints[column]
-                    if (hint != Int.MIN_VALUE && subY * 16 > hint) continue
 
                     // Find the highest non-air block in the effective storage.
                     // Later Bedrock storage layers have precedence when they

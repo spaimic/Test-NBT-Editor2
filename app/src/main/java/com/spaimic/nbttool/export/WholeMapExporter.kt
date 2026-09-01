@@ -17,7 +17,7 @@ import java.util.concurrent.Future
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import kotlin.math.sqrt
-private const val BUILD_182_FAST_RENDER = true
+private const val BUILD_180_FAST_RENDER = true
 
 /**
  * Captures the complete rectangular chunk extent present in a dimension.
@@ -145,6 +145,97 @@ object WholeMapExporter {
             checkCancelled(isCancelled)
             // 100% is emitted by the caller after the stream is completely closed.
         }
+    }
+
+    /**
+     * Saves the already-rendered whole-map preview without reading LevelDB again.
+     *
+     * The whole-map preview is a block-color image: every preview pixel (or
+     * preview pixel block) represents one Minecraft block color. The final PNG
+     * simply repeats each block color horizontally and vertically to the
+     * requested pixels-per-block scale. This avoids the expensive second
+     * LevelDB scan + chunk decode that the old save path performed after the
+     * user had already waited for the preview.
+     *
+     * The preview bitmap is already held by the preview dialog, so this adds no
+     * second copy of the preview image. PNG encoding remains lossless.
+     */
+    fun exportFromPreview(
+        preview: Bitmap,
+        bounds: WholeMapBounds,
+        outputPixelsPerBlock: Int,
+        output: OutputStream,
+        onProgress: (Int) -> Unit = {},
+        isCancelled: () -> Boolean = { false }
+    ) {
+        require(outputPixelsPerBlock in MIN_PIXELS_PER_BLOCK..MAX_PIXELS_PER_BLOCK)
+
+        val previewPpbX = preview.width / bounds.widthBlocks.coerceAtLeast(1)
+        val previewPpbY = preview.height / bounds.heightBlocks.coerceAtLeast(1)
+        require(previewPpbX >= 1 && previewPpbX == previewPpbY) {
+            "Preview dimensions do not match whole-map block bounds"
+        }
+        require(preview.width == bounds.widthBlocks * previewPpbX)
+        require(preview.height == bounds.heightBlocks * previewPpbX)
+
+        val widthLong = bounds.widthBlocks.toLong() * outputPixelsPerBlock
+        val heightLong = bounds.heightBlocks.toLong() * outputPixelsPerBlock
+        require(widthLong <= Int.MAX_VALUE && heightLong <= Int.MAX_VALUE)
+        require(widthLong * heightLong < MAX_TOTAL_PIXELS) {
+            "Image exceeds ${MAX_TOTAL_PIXELS - 1} pixels"
+        }
+
+        val width = widthLong.toInt()
+        val height = heightLong.toInt()
+        val blockWidth = bounds.widthBlocks
+        val blockHeight = bounds.heightBlocks
+        val previewRow = IntArray(preview.width)
+        val blockColors = IntArray(blockWidth)
+        val outputRow = IntArray(width)
+
+        PngWriter(output, width, height).use { png ->
+            onProgress(0)
+            var lastProgress = 0
+            var outputRowIndex = 0L
+
+            for (blockY in 0 until blockHeight) {
+                checkCancelled(isCancelled)
+
+                // Read one representative preview pixel per Minecraft block.
+                // The preview renderer paints each block uniformly, even when
+                // previewPpb > 1, so the first pixel of each preview block is
+                // sufficient.
+                preview.getPixels(
+                    previewRow, 0, preview.width,
+                    0, blockY * previewPpbX,
+                    preview.width, 1
+                )
+                for (blockX in 0 until blockWidth) {
+                    blockColors[blockX] = previewRow[blockX * previewPpbX]
+                }
+
+                // Expand one block-color row to the requested full resolution.
+                var cursor = 0
+                for (blockX in 0 until blockWidth) {
+                    val color = blockColors[blockX]
+                    repeat(outputPixelsPerBlock) { outputRow[cursor++] = color }
+                }
+
+                repeat(outputPixelsPerBlock) {
+                    checkCancelled(isCancelled)
+                    png.writeRow(outputRow)
+                    outputRowIndex++
+                    val percent = (outputRowIndex * 99L / heightLong)
+                        .toInt().coerceIn(0, 99)
+                    if (percent != lastProgress) {
+                        lastProgress = percent
+                        onProgress(percent)
+                    }
+                }
+            }
+            checkCancelled(isCancelled)
+        }
+        onProgress(100)
     }
 
     /**
@@ -510,11 +601,9 @@ object WholeMapExporter {
         private val height: Int
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
-        // Build 182: prioritize export speed. The PNG remains lossless; BEST_SPEED
-        // trades some compression ratio for substantially lower CPU time on Android.
-        private val deflater = Deflater(Deflater.BEST_SPEED)
+        private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
         private val buf = ByteArray(256 * 1024)
-        private val idatBuffer = ByteArrayOutputStream(4 * 1024 * 1024)
+        private val idatBuffer = ByteArrayOutputStream(1024 * 1024)
         private val rawRow = ByteArray(width * 3 + 1)
         private val previousColors = IntArray(width)
         private var hasPrevious = false
@@ -571,7 +660,7 @@ object WholeMapExporter {
                 val n = deflater.deflate(buf)
                 if (n <= 0) break
                 idatBuffer.write(buf, 0, n)
-                if (idatBuffer.size() >= 4 * 1024 * 1024) flushIdat()
+                if (idatBuffer.size() >= 1024 * 1024) flushIdat()
             }
             rows++
         }
@@ -585,7 +674,7 @@ object WholeMapExporter {
                         val n = deflater.deflate(buf)
                         if (n <= 0) break
                         idatBuffer.write(buf, 0, n)
-                        if (idatBuffer.size() >= 4 * 1024 * 1024) flushIdat()
+                        if (idatBuffer.size() >= 1024 * 1024) flushIdat()
                     }
                     flushIdat()
                     writeChunk("IEND", ByteArray(0), 0)
