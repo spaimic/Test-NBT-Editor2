@@ -17,7 +17,7 @@ import java.util.concurrent.Future
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import kotlin.math.sqrt
-private const val BUILD_180_FAST_RENDER = true
+private const val BUILD_182_FAST_RENDER = true
 
 /**
  * Captures the complete rectangular chunk extent present in a dimension.
@@ -510,9 +510,11 @@ object WholeMapExporter {
         private val height: Int
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
-        private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
+        // Build 182: prioritize export speed. The PNG remains lossless; BEST_SPEED
+        // trades some compression ratio for substantially lower CPU time on Android.
+        private val deflater = Deflater(Deflater.BEST_SPEED)
         private val buf = ByteArray(256 * 1024)
-        private val idatBuffer = ByteArrayOutputStream(1024 * 1024)
+        private val idatBuffer = ByteArrayOutputStream(4 * 1024 * 1024)
         private val rawRow = ByteArray(width * 3 + 1)
         private val previousColors = IntArray(width)
         private var hasPrevious = false
@@ -569,7 +571,7 @@ object WholeMapExporter {
                 val n = deflater.deflate(buf)
                 if (n <= 0) break
                 idatBuffer.write(buf, 0, n)
-                if (idatBuffer.size() >= 1024 * 1024) flushIdat()
+                if (idatBuffer.size() >= 4 * 1024 * 1024) flushIdat()
             }
             rows++
         }
@@ -583,7 +585,7 @@ object WholeMapExporter {
                         val n = deflater.deflate(buf)
                         if (n <= 0) break
                         idatBuffer.write(buf, 0, n)
-                        if (idatBuffer.size() >= 1024 * 1024) flushIdat()
+                        if (idatBuffer.size() >= 4 * 1024 * 1024) flushIdat()
                     }
                     flushIdat()
                     writeChunk("IEND", ByteArray(0), 0)
