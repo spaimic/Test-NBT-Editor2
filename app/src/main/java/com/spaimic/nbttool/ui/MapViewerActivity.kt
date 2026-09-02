@@ -799,9 +799,9 @@ class MapViewerActivity : AppCompatActivity() {
                         isFillViewport = false
                         addView(
                             image,
-                            ScrollView.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            FrameLayout.LayoutParams(
+                                FrameLayout.LayoutParams.MATCH_PARENT,
+                                FrameLayout.LayoutParams.WRAP_CONTENT
                             )
                         )
                     }
