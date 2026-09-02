@@ -185,15 +185,25 @@ object ChunkScanner {
         playerX: Int, playerY: Int, playerZ: Int,
         dimension: Int = 0,
         parallelism: Int = 6
+    ): OreSearchResult<DiamondCoordinate> = findDiamondsAtCoordinates(
+        bridge, playerX, playerY, playerZ, dimension, parallelism
+    )
+
+    /** Searches the exact same filled 9x9 chunk square, centered on arbitrary coordinates. */
+    fun findDiamondsAtCoordinates(
+        bridge: LevelDbBridge,
+        centerX: Int, centerY: Int, centerZ: Int,
+        dimension: Int = 0,
+        parallelism: Int = 6
     ): OreSearchResult<DiamondCoordinate> {
         val found = searchTargetSquare(
-            bridge, playerX, playerY, playerZ, dimension,
+            bridge, centerX, centerY, centerZ, dimension,
             setOf("minecraft:diamond_ore", "minecraft:deepslate_diamond_ore"),
             parallelism
         ).map { DiamondCoordinate(it.x, it.y, it.z) }
-        val clusters = clusterCoordinates(found, playerX, playerY, playerZ) { Triple(it.x, it.y, it.z) }
+        val clusters = clusterCoordinates(found, centerX, centerY, centerZ) { Triple(it.x, it.y, it.z) }
         return OreSearchResult(
-            playerX, playerY, playerZ, Math.floorDiv(playerX, 16), Math.floorDiv(playerZ, 16),
+            centerX, centerY, centerZ, Math.floorDiv(centerX, 16), Math.floorDiv(centerZ, 16),
             81, found, clusters
         )
     }
@@ -203,17 +213,27 @@ object ChunkScanner {
         playerX: Int, playerY: Int, playerZ: Int,
         dimension: Int = 1,
         parallelism: Int = 6
+    ): OreSearchResult<OreCoordinate> = findAncientDebrisAtCoordinates(
+        bridge, playerX, playerY, playerZ, dimension, parallelism
+    )
+
+    /** Searches the exact same filled 9x9 chunk square, centered on arbitrary Nether coordinates. */
+    fun findAncientDebrisAtCoordinates(
+        bridge: LevelDbBridge,
+        centerX: Int, centerY: Int, centerZ: Int,
+        dimension: Int = 1,
+        parallelism: Int = 6
     ): OreSearchResult<OreCoordinate> {
         if (dimension != 1) {
-            return OreSearchResult(playerX, playerY, playerZ, Math.floorDiv(playerX, 16), Math.floorDiv(playerZ, 16), 81, emptyList(), emptyList())
+            return OreSearchResult(centerX, centerY, centerZ, Math.floorDiv(centerX, 16), Math.floorDiv(centerZ, 16), 81, emptyList(), emptyList())
         }
         val found = searchTargetSquare(
-            bridge, playerX, playerY, playerZ, dimension,
+            bridge, centerX, centerY, centerZ, dimension,
             setOf("minecraft:ancient_debris"), parallelism
         ).map { OreCoordinate(it.x, it.y, it.z) }
-        val clusters = clusterCoordinates(found, playerX, playerY, playerZ) { Triple(it.x, it.y, it.z) }
+        val clusters = clusterCoordinates(found, centerX, centerY, centerZ) { Triple(it.x, it.y, it.z) }
         return OreSearchResult(
-            playerX, playerY, playerZ, Math.floorDiv(playerX, 16), Math.floorDiv(playerZ, 16),
+            centerX, centerY, centerZ, Math.floorDiv(centerX, 16), Math.floorDiv(centerZ, 16),
             81, found, clusters
         )
     }

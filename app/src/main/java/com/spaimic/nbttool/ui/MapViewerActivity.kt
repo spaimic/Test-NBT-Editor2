@@ -338,11 +338,59 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun findDiamondsNearPlayer() {
-        startPlayerOreSearch(true)
+        showOreSearchModeDialog(true)
     }
 
     private fun findAncientDebrisNearPlayer() {
-        startPlayerOreSearch(false)
+        showOreSearchModeDialog(false)
+    }
+
+    /** The coordinate search is intentionally nested inside each ore finder. */
+    private fun showOreSearchModeDialog(diamond: Boolean) {
+        val icon = if (diamond) "💎" else "🏺"
+        val noun = if (diamond) "Diamonds" else "Ancient Debris"
+        AlertDialog.Builder(this)
+            .setTitle("$icon Find $noun")
+            .setItems(arrayOf(
+                "Find Near Current Player",
+                "Find at Custom Coordinates"
+            )) { _, which ->
+                if (which == 0) startPlayerOreSearch(diamond) else promptCustomOreCoordinates(diamond)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun promptCustomOreCoordinates(diamond: Boolean) {
+        val labels = if (diamond) "Overworld X, Y, Z" else "Nether X, Y, Z"
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 8, 40, 0)
+        }
+        val inputs = arrayOf("X", "Y", "Z").map { axis ->
+            EditText(this).apply {
+                hint = axis
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+                setSingleLine(true)
+                container.addView(this, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = 8 })
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Find at Custom Coordinates")
+            .setMessage("Enter $labels. The same filled 9 × 9 = 81 chunk search will be used.")
+            .setView(container)
+            .setPositiveButton("Search") { _, _ ->
+                val values = inputs.map { it.text.toString().trim().toIntOrNull() }
+                if (values.any { it == null }) {
+                    Toast.makeText(this, "Please enter valid X, Y and Z coordinates.", Toast.LENGTH_LONG).show()
+                } else {
+                    startCustomOreSearch(diamond, values[0]!!, values[1]!!, values[2]!!)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     /** Reads the local player at the moment the hamburger action is tapped, then scans. */
@@ -369,43 +417,21 @@ class MapViewerActivity : AppCompatActivity() {
                 val local = readCurrentLocalPlayerPosition(bridge)
                 if (local == null) throw IllegalStateException("Could not read the current player's coordinates.")
                 val playerDimension = try { readPlayerDimension(bridge) } catch (_: Exception) { localPlayerDimension }
-
-                val target: Triple<Int, Int, Int> = if (diamond) {
-                    when (playerDimension) {
-                        0 -> local
-                        1 -> Triple(
-                            local.first * 8,
-                            local.second,
-                            local.third * 8
-                        )
-                        else -> throw IllegalStateException("Diamond search needs an Overworld or Nether player position.")
-                    }
-                } else {
-                    when (playerDimension) {
-                        1 -> local
-                        0 -> Triple(
-                            Math.floorDiv(local.first, 8),
-                            local.second,
-                            Math.floorDiv(local.third, 8)
-                        )
-                        else -> throw IllegalStateException("Ancient Debris search needs an Overworld or Nether player position.")
-                    }
-                }
-
+                val target = convertOreSearchCoordinates(diamond, playerDimension, local)
                 if (diamond) {
-                    val result = ChunkScanner.findDiamondsNearPlayer(bridge, target.first, target.second, target.third, 0)
+                    val result = ChunkScanner.findDiamondsAtCoordinates(bridge, target.first, target.second, target.third, 0)
                     runOnUiThread {
                         if (!isFinishing) {
                             dialog.dismiss()
-                            showOreSearchResult(title, result, true)
+                            showOreSearchResult("💎 Finding Diamonds", result, true)
                         }
                     }
                 } else {
-                    val result = ChunkScanner.findAncientDebrisNearPlayer(bridge, target.first, target.second, target.third, 1)
+                    val result = ChunkScanner.findAncientDebrisAtCoordinates(bridge, target.first, target.second, target.third, 1)
                     runOnUiThread {
                         if (!isFinishing) {
                             dialog.dismiss()
-                            showOreSearchResult(title, result, false)
+                            showOreSearchResult("🏺 Finding Ancient Debris", result, false)
                         }
                     }
                 }
@@ -418,6 +444,67 @@ class MapViewerActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    private fun startCustomOreSearch(diamond: Boolean, x: Int, y: Int, z: Int) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        val title = if (diamond) "💎 Finding Diamonds" else "🏺 Finding Ancient Debris"
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage("Searching a 9 × 9 = 81 chunk square centered at ($x, $y, $z)…")
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.show()
+        Thread {
+            try {
+                if (diamond) {
+                    val result = ChunkScanner.findDiamondsAtCoordinates(bridge, x, y, z, 0)
+                    runOnUiThread {
+                        if (!isFinishing) {
+                            dialog.dismiss()
+                            showOreSearchResult("$title at ($x, $y, $z)", result, true)
+                        }
+                    }
+                } else {
+                    val result = ChunkScanner.findAncientDebrisAtCoordinates(bridge, x, y, z, 1)
+                    runOnUiThread {
+                        if (!isFinishing) {
+                            dialog.dismiss()
+                            showOreSearchResult("$title at ($x, $y, $z)", result, false)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    if (!isFinishing) {
+                        dialog.dismiss()
+                        showErrorDialog(this, "Failed to search for ${if (diamond) "diamonds" else "ancient debris"}", e)
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun convertOreSearchCoordinates(
+        diamond: Boolean,
+        playerDimension: Int,
+        local: Triple<Int, Int, Int>
+    ): Triple<Int, Int, Int> = if (diamond) {
+        when (playerDimension) {
+            0 -> local
+            1 -> Triple(local.first * 8, local.second, local.third * 8)
+            else -> throw IllegalStateException("Diamond search needs an Overworld or Nether player position.")
+        }
+    } else {
+        when (playerDimension) {
+            1 -> local
+            0 -> Triple(Math.floorDiv(local.first, 8), local.second, Math.floorDiv(local.third, 8))
+            else -> throw IllegalStateException("Ancient Debris search needs an Overworld or Nether player position.")
+        }
     }
 
     private fun readCurrentLocalPlayerPosition(bridge: LevelDbBridge): Triple<Int, Int, Int>? {
@@ -437,50 +524,130 @@ class MapViewerActivity : AppCompatActivity() {
         } catch (_: Exception) { null }
     }
 
-    private fun <T : Any> showOreSearchResult(title: String, result: com.spaimic.nbttool.chunk.OreSearchResult<T>, diamond: Boolean) {
+    private fun <T : Any> showOreSearchResult(
+        title: String,
+        result: com.spaimic.nbttool.chunk.OreSearchResult<T>,
+        diamond: Boolean
+    ) {
         val icon = if (diamond) "💎" else "🏺"
         val noun = if (diamond) "diamonds" else "ancient debris"
-        val lines = StringBuilder()
-            .append("Player: (${result.playerX}, ${result.playerY}, ${result.playerZ})\n")
-            .append("Center chunk: (${result.centerChunkX}, ${result.centerChunkZ})\n")
-            .append("Searched: 9 × 9 = ${result.searchedChunks} chunks\n")
-            .append("Found: ${result.coordinates.size} $noun in ${result.clusters.size} nearby group")
-        if (result.clusters.size != 1) lines.append("s")
-        lines.append(".\n\n")
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("$title — Results")
+            .setNegativeButton("Close", null)
+            .create()
 
-        result.clusters.forEachIndexed { index, cluster ->
-            val distance = Math.sqrt(cluster.distanceSquaredToPlayer.toDouble())
-            lines.append("$icon Group ${index + 1}: ${cluster.coordinates.size} $noun • ${String.format(java.util.Locale.US, "%.1f", distance)} blocks from player\n")
-            val sorted = cluster.coordinates.sortedBy { coordinateDistanceSquared(it, result.playerX, result.playerY, result.playerZ) }
-            sorted.forEach { coordinate ->
-                lines.append("  ${formatOreCoordinate(coordinate)}\n")
-            }
-            lines.append("\n")
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 8, 24, 8)
         }
-        if (result.clusters.isEmpty()) {
-            lines.append("No $noun were found in the searched square.")
-        }
+        val sortGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL }
+        val nearest = RadioButton(this).apply { text = "Nearest"; id = View.generateViewId(); isChecked = true }
+        val most = RadioButton(this).apply { text = "Most Ores"; id = View.generateViewId() }
+        sortGroup.addView(nearest, RadioGroup.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        sortGroup.addView(most, RadioGroup.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(sortGroup)
 
         val textView = TextView(this).apply {
-            text = lines.toString()
-            setPadding(40, 16, 40, 16)
+            setPadding(16, 12, 16, 12)
             textSize = 15f
             setTextIsSelectable(true)
         }
-        val scroll = ScrollView(this).apply { addView(textView) }
-        AlertDialog.Builder(this)
-            .setTitle("$title — Results")
-            .setView(scroll)
-            .setNegativeButton("Close", null)
-            .setPositiveButton("Copy All Coordinates") { _, _ ->
-                val coordinateText = result.coordinates
-                    .sortedBy { coordinateDistanceSquared(it, result.playerX, result.playerY, result.playerZ) }
-                    .joinToString("\n") { formatOreCoordinate(it) }
-                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                clipboard.setPrimaryClip(ClipData.newPlainText("${if (diamond) "Diamond" else "Ancient Debris"} Coordinates", coordinateText))
-                Toast.makeText(this, "Copied ${result.coordinates.size} coordinates.", Toast.LENGTH_SHORT).show()
+        val scroll = ScrollView(this).apply {
+            addView(textView)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        root.addView(scroll)
+
+        val copyButton = Button(this).apply { text = "📋 Copy Group Coordinates" }
+        root.addView(copyButton)
+        dialog.setView(root)
+
+        fun updateText(mostOres: Boolean) {
+            val clusters = if (mostOres) {
+                result.clusters.sortedWith(compareByDescending<com.spaimic.nbttool.chunk.OreCluster<T>> { it.coordinates.size }
+                    .thenBy { it.distanceSquaredToPlayer })
+            } else {
+                result.clusters.sortedBy { it.distanceSquaredToPlayer }
             }
+            val lines = StringBuilder()
+                .append("Search center: (${result.playerX}, ${result.playerY}, ${result.playerZ})\n")
+                .append("Center chunk: (${result.centerChunkX}, ${result.centerChunkZ})\n")
+                .append("Searched: 9 × 9 = ${result.searchedChunks} chunks\n")
+                .append("Found: ${result.coordinates.size} $noun in ${clusters.size} group")
+            if (clusters.size != 1) lines.append("s")
+            lines.append(".\n\n")
+            clusters.forEachIndexed { index, cluster ->
+                val distance = Math.sqrt(cluster.distanceSquaredToPlayer.toDouble())
+                lines.append("$icon Group ${index + 1}: ${cluster.coordinates.size} $noun • ${String.format(java.util.Locale.US, "%.1f", distance)} blocks away\n")
+                val sorted = cluster.coordinates.sortedBy { coordinateDistanceSquared(it, result.playerX, result.playerY, result.playerZ) }
+                sorted.forEach { coordinate -> lines.append("  ${formatOreCoordinate(coordinate)}\n") }
+                lines.append("\n")
+            }
+            if (clusters.isEmpty()) lines.append("No $noun were found in the searched square.")
+            textView.text = lines.toString()
+            copyButton.tag = clusters
+        }
+
+        nearest.setOnClickListener { updateText(false) }
+        most.setOnClickListener { updateText(true) }
+        copyButton.setOnClickListener {
+            @Suppress("UNCHECKED_CAST")
+            val clusters = (copyButton.tag as? List<com.spaimic.nbttool.chunk.OreCluster<T>>) ?: emptyList()
+            promptCopyOreGroups(clusters, diamond, result)
+        }
+        updateText(false)
+        dialog.show()
+    }
+
+    private fun <T : Any> promptCopyOreGroups(
+        clusters: List<com.spaimic.nbttool.chunk.OreCluster<T>>,
+        diamond: Boolean,
+        result: com.spaimic.nbttool.chunk.OreSearchResult<T>
+    ) {
+        val input = EditText(this).apply {
+            hint = "Example: 1,3,5"
+            setSingleLine(true)
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Copy Group Coordinates")
+            .setMessage("Enter up to 10 group numbers, separated by commas.")
+            .setView(input)
+            .setPositiveButton("Copy") { _, _ ->
+                val raw = input.text.toString().trim()
+                val numbers = raw.split(",").map { it.trim() }.filter { it.isNotEmpty() }
+                if (numbers.size > 10) {
+                    Toast.makeText(this, "You can copy up to 10 groups at once.", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val ids = LinkedHashSet<Int>()
+                for (part in numbers) {
+                    val n = part.toIntOrNull()
+                    if (n == null || n < 1 || n > clusters.size) {
+                        Toast.makeText(this, "Invalid group number: $part", Toast.LENGTH_LONG).show()
+                        return@setPositiveButton
+                    }
+                    ids.add(n)
+                }
+                val selected = ids.map { clusters[it - 1] }
+                val coordinateText = selected.mapIndexed { index, cluster ->
+                    val coordinates = cluster.coordinates
+                        .sortedBy { coordinateDistanceSquared(it, result.playerX, result.playerY, result.playerZ) }
+                        .joinToString("\n") { formatPlainOreCoordinate(it) }
+                    "Group ${ids.elementAt(index)}:\n$coordinates"
+                }.joinToString("\n\n")
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("${if (diamond) "Diamond" else "Ancient Debris"} Group Coordinates", coordinateText))
+                Toast.makeText(this, "Copied ${selected.size} group${if (selected.size == 1) "" else "s"}.", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun formatPlainOreCoordinate(value: Any): String = when (value) {
+        is com.spaimic.nbttool.chunk.DiamondCoordinate -> "(${value.x}, ${value.y}, ${value.z})"
+        is com.spaimic.nbttool.chunk.OreCoordinate -> "(${value.x}, ${value.y}, ${value.z})"
+        else -> value.toString()
     }
 
     private fun formatOreCoordinate(value: Any): String = when (value) {
