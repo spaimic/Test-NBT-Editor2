@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.widget.ArrayAdapter
 import android.widget.ListView
 import android.widget.Toast
+import android.graphics.Typeface
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
 import com.spaimic.nbttool.worlds.LocalWorldStore
@@ -22,10 +23,24 @@ class WorldListActivity : AppCompatActivity() {
 
     private lateinit var listView: ListView
     private var worldDirs: List<File> = emptyList()
+    private var myWorldsTapCount = 0
+    private var lastMyWorldsTapMs = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         title = "My Worlds"
+        val myWorldsHeader = android.widget.TextView(this).apply {
+            text = "My Worlds"
+            textSize = 20f
+            typeface = Typeface.DEFAULT_BOLD
+            setPadding(8, 0, 8, 0)
+            setOnClickListener { handleMyWorldsSecretTap() }
+        }
+        supportActionBar?.apply {
+            setDisplayShowTitleEnabled(false)
+            setDisplayShowCustomEnabled(true)
+            customView = myWorldsHeader
+        }
 
         val root = android.widget.LinearLayout(this).apply { orientation = android.widget.LinearLayout.VERTICAL }
         listView = ListView(this).apply {
@@ -55,6 +70,31 @@ class WorldListActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         refreshWorldList()
+    }
+
+    private fun handleMyWorldsSecretTap() {
+        if (ExperimentMode.isEnabled(this)) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastMyWorldsTapMs > 900L) myWorldsTapCount = 0
+        lastMyWorldsTapMs = now
+        myWorldsTapCount++
+        if (myWorldsTapCount >= 5) {
+            myWorldsTapCount = 0
+            showExperimentModeDialog()
+        }
+    }
+
+    private fun showExperimentModeDialog() {
+        if (ExperimentMode.isEnabled(this)) return
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Activate Experiment Mode?")
+            .setMessage("Experiment Mode let's you use these things: Deleting Chunks, Copying and Pasting Chunks. These features can be dangerous and should be used with caution. Use these features at your own risk as they can corrupt your world. Always make backups of worlds before proceed.")
+            .setNegativeButton("NO", null)
+            .setPositiveButton("YES") { _, _ ->
+                ExperimentMode.enable(this)
+                Toast.makeText(this, "Experiment Mode activated.", Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 
     private fun refreshWorldList() {
@@ -210,11 +250,19 @@ class WorldListActivity : AppCompatActivity() {
     }
 
     private fun openInMinecraft(worldDir: File) {
+        val openingDialog = android.app.AlertDialog.Builder(this)
+            .setMessage("Opening in Minecraft…")
+            .setCancelable(false)
+            .create()
+        openingDialog.setCanceledOnTouchOutside(false)
+        openingDialog.show()
+
         Thread {
             try {
                 val mcworldFile = LocalWorldStore.exportToMcworld(this, worldDir)
                 val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", mcworldFile)
                 runOnUiThread {
+                    openingDialog.dismiss()
                     val intent = Intent(Intent.ACTION_VIEW).apply {
                         setDataAndType(uri, "application/mcworld")
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -234,7 +282,10 @@ class WorldListActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Couldn't export to .mcworld", e) }
+                runOnUiThread {
+                    openingDialog.dismiss()
+                    showErrorDialog(this, "Couldn't export to .mcworld", e)
+                }
             }
         }.start()
     }

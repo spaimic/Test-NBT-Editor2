@@ -512,18 +512,22 @@ class MapViewerActivity : AppCompatActivity() {
         )
         options.addAll(listOf(
             "Show Entities",
-            "Show Block Entities",
-            "Copy Chunk",
-            "Paste Chunk",
-            "Delete Chunk",
-            "Terrain Editor"
+            "Show Block Entities"
         ))
-        if (mapView.selection != null) {
+        if (ExperimentMode.isEnabled(this)) {
             options.addAll(listOf(
-                "📸 Selection: Take Picture of Map",
-                "🗑️ Selection: Delete Area",
-                "❌ Clear Selection"
+                "Copy Chunk",
+                "Paste Chunk",
+                "Delete Chunk"
             ))
+        }
+        options.add("Terrain Editor")
+        if (mapView.selection != null) {
+            options.add("📸 Selection: Take Picture of Map")
+            if (ExperimentMode.isEnabled(this)) {
+                options.add("🗑️ Selection: Delete Area")
+            }
+            options.add("❌ Clear Selection")
         }
         AlertDialog.Builder(this)
             .setTitle("Chunk ($chunkX, $chunkZ)")
