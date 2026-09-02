@@ -785,19 +785,56 @@ class MapViewerActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (cancelled.get()) return@runOnUiThread
                     dialog.dismiss()
+                    // Keep the preview itself inside a bounded scroll area.
+                    // A very tall world can produce a preview taller than the
+                    // dialog window; giving the raw ImageView directly to
+                    // AlertDialog makes its action buttons get pushed off-screen.
+                    // The image can now scroll while Save PNG/Cancel stay visible.
                     val image = ImageView(this).apply {
                         setImageBitmap(preview)
                         adjustViewBounds = true
                         scaleType = ImageView.ScaleType.FIT_CENTER
                     }
+                    val previewScroll = ScrollView(this).apply {
+                        isFillViewport = false
+                        addView(
+                            image,
+                            ScrollView.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            )
+                        )
+                    }
+                    val maxPreviewHeight = (resources.displayMetrics.heightPixels * 0.52f)
+                        .toInt()
+                        .coerceAtLeast(360)
+                    val previewBox = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(24, 8, 24, 8)
+                        addView(
+                            TextView(this@MapViewerActivity).apply {
+                                text =
+                                    "${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • $ppb px/block\n" +
+                                    "${bounds.widthBlocks * ppb} × ${bounds.heightBlocks * ppb} pixels\n" +
+                                    "Preview is scaled down for display. Scroll the image if needed."
+                                setPadding(0, 0, 0, 12)
+                            },
+                            LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.WRAP_CONTENT
+                            )
+                        )
+                        addView(
+                            previewScroll,
+                            LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                maxPreviewHeight
+                            )
+                        )
+                    }
                     AlertDialog.Builder(this)
                         .setTitle("Entire Map Picture Preview")
-                        .setMessage(
-                            "${bounds.widthBlocks} × ${bounds.heightBlocks} blocks • $ppb px/block\n" +
-                            "${bounds.widthBlocks * ppb} × ${bounds.heightBlocks * ppb} pixels\n" +
-                            "Preview is scaled down for display."
-                        )
-                        .setView(image)
+                        .setView(previewBox)
                         .setPositiveButton("Save PNG") { _, _ -> saveWholeMapPicture(bounds, ppb, preview) }
                         .setNegativeButton("Cancel", null)
                         .show()

@@ -116,25 +116,26 @@ object WholeMapExporter {
                 bridge, bounds, dimension, pixelsPerBlock,
                 consume = { row, worldRow ->
                     png.writeRow(row)
-                    val percent = 75 + ((worldRow + 1L) * 24L / height.toLong())
-                        .toInt().coerceIn(75, 99)
+                    // Final row assembly owns the last 30% of progress.
+                    val percent = 70 + ((worldRow + 1L) * 29L / height.toLong())
+                        .toInt().coerceIn(70, 99)
                     if (percent != lastProgress) {
                         lastProgress = percent
                         onProgress(percent)
                     }
                 },
                 onScanProgress = { scan ->
-                    // Scan and rendering overlap, so progress is one unified 0..100
-                    // scale. The scan only owns the first 15%, then workers
-                    // and row assembly advance the same scale.
-                    val mapped = (scan * 15 / 100).coerceIn(0, 15)
+                    // Scan progress owns the first 20% of the unified scale.
+                    val mapped = (scan * 20 / 100).coerceIn(0, 20)
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
                     }
                 },
                 onChunkProgress = { chunk ->
-                    val mapped = (15 + chunk * 60 / 100).coerceIn(15, 75)
+                    // Chunk decoding owns the next 50%. renderRows reports this
+                    // callback as a true 0..100 percentage.
+                    val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
@@ -283,23 +284,26 @@ object WholeMapExporter {
                 checkCancelled(isCancelled)
                 bitmap.setPixels(row, 0, width, 0, worldRow.toInt(), width, 1)
 
-                // Row assembly is the final 25% of the unified 0..100 progress.
-                val percent = 75 + ((worldRow + 1L) * 24L / height.toLong())
-                    .toInt().coerceIn(75, 99)
+                // Row assembly is the final 30% of the unified 0..100 progress.
+                val percent = 70 + ((worldRow + 1L) * 29L / height.toLong())
+                    .toInt().coerceIn(70, 99)
                 if (percent > lastProgress) {
                     lastProgress = percent
                     onProgress(percent)
                 }
             },
             onScanProgress = { scan ->
-                val mapped = (scan * 15 / 100).coerceIn(0, 15)
+                // Scan progress owns the first 20% of the unified scale.
+                val mapped = (scan * 20 / 100).coerceIn(0, 20)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
                 }
             },
             onChunkProgress = { chunk ->
-                val mapped = (15 + chunk * 60 / 100).coerceIn(15, 75)
+                // Chunk decoding owns the next 50%. renderRows reports this
+                // callback as a true 0..100 percentage.
+                val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
@@ -520,9 +524,9 @@ object WholeMapExporter {
                         }
 
                         onChunkProgress(
-                            ((completed * 45L) / totalChunks)
+                            ((completed * 100L) / totalChunks)
                                 .toInt()
-                                .coerceIn(0, 45)
+                                .coerceIn(0, 100)
                         )
                     }
 
