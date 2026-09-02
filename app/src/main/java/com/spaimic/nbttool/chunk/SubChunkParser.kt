@@ -309,7 +309,9 @@ object SubChunkParser {
         return CompactLayer(bitsPerBlock, words, palette)
     }
 
-    private fun isAirName(name: String): Boolean = name == "minecraft:air" || name == "air"
+    fun isAirForSearch(name: String): Boolean = name == "minecraft:air" || name == "air"
+
+    private fun isAirName(name: String): Boolean = isAirForSearch(name)
 
     private fun readIntLE(stream: DataInputStream): Int {
         val a = stream.readUnsignedByte(); val b = stream.readUnsignedByte()

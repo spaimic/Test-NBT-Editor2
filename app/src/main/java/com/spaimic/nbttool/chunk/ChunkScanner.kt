@@ -17,6 +17,21 @@ data class BlockEntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, 
 data class DiamondCoordinate(val x: Int, val y: Int, val z: Int)
 data class OreCoordinate(val x: Int, val y: Int, val z: Int)
 
+/** A group of touching ore blocks. Touching includes faces, edges, and corners. */
+data class OreCluster<T>(val coordinates: List<T>, val distanceSquaredToPlayer: Long)
+
+/** Result of a radius-in-chunks ore search centered on the player's chunk. */
+data class OreSearchResult<T>(
+    val playerX: Int,
+    val playerY: Int,
+    val playerZ: Int,
+    val centerChunkX: Int,
+    val centerChunkZ: Int,
+    val searchedChunks: Int,
+    val coordinates: List<T>,
+    val clusters: List<OreCluster<T>>
+)
+
 data class ScanStats(
     val totalLoadedChunks: Int,
     val outliersDropped: Int,
@@ -142,39 +157,10 @@ object ChunkScanner {
         chunkX: Int,
         chunkZ: Int,
         dimension: Int = 0
-    ): List<DiamondCoordinate> {
-        val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
-        if (subchunks.isEmpty()) return emptyList()
-
-        val result = ArrayList<DiamondCoordinate>()
-        val targetNames = setOf("minecraft:diamond_ore", "minecraft:deepslate_diamond_ore")
-
-        for ((subY, bytes) in subchunks) {
-            when (val parsed = SubChunkParser.parse(bytes)) {
-                is SubChunkParser.ParseResult.Failure -> continue
-                is SubChunkParser.ParseResult.Success -> {
-                    val baseY = subY * 16
-                    for (x in 0 until 16) {
-                        for (z in 0 until 16) {
-                            for (y in 0 until 16) {
-                                if (parsed.blocks[x][z][y] in targetNames) {
-                                    result.add(
-                                        DiamondCoordinate(
-                                            chunkX * 16 + x,
-                                            baseY + y,
-                                            chunkZ * 16 + z
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return result.sortedWith(compareBy<DiamondCoordinate> { it.y }.thenBy { it.x }.thenBy { it.z })
-    }
+    ): List<DiamondCoordinate> = findTargetCoordinatesInChunk(
+        bridge, chunkX, chunkZ, dimension,
+        setOf("minecraft:diamond_ore", "minecraft:deepslate_diamond_ore")
+    ).map { DiamondCoordinate(it.x, it.y, it.z) }
 
     /** Finds every ancient_debris block in one Nether chunk. */
     fun findAncientDebrisCoordinates(
@@ -184,25 +170,159 @@ object ChunkScanner {
         dimension: Int = 1
     ): List<OreCoordinate> {
         if (dimension != 1) return emptyList()
+        return findTargetCoordinatesInChunk(
+            bridge, chunkX, chunkZ, dimension, setOf("minecraft:ancient_debris")
+        ).map { OreCoordinate(it.x, it.y, it.z) }
+    }
+
+    /**
+     * Searches the full 9x9 chunk square centered on the player's chunk.
+     * A radius of four produces exactly the cross + filled interior described
+     * by the Map Viewer ore-finder. Missing/unloaded chunks are simply skipped.
+     */
+    fun findDiamondsNearPlayer(
+        bridge: LevelDbBridge,
+        playerX: Int, playerY: Int, playerZ: Int,
+        dimension: Int = 0,
+        parallelism: Int = 6
+    ): OreSearchResult<DiamondCoordinate> {
+        val found = searchTargetSquare(
+            bridge, playerX, playerY, playerZ, dimension,
+            setOf("minecraft:diamond_ore", "minecraft:deepslate_diamond_ore"),
+            parallelism
+        ).map { DiamondCoordinate(it.x, it.y, it.z) }
+        val clusters = clusterCoordinates(found, playerX, playerY, playerZ) { Triple(it.x, it.y, it.z) }
+        return OreSearchResult(
+            playerX, playerY, playerZ, Math.floorDiv(playerX, 16), Math.floorDiv(playerZ, 16),
+            81, found, clusters
+        )
+    }
+
+    fun findAncientDebrisNearPlayer(
+        bridge: LevelDbBridge,
+        playerX: Int, playerY: Int, playerZ: Int,
+        dimension: Int = 1,
+        parallelism: Int = 6
+    ): OreSearchResult<OreCoordinate> {
+        if (dimension != 1) {
+            return OreSearchResult(playerX, playerY, playerZ, Math.floorDiv(playerX, 16), Math.floorDiv(playerZ, 16), 81, emptyList(), emptyList())
+        }
+        val found = searchTargetSquare(
+            bridge, playerX, playerY, playerZ, dimension,
+            setOf("minecraft:ancient_debris"), parallelism
+        ).map { OreCoordinate(it.x, it.y, it.z) }
+        val clusters = clusterCoordinates(found, playerX, playerY, playerZ) { Triple(it.x, it.y, it.z) }
+        return OreSearchResult(
+            playerX, playerY, playerZ, Math.floorDiv(playerX, 16), Math.floorDiv(playerZ, 16),
+            81, found, clusters
+        )
+    }
+
+    private data class TargetCoordinate(val x: Int, val y: Int, val z: Int)
+
+    private fun findTargetCoordinatesInChunk(
+        bridge: LevelDbBridge, chunkX: Int, chunkZ: Int, dimension: Int, targetNames: Set<String>
+    ): List<TargetCoordinate> {
         val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
         if (subchunks.isEmpty()) return emptyList()
-
-        val result = ArrayList<OreCoordinate>()
-        val targetName = "minecraft:ancient_debris"
+        val result = ArrayList<TargetCoordinate>()
         for ((subY, bytes) in subchunks) {
-            when (val parsed = SubChunkParser.parse(bytes)) {
-                is SubChunkParser.ParseResult.Failure -> continue
-                is SubChunkParser.ParseResult.Success -> {
-                    val baseY = subY * 16
-                    for (x in 0 until 16) for (z in 0 until 16) for (y in 0 until 16) {
-                        if (parsed.blocks[x][z][y] == targetName) {
-                            result.add(OreCoordinate(chunkX * 16 + x, baseY + y, chunkZ * 16 + z))
+            val compact = SubChunkParser.parseCompact(bytes) ?: continue
+            val occupiedByLaterLayer = BooleanArray(4096)
+            // Later block-storage layers override earlier layers. Walk backwards so
+            // a target hidden by a non-air overlay is never reported.
+            for (layer in compact.layers.asReversed()) {
+                val targetPalette = BooleanArray(layer.palette.size)
+                var hasTarget = false
+                for (i in layer.palette.indices) {
+                    if (layer.palette[i] in targetNames) { targetPalette[i] = true; hasTarget = true }
+                }
+                for (i in 0 until 4096) {
+                    val paletteIndex = layer.indexAt(i)
+                    val name = layer.palette.getOrNull(paletteIndex) ?: "minecraft:air"
+                    if (!occupiedByLaterLayer[i]) {
+                        if (hasTarget && paletteIndex < targetPalette.size && targetPalette[paletteIndex]) {
+                            val x = i ushr 8
+                            val z = (i ushr 4) and 15
+                            val y = i and 15
+                            result.add(TargetCoordinate(chunkX * 16 + x, subY * 16 + y, chunkZ * 16 + z))
                         }
+                        if (!SubChunkParser.isAirForSearch(name)) occupiedByLaterLayer[i] = true
                     }
                 }
             }
         }
-        return result.sortedWith(compareBy<OreCoordinate> { it.y }.thenBy { it.x }.thenBy { it.z })
+        return result
+    }
+
+    private fun searchTargetSquare(
+        bridge: LevelDbBridge, playerX: Int, playerY: Int, playerZ: Int, dimension: Int,
+        targetNames: Set<String>, parallelism: Int
+    ): List<TargetCoordinate> {
+        val centerX = Math.floorDiv(playerX, 16)
+        val centerZ = Math.floorDiv(playerZ, 16)
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(parallelism.coerceIn(1, 8))
+        try {
+            val futures = ArrayList<java.util.concurrent.Future<List<TargetCoordinate>>>(81)
+            for (dz in -4..4) for (dx in -4..4) {
+                val cx = centerX + dx
+                val cz = centerZ + dz
+                futures.add(executor.submit<List<TargetCoordinate>> {
+                    findTargetCoordinatesInChunk(bridge, cx, cz, dimension, targetNames)
+                })
+            }
+            val result = ArrayList<TargetCoordinate>()
+            for (future in futures) result.addAll(future.get())
+            return result
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    /**
+     * Connected components under Chebyshev distance 1 in 3D: face, edge, and
+     * corner contact all merge. A chain of touching blocks also belongs to one
+     * cluster. Clusters are sorted by their nearest block to the player.
+     */
+    private fun <T> clusterCoordinates(
+        coordinates: List<T>, playerX: Int, playerY: Int, playerZ: Int, position: (T) -> Triple<Int, Int, Int>
+    ): List<OreCluster<T>> {
+        if (coordinates.isEmpty()) return emptyList()
+        val points = coordinates.map(position)
+        val byPoint = HashMap<Triple<Int, Int, Int>, Int>(coordinates.size * 2)
+        points.forEachIndexed { index, point -> byPoint.putIfAbsent(point, index) }
+        val visited = BooleanArray(coordinates.size)
+        val groups = ArrayList<List<T>>()
+        for (start in coordinates.indices) {
+            if (visited[start]) continue
+            val queue = java.util.ArrayDeque<Int>()
+            val group = ArrayList<T>()
+            visited[start] = true
+            queue.add(start)
+            while (queue.isNotEmpty()) {
+                val i = queue.removeFirst()
+                group.add(coordinates[i])
+                val p = points[i]
+                for (dx in -1..1) for (dy in -1..1) for (dz in -1..1) {
+                    if (dx == 0 && dy == 0 && dz == 0) continue
+                    val neighbor = Triple(p.first + dx, p.second + dy, p.third + dz)
+                    val j = byPoint[neighbor] ?: continue
+                    if (!visited[j]) { visited[j] = true; queue.add(j) }
+                }
+            }
+            groups.add(group)
+        }
+        return groups.map { group ->
+            val distance = group.minOf { p ->
+                val (x, y, z) = position(p)
+                // Player-to-block squared distance; Long avoids overflow for large worlds.
+                val dx = x.toLong() - playerX.toLong()
+                val dy = y.toLong() - playerY.toLong()
+                val dz = z.toLong() - playerZ.toLong()
+                dx * dx + dy * dy + dz * dz
+            }
+            OreCluster(group, distance)
+        }.sortedBy { it.distanceSquaredToPlayer }
     }
 
     /**

@@ -49,6 +49,8 @@ class MapViewerActivity : AppCompatActivity() {
     private lateinit var coordText: TextView
     private var currentDimension = 0 // UI: 0 Overworld, 1 Nether, 2 The End
     private var playerOverworldPosition: Pair<Int, Int>? = null
+    private var localPlayerPosition: Triple<Int, Int, Int>? = null
+    private var localPlayerDimension: Int = 0
     private val wholeMapExportRunning = AtomicBoolean(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -168,11 +170,30 @@ class MapViewerActivity : AppCompatActivity() {
                     val compound = bytes?.let { NbtIO.readRootCompoundNoHeader(it) }
                     val pos = compound?.entries?.get("Pos") as? NbtTag.ListTag
                     val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
+                    val y = (pos?.items?.getOrNull(1) as? NbtTag.Float)?.value
                     val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
                     if (x != null && z != null) x.toInt() to z.toInt() else null
                 } catch (_: Exception) { null }
 
                 val playerDimension = try { readPlayerDimension(bridge) } catch (_: Exception) { 0 }
+                localPlayerDimension = playerDimension
+                // Read the full coordinate again here so ore-finders can sort by real
+                // player distance, including Y. If the NBT is unavailable, keep the
+                // existing X/Z fallback used for camera placement.
+                localPlayerPosition = try {
+                    val rawKey = "~local_player".toByteArray(Charsets.US_ASCII)
+                    val bytes = bridge.read(rawKey)
+                    val compound = bytes?.let { NbtIO.readRootCompoundNoHeader(it) }
+                    val pos = compound?.entries?.get("Pos") as? NbtTag.ListTag
+                    val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
+                    val y = (pos?.items?.getOrNull(1) as? NbtTag.Float)?.value
+                    val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
+                    if (x != null && y != null && z != null) Triple(
+                Math.floor(x.toDouble()).toInt(),
+                Math.floor(y.toDouble()).toInt(),
+                Math.floor(z.toDouble()).toInt()
+            ) else null
+                } catch (_: Exception) { null }
                 val rawPlayerPos = playerPos ?: (0 to 0)
                 playerOverworldPosition = if (playerDimension == 1) {
                     rawPlayerPos.first * 8 to rawPlayerPos.second * 8
@@ -316,6 +337,171 @@ class MapViewerActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun findDiamondsNearPlayer() {
+        startPlayerOreSearch(true)
+    }
+
+    private fun findAncientDebrisNearPlayer() {
+        startPlayerOreSearch(false)
+    }
+
+    /** Reads the local player at the moment the hamburger action is tapped, then scans. */
+    private fun startPlayerOreSearch(diamond: Boolean) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
+            return
+        }
+        val title = if (diamond) "💎 Finding Diamonds" else "🏺 Finding Ancient Debris"
+        val searchingMessage = if (diamond)
+            "Reading the current player position and searching a 9 × 9 chunk square…"
+        else
+            "Reading the current player position and searching a 9 × 9 Nether chunk square…"
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage(searchingMessage)
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.show()
+
+        Thread {
+            try {
+                val local = readCurrentLocalPlayerPosition(bridge)
+                if (local == null) throw IllegalStateException("Could not read the current player's coordinates.")
+                val playerDimension = try { readPlayerDimension(bridge) } catch (_: Exception) { localPlayerDimension }
+
+                val target: Triple<Int, Int, Int> = if (diamond) {
+                    when (playerDimension) {
+                        0 -> local
+                        1 -> Triple(
+                            local.first * 8,
+                            local.second,
+                            local.third * 8
+                        )
+                        else -> throw IllegalStateException("Diamond search needs an Overworld or Nether player position.")
+                    }
+                } else {
+                    when (playerDimension) {
+                        1 -> local
+                        0 -> Triple(
+                            Math.floorDiv(local.first, 8),
+                            local.second,
+                            Math.floorDiv(local.third, 8)
+                        )
+                        else -> throw IllegalStateException("Ancient Debris search needs an Overworld or Nether player position.")
+                    }
+                }
+
+                if (diamond) {
+                    val result = ChunkScanner.findDiamondsNearPlayer(bridge, target.first, target.second, target.third, 0)
+                    runOnUiThread {
+                        if (!isFinishing) {
+                            dialog.dismiss()
+                            showOreSearchResult(title, result, true)
+                        }
+                    }
+                } else {
+                    val result = ChunkScanner.findAncientDebrisNearPlayer(bridge, target.first, target.second, target.third, 1)
+                    runOnUiThread {
+                        if (!isFinishing) {
+                            dialog.dismiss()
+                            showOreSearchResult(title, result, false)
+                        }
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    if (!isFinishing) {
+                        dialog.dismiss()
+                        showErrorDialog(this, "Failed to search for ${if (diamond) "diamonds" else "ancient debris"}", e)
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun readCurrentLocalPlayerPosition(bridge: LevelDbBridge): Triple<Int, Int, Int>? {
+        return try {
+            val rawKey = "~local_player".toByteArray(Charsets.US_ASCII)
+            val bytes = bridge.read(rawKey)
+            val compound = bytes?.let { NbtIO.readRootCompoundNoHeader(it) }
+            val pos = compound?.entries?.get("Pos") as? NbtTag.ListTag
+            val x = (pos?.items?.getOrNull(0) as? NbtTag.Float)?.value
+            val y = (pos?.items?.getOrNull(1) as? NbtTag.Float)?.value
+            val z = (pos?.items?.getOrNull(2) as? NbtTag.Float)?.value
+            if (x != null && y != null && z != null) Triple(
+                Math.floor(x.toDouble()).toInt(),
+                Math.floor(y.toDouble()).toInt(),
+                Math.floor(z.toDouble()).toInt()
+            ) else null
+        } catch (_: Exception) { null }
+    }
+
+    private fun <T> showOreSearchResult(title: String, result: com.spaimic.nbttool.chunk.OreSearchResult<T>, diamond: Boolean) {
+        val icon = if (diamond) "💎" else "🏺"
+        val noun = if (diamond) "diamonds" else "ancient debris"
+        val lines = StringBuilder()
+            .append("Player: (${result.playerX}, ${result.playerY}, ${result.playerZ})\n")
+            .append("Center chunk: (${result.centerChunkX}, ${result.centerChunkZ})\n")
+            .append("Searched: 9 × 9 = ${result.searchedChunks} chunks\n")
+            .append("Found: ${result.coordinates.size} $noun in ${result.clusters.size} nearby group")
+        if (result.clusters.size != 1) lines.append("s")
+        lines.append(".\n\n")
+
+        result.clusters.forEachIndexed { index, cluster ->
+            val distance = Math.sqrt(cluster.distanceSquaredToPlayer.toDouble())
+            lines.append("$icon Group ${index + 1}: ${cluster.coordinates.size} $noun • ${String.format(java.util.Locale.US, "%.1f", distance)} blocks from player\n")
+            val sorted = cluster.coordinates.sortedBy { coordinateDistanceSquared(it, result.playerX, result.playerY, result.playerZ) }
+            sorted.forEach { coordinate ->
+                lines.append("  ${formatOreCoordinate(coordinate)}\n")
+            }
+            lines.append("\n")
+        }
+        if (result.clusters.isEmpty()) {
+            lines.append("No $noun were found in the searched square.")
+        }
+
+        val textView = TextView(this).apply {
+            text = lines.toString()
+            setPadding(40, 16, 40, 16)
+            textSize = 15f
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply { addView(textView) }
+        AlertDialog.Builder(this)
+            .setTitle("$title — Results")
+            .setView(scroll)
+            .setNegativeButton("Close", null)
+            .setPositiveButton("Copy All Coordinates") { _, _ ->
+                val coordinateText = result.coordinates
+                    .sortedBy { coordinateDistanceSquared(it, result.playerX, result.playerY, result.playerZ) }
+                    .joinToString("\n") { formatOreCoordinate(it) }
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("${if (diamond) "Diamond" else "Ancient Debris"} Coordinates", coordinateText))
+                Toast.makeText(this, "Copied ${result.coordinates.size} coordinates.", Toast.LENGTH_SHORT).show()
+            }
+            .show()
+    }
+
+    private fun formatOreCoordinate(value: Any): String = when (value) {
+        is com.spaimic.nbttool.chunk.DiamondCoordinate -> "💎 (${value.x}, ${value.y}, ${value.z})"
+        is com.spaimic.nbttool.chunk.OreCoordinate -> "🏺 (${value.x}, ${value.y}, ${value.z})"
+        else -> value.toString()
+    }
+
+    private fun coordinateDistanceSquared(value: Any, playerX: Int, playerY: Int, playerZ: Int): Long {
+        val x: Int; val y: Int; val z: Int
+        when (value) {
+            is com.spaimic.nbttool.chunk.DiamondCoordinate -> { x = value.x; y = value.y; z = value.z }
+            is com.spaimic.nbttool.chunk.OreCoordinate -> { x = value.x; y = value.y; z = value.z }
+            else -> return Long.MAX_VALUE
+        }
+        val dx = x.toLong() - playerX.toLong()
+        val dy = y.toLong() - playerY.toLong()
+        val dz = z.toLong() - playerZ.toLong()
+        return dx * dx + dy * dy + dz * dz
+    }
+
     private fun showChunkDialog(worldX: Int, worldZ: Int) {
         val chunkX = Math.floorDiv(worldX, 16)
         val chunkZ = Math.floorDiv(worldZ, 16)
@@ -323,9 +509,7 @@ class MapViewerActivity : AppCompatActivity() {
         val options = arrayListOf(
             "Chunk Information",
             "🟦 Start Selection",
-            "💎 Show All Diamond Coordinates",
         )
-        if (selectedDbDimension() == 1) options.add("🏺 Show All Ancient Debris Coordinates")
         options.addAll(listOf(
             "Show Entities",
             "Show Block Entities",
@@ -347,8 +531,6 @@ class MapViewerActivity : AppCompatActivity() {
                 when (options[which]) {
                     "Chunk Information" -> showChunkInformation(chunkX, chunkZ)
                     "🟦 Start Selection" -> startSelection(worldX, worldZ)
-                    "💎 Show All Diamond Coordinates" -> showDiamondCoordinates(chunkX, chunkZ)
-                    "🏺 Show All Ancient Debris Coordinates" -> showAncientDebrisCoordinates(chunkX, chunkZ)
                     "Show Entities" -> {
                         val i = Intent(this, EntityListActivity::class.java)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
@@ -824,78 +1006,6 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun showDiamondCoordinates(chunkX: Int, chunkZ: Int) {
-        val bridge = LevelDbSession.bridge
-        if (bridge == null) {
-            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
-            return
-        }
-        val dimension = selectedDbDimension()
-        Thread {
-            try {
-                val coordinates = ChunkScanner.findDiamondCoordinates(bridge, chunkX, chunkZ, dimension)
-                runOnUiThread {
-                    if (coordinates.isEmpty()) {
-                        AlertDialog.Builder(this)
-                            .setTitle("💎 Diamond Coordinates")
-                            .setMessage("No diamond_ore or deepslate_diamond_ore blocks were found in this chunk.")
-                            .setPositiveButton("OK", null)
-                            .show()
-                        return@runOnUiThread
-                    }
-
-                    val text = coordinates.joinToString("\n") { "💎 (${it.x}, ${it.y}, ${it.z})" }
-                    AlertDialog.Builder(this)
-                        .setTitle("💎 Diamond Coordinates (${coordinates.size})")
-                        .setMessage(text)
-                        .setNegativeButton("Close", null)
-                        .setPositiveButton("Copy All Coordinates") { _, _ ->
-                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Diamond Coordinates", text))
-                            Toast.makeText(this, "Copied ${coordinates.size} diamond coordinates.", Toast.LENGTH_SHORT).show()
-                        }
-                        .show()
-                }
-            } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Failed to scan diamond coordinates", e) }
-            }
-        }.start()
-    }
-
-    private fun showAncientDebrisCoordinates(chunkX: Int, chunkZ: Int) {
-        val bridge = LevelDbSession.bridge
-        if (bridge == null) {
-            Toast.makeText(this, "World database isn't open", Toast.LENGTH_LONG).show()
-            return
-        }
-        Thread {
-            try {
-                val coordinates = ChunkScanner.findAncientDebrisCoordinates(bridge, chunkX, chunkZ, 1)
-                runOnUiThread {
-                    if (coordinates.isEmpty()) {
-                        AlertDialog.Builder(this)
-                            .setTitle("🏺 Ancient Debris Coordinates")
-                            .setMessage("No ancient_debris blocks were found in this Nether chunk.")
-                            .setPositiveButton("OK", null).show()
-                        return@runOnUiThread
-                    }
-                    val text = coordinates.joinToString("\n") { "🏺 (${it.x}, ${it.y}, ${it.z})" }
-                    AlertDialog.Builder(this)
-                        .setTitle("🏺 Ancient Debris Coordinates (${coordinates.size})")
-                        .setMessage(text)
-                        .setNegativeButton("Close", null)
-                        .setPositiveButton("Copy All Coordinates") { _, _ ->
-                            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("Ancient Debris Coordinates", text))
-                            Toast.makeText(this, "Copied ${coordinates.size} ancient debris coordinates.", Toast.LENGTH_SHORT).show()
-                        }.show()
-                }
-            } catch (e: Exception) {
-                runOnUiThread { showErrorDialog(this, "Failed to scan ancient debris coordinates", e) }
-            }
-        }.start()
-    }
-
     private fun showChunkInformation(chunkX: Int, chunkZ: Int) {
         val bridge = LevelDbSession.bridge
         if (bridge == null) {
@@ -1185,6 +1295,8 @@ class MapViewerActivity : AppCompatActivity() {
         // Extra LevelDB records are grouped behind the Advanced browser so the
         // main menu remains compact and easy to scroll/use on small screens.
         val options = listOf(
+            "💎 Find Diamonds Near Player",
+            "🏺 Find Ancient Debris Near Player",
             "Player Editor",
             "World Settings Editor",
             "Multiplayer Editor",
@@ -1206,28 +1318,30 @@ class MapViewerActivity : AppCompatActivity() {
         AlertDialog.Builder(this)
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> openLocalPlayerLazily()
-                    1 -> openLevelDatEditor()
-                    2 -> showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_server_") }
-                    3 -> showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") }
-                    4 -> showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") }
-                    5 -> showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_Overworld_") }
-                    6 -> {
+                    0 -> findDiamondsNearPlayer()
+                    1 -> findAncientDebrisNearPlayer()
+                    2 -> openLocalPlayerLazily()
+                    3 -> openLevelDatEditor()
+                    4 -> showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_server_") }
+                    5 -> showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") }
+                    6 -> showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") }
+                    7 -> showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_Overworld_") }
+                    8 -> {
                         mapView.showEntityIcons = !mapView.showEntityIcons
                         mapView.invalidate()
                     }
-                    7 -> {
+                    9 -> {
                         mapView.showTileEntityIcons = !mapView.showTileEntityIcons
                         mapView.invalidate()
                     }
-                    8 -> showExactKey("Overworld NBT Data", "Overworld")
-                    9 -> showExactKey("Nether NBT Data", "Nether")
-                    10 -> showExactKey("The End NBT Data", "TheEnd")
-                    11 -> startActivity(Intent(this, ClipboardActivity::class.java))
-                    12 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
-                    13 -> promptWholeMapPicture()
-                    14 -> promptOpenLevelDbKeyByName()
-                    15 -> openAllKeysBrowser()
+                    10 -> showExactKey("Overworld NBT Data", "Overworld")
+                    11 -> showExactKey("Nether NBT Data", "Nether")
+                    12 -> showExactKey("The End NBT Data", "TheEnd")
+                    13 -> startActivity(Intent(this, ClipboardActivity::class.java))
+                    14 -> startActivity(Intent(this, ChunkClipboardActivity::class.java))
+                    15 -> promptWholeMapPicture()
+                    16 -> promptOpenLevelDbKeyByName()
+                    17 -> openAllKeysBrowser()
                 }
             }
             .show()
