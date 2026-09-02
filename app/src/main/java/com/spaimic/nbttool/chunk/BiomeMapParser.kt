@@ -137,6 +137,33 @@ object BiomeMapParser {
         }
     }
 
+    /**
+     * Reads Bedrock's 16x16 DATA_3D heightmap without decoding any biome palettes.
+     * The stored value is big-endian on disk and represents (surfaceY + 64).
+     * A decoded value of -64 is Bedrock's unknown/sentinel value.
+     *
+     * Returns one Y value per column, where Y is the first air block above the
+     * highest surface block (matching BedrockChunk.getHeightMapValue()).
+     */
+    fun heightMapFast(raw: ByteArray?, out: IntArray): Boolean {
+        if (raw == null || raw.size < 512 || out.size < 256) return false
+        try {
+            for (column in 0 until 256) {
+                val offset = column shl 1
+                // Bedrock stores each short byte-swapped relative to Java's
+                // big-endian DataInputStream representation.
+                val stored = (raw[offset].toInt() and 0xFF) or
+                    ((raw[offset + 1].toInt() and 0xFF) shl 8)
+                val signed = stored.toShort().toInt()
+                val height = signed - 64
+                out[column] = height
+            }
+            return true
+        } catch (_: Exception) {
+            return false
+        }
+    }
+
     fun biomeAt(result: Result?, surfaceY: Int, x: Int, z: Int, subChunkY: Int): Int? {
         if (result == null) return null
         val layer = subChunkY + 4 // modern world minimum subchunk Y is -4

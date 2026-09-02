@@ -453,8 +453,46 @@ object ChunkScanner {
         // Always normalize the order here so the fast renderer matches the
         // normal 2D Map Viewer surface selection.
         val orderedSubchunks = subchunks.sortedByDescending { it.first }
+
+        // DATA_3D carries a 16x16 heightmap before the biome palettes. The
+        // height value is the first air block above the surface, so for normal
+        // terrain we can jump directly to the subchunk containing that surface
+        // instead of decoding/scanning every empty subchunk above it. This is
+        // the same hint used by Blocktopograph's BedrockChunk renderer.
+        // -64 is Bedrock's unknown sentinel; those columns deliberately retain
+        // the exhaustive fallback so a missing/stale heightmap cannot hide a
+        // valid surface from the renderer.
+        val heightMap = IntArray(256) { -64 }
+        val hasHeightMap = dimension == 0 &&
+            BiomeMapParser.heightMapFast(biomeBytes, heightMap)
+        val startSubchunk = IntArray(256) { Int.MIN_VALUE }
+        if (hasHeightMap) {
+            for (column in 0 until 256) {
+                val h = heightMap[column]
+                if (h > -64) startSubchunk[column] = Math.floorDiv(h - 1, 16)
+            }
+        }
+
         for ((subY, bytes) in orderedSubchunks) {
             if (remaining == 0) break
+
+            // If every column is either already resolved or has a valid
+            // heightmap hint below this subchunk, the entire packed subchunk
+            // can be skipped without even decoding its palettes.
+            if (hasHeightMap) {
+                var needed = false
+                for (column in 0 until 256) {
+                    val x = column and 15
+                    val z = column ushr 4
+                    if (found[x][z]) continue
+                    val hint = startSubchunk[column]
+                    if (hint == Int.MIN_VALUE || subY <= hint) {
+                        needed = true
+                        break
+                    }
+                }
+                if (!needed) continue
+            }
 
             val compact = SubChunkParser.parseCompact(bytes)
             if (compact == null) {
@@ -498,7 +536,18 @@ object ChunkScanner {
                     // Find the highest non-air block in the effective storage.
                     // Later Bedrock storage layers have precedence when they
                     // contain a non-air value, matching mergeLayerInto().
+                    // When the heightmap is valid, start at the exact surface
+                    // subchunk/local Y instead of walking empty cells above it.
                     var y = 15
+                    if (hasHeightMap) {
+                        val hint = startSubchunk[column]
+                        if (hint != Int.MIN_VALUE) {
+                            if (subY > hint) continue
+                            if (subY == hint) {
+                                y = (heightMap[column] - 1 - subY * 16).coerceIn(0, 15)
+                            }
+                        }
+                    }
                     while (y >= 0) {
                         val linear = SubChunkParser.linearIndex(x, z, y)
                         var selectedLayer = -1
