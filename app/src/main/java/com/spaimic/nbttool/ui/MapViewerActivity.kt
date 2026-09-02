@@ -437,7 +437,7 @@ class MapViewerActivity : AppCompatActivity() {
         } catch (_: Exception) { null }
     }
 
-    private fun <T> showOreSearchResult(title: String, result: com.spaimic.nbttool.chunk.OreSearchResult<T>, diamond: Boolean) {
+    private fun <T : Any> showOreSearchResult(title: String, result: com.spaimic.nbttool.chunk.OreSearchResult<T>, diamond: Boolean) {
         val icon = if (diamond) "💎" else "🏺"
         val noun = if (diamond) "diamonds" else "ancient debris"
         val lines = StringBuilder()
