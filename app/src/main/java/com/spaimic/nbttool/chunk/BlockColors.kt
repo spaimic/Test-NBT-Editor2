@@ -90,14 +90,14 @@ object BlockColors {
     // These are intentionally kept separate from the older Java-style fallback
     // palette above.  The renderer should prefer these values whenever a block
     // has a known Bedrock map color.
-    private val BEDROCK_GRASS = rgb(146, 188, 88)
+    private val BEDROCK_GRASS = rgb(82, 137, 33)
     private val BEDROCK_OAK_LEAVES = rgb(63, 92, 24)
     private val BEDROCK_BIRCH_LEAVES = rgb(69, 90, 46)
     private val BEDROCK_SPRUCE_LEAVES = rgb(52, 82, 52)
     private val BEDROCK_CHERRY_LEAVES = rgb(242, 127, 165)
     private val BEDROCK_MANGROVE_LEAVES = rgb(63, 92, 24)
     private val BEDROCK_WATER = rgb(30, 90, 245)
-    private val BEDROCK_SHORT_GRASS = rgb(146, 188, 88)
+    private val BEDROCK_SHORT_GRASS = rgb(82, 137, 33)
     private val BEDROCK_FERN = rgb(146, 188, 88)
     private val BEDROCK_VINE = rgb(78, 113, 30)
     private val BEDROCK_STONE = rgb(112, 112, 112)

@@ -124,18 +124,21 @@ object WholeMapExporter {
                         onProgress(percent)
                     }
                 },
-                onScanProgress = { scan ->
-                    // Scan progress owns the first 20% of the unified scale.
-                    val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                onScanProgress = { _ ->
+                    // LevelDB scan has no cheap total-key count without a second
+                    // database pass, so it must not pretend to be 20% of the work.
+                    // Keep the scan phase in a small 0..5% range and let actual
+                    // chunk completion + row rendering own the remaining progress.
+                    val mapped = 5
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
                     }
                 },
                 onChunkProgress = { chunk ->
-                    // Chunk decoding owns the next 50%. renderRows reports this
-                    // callback as a true 0..100 percentage.
-                    val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
+                    // This is actual completed chunk work, including synthetic
+                    // unloaded chunks. It owns 5..70% of the render.
+                    val mapped = (5 + chunk * 65 / 100).coerceIn(5, 70)
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
@@ -220,15 +223,15 @@ object WholeMapExporter {
                     onProgress(percent)
                 }
             },
-            onScanProgress = { scan ->
-                val mapped = (scan * 20 / 100).coerceIn(0, 20)
+            onScanProgress = { _ ->
+                val mapped = 5
                 if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
                 }
             },
             onChunkProgress = { chunk ->
-                val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
+                val mapped = (5 + chunk * 65 / 100).coerceIn(5, 70)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
                     onProgress(mapped)
@@ -309,15 +312,15 @@ object WholeMapExporter {
                         onProgress(percent)
                     }
                 },
-                onScanProgress = { scan ->
-                    val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                onScanProgress = { _ ->
+                    val mapped = 5
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
                     }
                 },
                 onChunkProgress = { chunk ->
-                    val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
+                    val mapped = (5 + chunk * 65 / 100).coerceIn(5, 70)
                     if (mapped > lastProgress) {
                         lastProgress = mapped
                         onProgress(mapped)
@@ -741,7 +744,7 @@ object WholeMapExporter {
         private val height: Int
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
-        private val deflater = Deflater(Deflater.BEST_SPEED)
+        private val deflater = Deflater(3)
         private val buf = ByteArray(256 * 1024)
         private val idatBuffer = ByteArrayOutputStream(1024 * 1024)
         private val rawRow = ByteArray(width * 3 + 1)
@@ -763,48 +766,82 @@ object WholeMapExporter {
 
         /** Writes a 1-pixel/block source row expanded directly to the final ppb width. */
         fun writeSourceRow(source: IntArray, ppb: Int) {
+            require(!closed) { "PNG writer is closed" }
             require(ppb >= 1)
+            require(source.size * ppb == width) {
+                "Expected source size ${width / ppb}, got ${source.size}"
+            }
+
             if (ppb == 1) {
                 writeRow(source)
                 return
             }
-            require(source.size * ppb == width) { "Expected source size ${width / ppb}, got ${source.size}" }
 
-            // Build one expanded row. Repeated vertical rows can then reuse a very
-            // cheap all-zero Up-filter row, avoiding repeated RGB conversion work.
-            rawRow[0] = 1 // Sub
-            var pos = 1
-            var previousOutput = 0
-            for (color in source) {
-                val rgb = color and 0xFFFFFF
-                val r = (rgb ushr 16) and 0xFF
-                val g = (rgb ushr 8) and 0xFF
-                val b = rgb and 0xFF
-                for (rep in 0 until ppb) {
-                    val dr = if (rep == 0) r - ((previousOutput ushr 16) and 0xFF) else 0
-                    val dg = if (rep == 0) g - ((previousOutput ushr 8) and 0xFF) else 0
-                    val db = if (rep == 0) b - (previousOutput and 0xFF) else 0
-                    rawRow[pos++] = dr.toByte()
-                    rawRow[pos++] = dg.toByte()
-                    rawRow[pos++] = db.toByte()
-                    previousOutput = rgb
+            // Choose between Sub and Up using block-level deltas. This costs only
+            // 1 comparison per Minecraft block instead of per output pixel, while
+            // giving zlib a much more compressible filter on broad terrain.
+            var subScore = 0L
+            var upScore = if (hasPrevious) 0L else Long.MAX_VALUE
+            var previous = 0
+            for (i in source.indices) {
+                val rgb = source[i] and 0xFFFFFF
+                val dr = ((rgb ushr 16) and 0xFF) - ((previous ushr 16) and 0xFF)
+                val dg = ((rgb ushr 8) and 0xFF) - ((previous ushr 8) and 0xFF)
+                val db = (rgb and 0xFF) - (previous and 0xFF)
+                subScore += kotlin.math.abs(dr).toLong() + kotlin.math.abs(dg).toLong() + kotlin.math.abs(db).toLong()
+                if (hasPrevious) {
+                    val prev = previousColors[i] and 0xFFFFFF
+                    upScore += kotlin.math.abs(((rgb ushr 16) and 0xFF) - ((prev ushr 16) and 0xFF)).toLong()
+                    upScore += kotlin.math.abs(((rgb ushr 8) and 0xFF) - ((prev ushr 8) and 0xFF)).toLong()
+                    upScore += kotlin.math.abs((rgb and 0xFF) - (prev and 0xFF)).toLong()
                 }
-            }
-            deflateRow(rawRow)
-
-            // All additional pixels-per-block rows are identical to the source row.
-            // PNG Up filtering makes these rows a 1-byte filter marker + zeros.
-            if (ppb > 1) {
-                java.util.Arrays.fill(rawRow, 1, rawRow.size, 0.toByte())
-                rawRow[0] = 2
-                repeat(ppb - 1) { deflateRow(rawRow) }
+                previous = rgb
             }
 
-            // writeSourceRow emits exactly `ppb` PNG rows. Build 194's
-            // one-pass writer forgot to advance the row counter here, so
-            // PngWriter.close() could leave the stream without its final
-            // flush/IEND and some decoders would display only part of the
-            // image. Keep the counter aligned with the actual emitted rows.
+            if (hasPrevious && upScore < subScore) {
+                rawRow[0] = 2 // Up
+                var pos = 1
+                for (i in source.indices) {
+                    val rgb = source[i] and 0xFFFFFF
+                    val prev = previousColors[i] and 0xFFFFFF
+                    repeat(ppb) {
+                        rawRow[pos++] = (((rgb ushr 16) and 0xFF) - ((prev ushr 16) and 0xFF)).toByte()
+                        rawRow[pos++] = (((rgb ushr 8) and 0xFF) - ((prev ushr 8) and 0xFF)).toByte()
+                        rawRow[pos++] = ((rgb and 0xFF) - (prev and 0xFF)).toByte()
+                    }
+                }
+                deflateRow(rawRow)
+            } else {
+                rawRow[0] = 1 // Sub
+                var pos = 1
+                var previousOutput = 0
+                for (color in source) {
+                    val rgb = color and 0xFFFFFF
+                    val r = (rgb ushr 16) and 0xFF
+                    val g = (rgb ushr 8) and 0xFF
+                    val b = rgb and 0xFF
+                    repeat(ppb) { rep ->
+                        val dr = if (rep == 0) r - ((previousOutput ushr 16) and 0xFF) else 0
+                        val dg = if (rep == 0) g - ((previousOutput ushr 8) and 0xFF) else 0
+                        val db = if (rep == 0) b - (previousOutput and 0xFF) else 0
+                        rawRow[pos++] = dr.toByte()
+                        rawRow[pos++] = dg.toByte()
+                        rawRow[pos++] = db.toByte()
+                        previousOutput = rgb
+                    }
+                }
+                deflateRow(rawRow)
+            }
+
+            // Save the source row, not the expanded row. Every output row from the
+            // same block row is identical, so the extra ppb-1 rows are pure Up
+            // zero-delta rows and compress to almost nothing.
+            System.arraycopy(source, 0, previousColors, 0, width / ppb)
+            hasPrevious = true
+            java.util.Arrays.fill(rawRow, 1, rawRow.size, 0.toByte())
+            rawRow[0] = 2
+            repeat(ppb - 1) { deflateRow(rawRow) }
+
             rows += ppb
             require(rows <= height) { "PNG row overflow: wrote $rows of $height rows" }
         }

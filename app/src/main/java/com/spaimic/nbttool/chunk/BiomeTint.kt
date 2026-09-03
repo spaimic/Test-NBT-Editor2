@@ -44,6 +44,12 @@ object BiomeTint {
     /** Applies the visual tint Minecraft uses for common Bedrock map-tinted blocks. */
     fun apply(blockName: String, base: Int, biomeId: Int?): Int {
         val name = blockName.substringAfter(':')
+        // Grass blocks in the 2D Map Viewer use the fixed Bedrock map color.
+        // Applying biome tint here made the same grass block jump between a
+        // normal green and a pale green depending on the biome record, which
+        // did not match the actual flat-map rendering. Keep the resolved base
+        // color stable; terrain relief is applied later by MapViewerRenderStyle.
+        if (name == "grass_block") return base
         if (name == "cherry_leaves" || name == "flowering_azalea_leaves") return base
         val kind = kindFor(biomeId ?: PLAINS)
         val tint = when {
