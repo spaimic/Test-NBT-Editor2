@@ -14,6 +14,7 @@ import android.view.View
 import com.spaimic.nbttool.R
 import com.spaimic.nbttool.chunk.BlockColors
 import com.spaimic.nbttool.chunk.ColumnInfo
+import com.spaimic.nbttool.chunk.MapViewerRenderStyle
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
@@ -352,15 +353,12 @@ class MapView(context: Context) : View(context) {
                 else -> info.surfaceY
             }
 
-            // Build 114: no coordinate-based color variation. Only local height
-            // differences affect the final shade, producing the clean, subtle
-            // relief visible in Blocktopograph while preserving block identity.
-            val relief = reliefShading(info.surfaceY, west, east, north, south)
-            val base = info.color
-            val r = (Color.red(base) * relief).toInt().coerceIn(0, 255)
-            val g = (Color.green(base) * relief).toInt().coerceIn(0, 255)
-            val b = (Color.blue(base) * relief).toInt().coerceIn(0, 255)
-            val color = Color.rgb(r, g, b)
+            // Keep the on-screen map and exported map pixels on one renderer.
+            // This must stay the exact same shading function used by the export
+            // path so screenshots cannot drift visually from the 2D Map Viewer.
+            val color = MapViewerRenderStyle.shadeColumn(
+                info, west, east, north, south
+            )
 
             for (py in 0 until blockPixels) {
                 val row = (z * blockPixels + py) * chunkPixels + x * blockPixels
@@ -405,19 +403,6 @@ class MapView(context: Context) : View(context) {
                 rendering.remove(pos)
             }
         }
-    }
-
-    private fun reliefShading(height: Int, west: Int, east: Int, north: Int, south: Int): Float {
-        val leftSlope = height - west
-        val rightSlope = height - east
-        val northSlope = height - north
-        val southSlope = height - south
-
-        // A small directional relief, deliberately capped so block colors remain
-        // recognizable. Positive values mean the current column is higher than
-        // its neighbors; negative values mean it is lower.
-        val slope = ((leftSlope - rightSlope) + (northSlope - southSlope)) * 0.035f
-        return (1f + slope.coerceIn(-0.14f, 0.14f)).coerceIn(0.86f, 1.14f)
     }
 
     override fun onDraw(canvas: Canvas) {

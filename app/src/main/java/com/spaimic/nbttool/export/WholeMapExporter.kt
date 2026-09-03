@@ -6,6 +6,7 @@ import com.spaimic.nbttool.chunk.BlockColors
 import com.spaimic.nbttool.chunk.ChunkKeys
 import com.spaimic.nbttool.chunk.ChunkScanner
 import com.spaimic.nbttool.chunk.ColumnInfo
+import com.spaimic.nbttool.chunk.MapViewerRenderStyle
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
@@ -510,9 +511,16 @@ object WholeMapExporter {
 
             var worldRow = 0L
 
-            for (cz in b.minChunkZ..b.maxChunkZ) {
-                checkCancelled(isCancelled)
-                val grids = HashMap<Int, Array<Array<ColumnInfo>>>(
+            // The on-screen MapView shades each column using its immediate
+            // west/east/north/south neighbors. Most neighbors are inside the
+            // current chunk, but the north/south neighbors at chunk-row
+            // boundaries live in the preceding/following chunk row. Keep only
+            // those boundary rows instead of retaining three complete rows of
+            // chunk grids in memory. The next row is prefetched while workers
+            // are already decoding, so fidelity costs very little wall-clock
+            // time and does not require a second world render.
+            fun takeChunkRow(cz: Int): HashMap<Int, Array<Array<ColumnInfo>>> {
+                val row = HashMap<Int, Array<Array<ColumnInfo>>>(
                     chunkWidthLong.toInt().coerceAtMost(1024)
                 )
 
@@ -547,27 +555,62 @@ object WholeMapExporter {
                         ?: throw IllegalStateException(
                             "Missing chunk result for $cx,$cz"
                         )
-
-                    result.grid?.let { grids[cx] = it }
+                    result.grid?.let { row[cx] = it }
                 }
+                return row
+            }
 
+            var previousBottomEdges: HashMap<Int, Array<ColumnInfo>>? = null
+            var currentGrids: Map<Int, Array<Array<ColumnInfo>>> = takeChunkRow(b.minChunkZ)
+
+            for (cz in b.minChunkZ..b.maxChunkZ) {
+                checkCancelled(isCancelled)
                 val rgb = IntArray(rowWidth)
 
-                for (lz in 0..15) {
+                // Render the first 15 local Z rows immediately. None of these
+                // rows needs a following chunk row: their south neighbor is still
+                // inside the current chunk. This keeps the worker pool and PNG
+                // writer moving instead of waiting for the next Z strip up front.
+                for (lz in 0 until 15) {
                     checkCancelled(isCancelled)
-
                     var cursor = 0
 
                     for (cx in b.minChunkX..b.maxChunkX) {
-                        val grid = grids[cx]
-
+                        val grid = currentGrids[cx]
                         for (lx in 0..15) {
-                            val color = grid?.get(lx)?.get(lz)?.color
-                                ?: BlockColors.fallbackUnloaded
+                            val info = grid?.get(lx)?.get(lz)
+                            val color = if (info == null) {
+                                BlockColors.fallbackUnloaded
+                            } else {
+                                val west = when {
+                                    lx > 0 -> grid[lx - 1][lz].surfaceY
+                                    cx > b.minChunkX -> {
+                                        currentGrids[cx - 1]?.get(15)?.get(lz)?.surfaceY
+                                            ?: info.surfaceY
+                                    }
+                                    else -> info.surfaceY
+                                }
+                                val east = when {
+                                    lx < 15 -> grid[lx + 1][lz].surfaceY
+                                    cx < b.maxChunkX -> {
+                                        currentGrids[cx + 1]?.get(0)?.get(lz)?.surfaceY
+                                            ?: info.surfaceY
+                                    }
+                                    else -> info.surfaceY
+                                }
+                                val north = if (lz > 0) {
+                                    grid[lx][lz - 1].surfaceY
+                                } else {
+                                    previousBottomEdges?.get(cx)?.get(lx)?.surfaceY
+                                        ?: info.surfaceY
+                                }
+                                val south = grid[lx][lz + 1].surfaceY
 
-                            repeat(ppb) {
-                                rgb[cursor++] = color
+                                MapViewerRenderStyle.shadeColumn(
+                                    info, west, east, north, south
+                                )
                             }
+                            repeat(ppb) { rgb[cursor++] = color }
                         }
                     }
 
@@ -577,6 +620,80 @@ object WholeMapExporter {
                         worldRow++
                     }
                 }
+
+                // Only the final local Z row crosses the chunk-row boundary.
+                // Fetch the next row at this point, not before, so almost all of
+                // the current row can render while the scan/decode pipeline works
+                // on the rest of the world.
+                val nextGrids: Map<Int, Array<Array<ColumnInfo>>> = if (cz < b.maxChunkZ) {
+                    takeChunkRow(cz + 1)
+                } else {
+                    emptyMap()
+                }
+
+                val nextTopEdges = if (nextGrids.isNotEmpty()) {
+                    HashMap<Int, Array<ColumnInfo>>(nextGrids.size).also { edges ->
+                        for ((cx, grid) in nextGrids) {
+                            edges[cx] = Array(16) { x -> grid[x][0] }
+                        }
+                    }
+                } else {
+                    null
+                }
+
+                // Render the final local Z row using the exact MapView south-edge
+                // neighbor when a following chunk row exists.
+                val lz = 15
+                checkCancelled(isCancelled)
+                var cursor = 0
+
+                for (cx in b.minChunkX..b.maxChunkX) {
+                    val grid = currentGrids[cx]
+                    for (lx in 0..15) {
+                        val info = grid?.get(lx)?.get(lz)
+                        val color = if (info == null) {
+                            BlockColors.fallbackUnloaded
+                        } else {
+                            val west = when {
+                                lx > 0 -> grid[lx - 1][lz].surfaceY
+                                cx > b.minChunkX -> {
+                                    currentGrids[cx - 1]?.get(15)?.get(lz)?.surfaceY
+                                        ?: info.surfaceY
+                                }
+                                else -> info.surfaceY
+                            }
+                            val east = when {
+                                lx < 15 -> grid[lx + 1][lz].surfaceY
+                                cx < b.maxChunkX -> {
+                                    currentGrids[cx + 1]?.get(0)?.get(lz)?.surfaceY
+                                        ?: info.surfaceY
+                                }
+                                else -> info.surfaceY
+                            }
+                            val north = grid[lx][lz - 1].surfaceY
+                            val south = nextTopEdges?.get(cx)?.get(lx)?.surfaceY
+                                ?: info.surfaceY
+
+                            MapViewerRenderStyle.shadeColumn(
+                                info, west, east, north, south
+                            )
+                        }
+                        repeat(ppb) { rgb[cursor++] = color }
+                    }
+                }
+
+                repeat(ppb) {
+                    checkCancelled(isCancelled)
+                    consume(rgb, worldRow)
+                    worldRow++
+                }
+
+                previousBottomEdges = HashMap<Int, Array<ColumnInfo>>(currentGrids.size).also { edges ->
+                    for ((cx, grid) in currentGrids) {
+                        edges[cx] = Array(16) { x -> grid[x][15] }
+                    }
+                }
+                currentGrids = nextGrids
             }
         } finally {
             scanThread.interrupt()
