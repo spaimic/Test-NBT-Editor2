@@ -682,6 +682,14 @@ object WholeMapExporter {
                 rawRow[0] = 2
                 repeat(ppb - 1) { deflateRow(rawRow) }
             }
+
+            // writeSourceRow emits exactly `ppb` PNG rows. Build 194's
+            // one-pass writer forgot to advance the row counter here, so
+            // PngWriter.close() could leave the stream without its final
+            // flush/IEND and some decoders would display only part of the
+            // image. Keep the counter aligned with the actual emitted rows.
+            rows += ppb
+            require(rows <= height) { "PNG row overflow: wrote $rows of $height rows" }
         }
 
         private fun deflateRow(row: ByteArray) {
@@ -737,6 +745,7 @@ object WholeMapExporter {
                 if (idatBuffer.size() >= 1024 * 1024) flushIdat()
             }
             rows++
+            require(rows <= height) { "PNG row overflow: wrote $rows of $height rows" }
         }
 
         override fun close() {
