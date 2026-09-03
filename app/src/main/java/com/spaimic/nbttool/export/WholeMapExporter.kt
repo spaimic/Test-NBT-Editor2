@@ -2,7 +2,6 @@ package com.spaimic.nbttool.export
 
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import com.spaimic.nbttool.chunk.BlockColors
 import com.spaimic.nbttool.chunk.ChunkKeys
 import com.spaimic.nbttool.chunk.ChunkScanner
@@ -149,103 +148,6 @@ object WholeMapExporter {
     }
 
     /**
-     * Saves the already-rendered whole-map preview without reading LevelDB again.
-     *
-     * The whole-map preview is a block-color image: every preview pixel (or
-     * preview pixel block) represents one Minecraft block color. The final PNG
-     * simply repeats each block color horizontally and vertically to the
-     * requested pixels-per-block scale. This avoids the expensive second
-     * LevelDB scan + chunk decode that the old save path performed after the
-     * user had already waited for the preview.
-     *
-     * The preview bitmap is already held by the preview dialog, so this adds no
-     * second copy of the preview image. PNG encoding remains lossless.
-     */
-    fun exportFromPreview(
-        preview: Bitmap,
-        bounds: WholeMapBounds,
-        outputPixelsPerBlock: Int,
-        output: OutputStream,
-        onProgress: (Int) -> Unit = {},
-        isCancelled: () -> Boolean = { false }
-    ) {
-        require(outputPixelsPerBlock in MIN_PIXELS_PER_BLOCK..MAX_PIXELS_PER_BLOCK)
-
-        // Bitmap dimensions are Int while WholeMapBounds dimensions are Long.
-        // Convert the derived preview scale back to Int before using it in
-        // Bitmap/getPixels and array indexing APIs.
-        val previewPpbX = (preview.width.toLong() / bounds.widthBlocks.coerceAtLeast(1L))
-            .toInt()
-        val previewPpbY = (preview.height.toLong() / bounds.heightBlocks.coerceAtLeast(1L))
-            .toInt()
-        require(previewPpbX >= 1 && previewPpbX == previewPpbY) {
-            "Preview dimensions do not match whole-map block bounds"
-        }
-        require(preview.width.toLong() == bounds.widthBlocks * previewPpbX.toLong())
-        require(preview.height.toLong() == bounds.heightBlocks * previewPpbX.toLong())
-
-        val widthLong = bounds.widthBlocks.toLong() * outputPixelsPerBlock
-        val heightLong = bounds.heightBlocks.toLong() * outputPixelsPerBlock
-        require(widthLong <= Int.MAX_VALUE && heightLong <= Int.MAX_VALUE)
-        require(widthLong * heightLong < MAX_TOTAL_PIXELS) {
-            "Image exceeds ${MAX_TOTAL_PIXELS - 1} pixels"
-        }
-
-        val width = widthLong.toInt()
-        val height = heightLong.toInt()
-        require(bounds.widthBlocks <= Int.MAX_VALUE.toLong() && bounds.heightBlocks <= Int.MAX_VALUE.toLong())
-        val blockWidth = bounds.widthBlocks.toInt()
-        val blockHeight = bounds.heightBlocks.toInt()
-        val previewRow = IntArray(preview.width)
-        val blockColors = IntArray(blockWidth)
-        val outputRow = IntArray(width)
-
-        PngWriter(output, width, height).use { png ->
-            onProgress(0)
-            var lastProgress = 0
-            var outputRowIndex = 0L
-
-            for (blockY in 0 until blockHeight) {
-                checkCancelled(isCancelled)
-
-                // Read one representative preview pixel per Minecraft block.
-                // The preview renderer paints each block uniformly, even when
-                // previewPpb > 1, so the first pixel of each preview block is
-                // sufficient.
-                preview.getPixels(
-                    previewRow, 0, preview.width,
-                    0, blockY * previewPpbX,
-                    preview.width, 1
-                )
-                for (blockX in 0 until blockWidth) {
-                    blockColors[blockX] = previewRow[blockX * previewPpbX]
-                }
-
-                // Expand one block-color row to the requested full resolution.
-                var cursor = 0
-                for (blockX in 0 until blockWidth) {
-                    val color = blockColors[blockX]
-                    repeat(outputPixelsPerBlock) { outputRow[cursor++] = color }
-                }
-
-                repeat(outputPixelsPerBlock) {
-                    checkCancelled(isCancelled)
-                    png.writeRow(outputRow)
-                    outputRowIndex++
-                    val percent = (outputRowIndex * 99L / heightLong)
-                        .toInt().coerceIn(0, 99)
-                    if (percent != lastProgress) {
-                        lastProgress = percent
-                        onProgress(percent)
-                    }
-                }
-            }
-            checkCancelled(isCancelled)
-        }
-        onProgress(100)
-    }
-
-    /**
      * Generates the same map image as export(), but downscaled for the preview.
      * Progress is reported from 0..100 while the preview rows are rendered.
      */
@@ -258,20 +160,25 @@ object WholeMapExporter {
         onProgress: (Int) -> Unit = {},
         isCancelled: () -> Boolean = { false }
     ): Bitmap {
-        val requested = requestedPixelsPerBlock.coerceIn(MIN_PIXELS_PER_BLOCK, MAX_PIXELS_PER_BLOCK)
+        require(maxPixels > 0) { "maxPixels must be positive" }
+        requestedPixelsPerBlock.coerceIn(MIN_PIXELS_PER_BLOCK, MAX_PIXELS_PER_BLOCK)
+
+        // Never allocate a full-resolution Bitmap just to display a preview.
+        // A large world can be many thousands of blocks wide/tall; at 4
+        // px/block the full image in the user's example would be ~1 billion
+        // pixels (~4 GB for ARGB_8888), which can crash Android as soon as the
+        // preview reaches 100%. Render one block per source pixel, then sample
+        // that stream down to a small display bitmap.
         val maxBlock = maxOf(bounds.widthBlocks, bounds.heightBlocks)
-        val ppb = minOf(
-            requested,
-            maxOf(1, (maxPixels.toLong() / maxBlock).toInt())
-        ).coerceIn(1, requested)
+        val sample = maxOf(1, ((maxBlock + maxPixels - 1L) / maxPixels).toInt())
+        val previewWidth = ((bounds.widthBlocks + sample - 1L) / sample)
+            .coerceAtMost(maxPixels.toLong()).toInt()
+        val previewHeight = ((bounds.heightBlocks + sample - 1L) / sample)
+            .coerceAtMost(maxPixels.toLong()).toInt()
 
-        val width = (bounds.widthBlocks * ppb)
-            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        val height = (bounds.heightBlocks * ppb)
-            .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-        require(width > 0 && height > 0)
+        require(previewWidth > 0 && previewHeight > 0)
 
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val bitmap = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
         var lastProgress = -1
         onProgress(0)
 
@@ -279,13 +186,33 @@ object WholeMapExporter {
             bridge,
             bounds,
             dimension,
-            ppb,
+            1,
             consume = { row, worldRow ->
                 checkCancelled(isCancelled)
-                bitmap.setPixels(row, 0, width, 0, worldRow.toInt(), width, 1)
 
-                // Row assembly is the final 30% of the unified 0..100 progress.
-                val percent = 70 + ((worldRow + 1L) * 29L / height.toLong())
+                // Keep only every Nth block row. The last partial sample is
+                // represented by the final source row that falls inside the
+                // preview bitmap's height.
+                if (worldRow % sample.toLong() == 0L) {
+                    val previewY = (worldRow / sample.toLong()).toInt()
+                    if (previewY < previewHeight) {
+                        val sampled = IntArray(previewWidth)
+                        for (x in 0 until previewWidth) {
+                            val sourceX = minOf(x * sample, row.lastIndex)
+                            sampled[x] = row[sourceX]
+                        }
+                        bitmap.setPixels(
+                            sampled, 0, previewWidth,
+                            0, previewY,
+                            previewWidth, 1
+                        )
+                    }
+                }
+
+                // Progress is based on the full source render, not just the
+                // sampled rows, so it remains smooth and reaches 100% only
+                // after the complete map scan/render has finished.
+                val percent = 70 + ((worldRow + 1L) * 29L / bounds.heightBlocks)
                     .toInt().coerceIn(70, 99)
                 if (percent > lastProgress) {
                     lastProgress = percent
@@ -293,7 +220,6 @@ object WholeMapExporter {
                 }
             },
             onScanProgress = { scan ->
-                // Scan progress owns the first 20% of the unified scale.
                 val mapped = (scan * 20 / 100).coerceIn(0, 20)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
@@ -301,8 +227,6 @@ object WholeMapExporter {
                 }
             },
             onChunkProgress = { chunk ->
-                // Chunk decoding owns the next 50%. renderRows reports this
-                // callback as a true 0..100 percentage.
                 val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
                 if (mapped > lastProgress) {
                     lastProgress = mapped
