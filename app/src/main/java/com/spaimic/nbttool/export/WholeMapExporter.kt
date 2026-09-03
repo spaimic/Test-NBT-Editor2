@@ -241,6 +241,95 @@ object WholeMapExporter {
         return bitmap
     }
 
+
+    /**
+     * Build 194 fast path: render the small on-screen preview and the final
+     * full-resolution PNG in the SAME world pass. The final PNG is streamed to
+     * [preparedOutput] while a <=1024px display bitmap is sampled from the same
+     * block rows. This avoids the expensive second LevelDB scan/render that was
+     * introduced when the preview became memory-safe for very large maps.
+     */
+    fun previewAndPreparePng(
+        bridge: LevelDbBridge,
+        bounds: WholeMapBounds,
+        dimension: Int,
+        pixelsPerBlock: Int,
+        preparedOutput: OutputStream,
+        maxPixels: Int = 1024,
+        onProgress: (Int) -> Unit = {},
+        isCancelled: () -> Boolean = { false }
+    ): Bitmap {
+        require(pixelsPerBlock in MIN_PIXELS_PER_BLOCK..MAX_PIXELS_PER_BLOCK)
+        require(maxPixels > 0)
+        require(totalPixels(bounds, pixelsPerBlock) < MAX_TOTAL_PIXELS) {
+            "Image exceeds ${MAX_TOTAL_PIXELS - 1} pixels: ${totalPixels(bounds, pixelsPerBlock)}"
+        }
+        val widthLong = bounds.widthBlocks * pixelsPerBlock.toLong()
+        val heightLong = bounds.heightBlocks * pixelsPerBlock.toLong()
+        require(widthLong <= Int.MAX_VALUE && heightLong <= Int.MAX_VALUE)
+        val width = widthLong.toInt()
+        val height = heightLong.toInt()
+
+        val maxBlock = maxOf(bounds.widthBlocks, bounds.heightBlocks)
+        val sample = maxOf(1, ((maxBlock + maxPixels - 1L) / maxPixels).toInt())
+        val previewWidth = ((bounds.widthBlocks + sample - 1L) / sample)
+            .coerceAtMost(maxPixels.toLong()).toInt()
+        val previewHeight = ((bounds.heightBlocks + sample - 1L) / sample)
+            .coerceAtMost(maxPixels.toLong()).toInt()
+        val bitmap = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
+        val sampledRow = IntArray(previewWidth)
+        var lastProgress = -1
+
+        PngWriter(preparedOutput, width, height).use { png ->
+            onProgress(0)
+            renderRows(
+                bridge, bounds, dimension, 1,
+                consume = { row, worldRow ->
+                    checkCancelled(isCancelled)
+
+                    if (worldRow % sample.toLong() == 0L) {
+                        val previewY = (worldRow / sample.toLong()).toInt()
+                        if (previewY < previewHeight) {
+                            for (x in 0 until previewWidth) {
+                                sampledRow[x] = row[minOf(x * sample, row.lastIndex)]
+                            }
+                            bitmap.setPixels(sampledRow, 0, previewWidth, 0, previewY, previewWidth, 1)
+                        }
+                    }
+
+                    // Stream the requested final resolution from the SAME rendered
+                    // source row. No second LevelDB pass and no full-resolution Bitmap.
+                    png.writeSourceRow(row, pixelsPerBlock)
+
+                    val percent = 70 + ((worldRow + 1L) * 29L / bounds.heightBlocks)
+                        .toInt().coerceIn(70, 99)
+                    if (percent > lastProgress) {
+                        lastProgress = percent
+                        onProgress(percent)
+                    }
+                },
+                onScanProgress = { scan ->
+                    val mapped = (scan * 20 / 100).coerceIn(0, 20)
+                    if (mapped > lastProgress) {
+                        lastProgress = mapped
+                        onProgress(mapped)
+                    }
+                },
+                onChunkProgress = { chunk ->
+                    val mapped = (20 + chunk * 50 / 100).coerceIn(20, 70)
+                    if (mapped > lastProgress) {
+                        lastProgress = mapped
+                        onProgress(mapped)
+                    }
+                },
+                isCancelled = isCancelled
+            )
+            checkCancelled(isCancelled)
+            onProgress(100)
+        }
+        return bitmap
+    }
+
     private data class ChunkResult(
         val grid: Array<Array<ColumnInfo>>?,
         val unknown: Set<String>,
@@ -535,7 +624,7 @@ object WholeMapExporter {
         private val height: Int
     ) : AutoCloseable {
         private val out = java.io.BufferedOutputStream(raw, 1024 * 1024)
-        private val deflater = Deflater(Deflater.DEFAULT_COMPRESSION)
+        private val deflater = Deflater(Deflater.BEST_SPEED)
         private val buf = ByteArray(256 * 1024)
         private val idatBuffer = ByteArrayOutputStream(1024 * 1024)
         private val rawRow = ByteArray(width * 3 + 1)
@@ -552,6 +641,57 @@ object WholeMapExporter {
             ihdr[8] = 8
             ihdr[9] = 2
             writeChunk("IHDR", ihdr, ihdr.size)
+        }
+
+
+        /** Writes a 1-pixel/block source row expanded directly to the final ppb width. */
+        fun writeSourceRow(source: IntArray, ppb: Int) {
+            require(ppb >= 1)
+            if (ppb == 1) {
+                writeRow(source)
+                return
+            }
+            require(source.size * ppb == width) { "Expected source size ${width / ppb}, got ${source.size}" }
+
+            // Build one expanded row. Repeated vertical rows can then reuse a very
+            // cheap all-zero Up-filter row, avoiding repeated RGB conversion work.
+            rawRow[0] = 1 // Sub
+            var pos = 1
+            var previousOutput = 0
+            for (color in source) {
+                val rgb = color and 0xFFFFFF
+                val r = (rgb ushr 16) and 0xFF
+                val g = (rgb ushr 8) and 0xFF
+                val b = rgb and 0xFF
+                for (rep in 0 until ppb) {
+                    val dr = if (rep == 0) r - ((previousOutput ushr 16) and 0xFF) else 0
+                    val dg = if (rep == 0) g - ((previousOutput ushr 8) and 0xFF) else 0
+                    val db = if (rep == 0) b - (previousOutput and 0xFF) else 0
+                    rawRow[pos++] = dr.toByte()
+                    rawRow[pos++] = dg.toByte()
+                    rawRow[pos++] = db.toByte()
+                    previousOutput = rgb
+                }
+            }
+            deflateRow(rawRow)
+
+            // All additional pixels-per-block rows are identical to the source row.
+            // PNG Up filtering makes these rows a 1-byte filter marker + zeros.
+            if (ppb > 1) {
+                java.util.Arrays.fill(rawRow, 1, rawRow.size, 0.toByte())
+                rawRow[0] = 2
+                repeat(ppb - 1) { deflateRow(rawRow) }
+            }
+        }
+
+        private fun deflateRow(row: ByteArray) {
+            deflater.setInput(row)
+            while (!deflater.needsInput()) {
+                val n = deflater.deflate(buf)
+                if (n <= 0) break
+                idatBuffer.write(buf, 0, n)
+                if (idatBuffer.size() >= 1024 * 1024) flushIdat()
+            }
         }
 
         fun writeRow(colors: IntArray) {
