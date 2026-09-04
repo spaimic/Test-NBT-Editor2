@@ -84,6 +84,8 @@ class MapView(context: Context) : View(context) {
         set(value) { field = value; invalidate() }
     var showTileEntityIcons = true
         set(value) { field = value; invalidate() }
+    var showGrid = true
+        set(value) { field = value; invalidate() }
 
     private val markerBitmapCache = HashMap<Int, Bitmap>()
     private fun bitmapFor(resId: Int): Bitmap =
@@ -104,9 +106,8 @@ class MapView(context: Context) : View(context) {
     }
     private val unloadedPaint = Paint().apply { color = BlockColors.fallbackUnloaded }
     private val coordinatePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(210, 255, 255, 255)
+        color = Color.BLACK
         textSize = 24f
-        setShadowLayer(4f, 1f, 1f, Color.BLACK)
     }
 
     /** pixels per block. Chunk size on screen is zoom * 16. */
@@ -456,8 +457,8 @@ class MapView(context: Context) : View(context) {
                         requestChunkBitmap(pos, grid)
                         canvas.drawRect(left, top, right, bottom, unloadedPaint)
                     }
-                    // At very small chunk sizes, borders visually merge like MineTuner.
-                    if (zoom >= 6f) {
+                    // Chunk borders can be hidden from the Map Options drawer.
+                    if (showGrid && zoom >= 6f) {
                         canvas.drawRect(left, top, right, bottom, gridPaint)
                     }
                 } else {
@@ -472,7 +473,7 @@ class MapView(context: Context) : View(context) {
         // underlying 16x16 terrain data, but suppress individual chunk borders and
         // draw a 64x64-block grid instead.  This makes the overview read as large
         // terrain tiles while preserving the exact terrain underneath.
-        if (zoom < 6f) {
+        if (showGrid && zoom < 6f) {
             val regionMinX = floor((cameraX - halfWorldW) / 64f).toInt() * 64
             val regionMaxX = floor((cameraX + halfWorldW) / 64f).toInt() * 64
             val regionMinZ = floor((cameraZ - halfWorldH) / 64f).toInt() * 64

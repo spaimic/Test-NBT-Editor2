@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * The screen you land on after tapping a world: a top-down terrain-colored map
  * of every loaded chunk (unloaded ones flat gray), pannable by dragging, with
- * tap-to-see-coordinates. The hamburger menu (top-left) jumps straight to the
+ * tap-to-see-coordinates. The left-edge drawer jumps straight to the
  * things you'd normally want to edit, without hunting through the full key list.
  */
 class MapViewerActivity : AppCompatActivity() {
@@ -57,6 +57,9 @@ class MapViewerActivity : AppCompatActivity() {
     private var preparedWholeMapPng: File? = null
     private lateinit var drawerLayout: DrawerLayout
     private lateinit var drawerGameModeText: TextView
+    private lateinit var gridToggleText: TextView
+    private lateinit var entityToggleText: TextView
+    private lateinit var tileEntityToggleText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -70,8 +73,8 @@ class MapViewerActivity : AppCompatActivity() {
 
         coordText = TextView(this).apply {
             text = "Tap the map for coordinates"
-            setBackgroundColor(Color.argb(170, 0, 0, 0))
-            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.WHITE)
+            setTextColor(Color.BLACK)
             setPadding(20, 12, 20, 12)
         }
         val overlayColumn = LinearLayout(this).apply {
@@ -89,7 +92,7 @@ class MapViewerActivity : AppCompatActivity() {
         val zoomControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(8, 8, 8, 8)
-            setBackgroundColor(Color.argb(150, 0, 0, 0))
+            setBackgroundColor(Color.WHITE)
             val out = Button(this@MapViewerActivity).apply {
                 text = "−"
                 textSize = 22f
@@ -116,7 +119,7 @@ class MapViewerActivity : AppCompatActivity() {
         val dimensionButton = ImageButton(this).apply {
             setImageResource(R.drawable.map)
             contentDescription = "Change map dimension"
-            setBackgroundColor(Color.argb(175, 0, 0, 0))
+            setBackgroundColor(Color.WHITE)
             setPadding(12, 12, 12, 12)
             setOnClickListener { showDimensionMenu() }
         }
@@ -128,6 +131,58 @@ class MapViewerActivity : AppCompatActivity() {
                 rightMargin = 24
             }
         )
+
+        // Small camera FAB: tapping it expands the dedicated whole-map export action.
+        val wholeMapAction = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), dp(4), dp(10), dp(4))
+            setBackgroundColor(Color.WHITE)
+            visibility = View.GONE
+            elevation = dp(6).toFloat()
+        }
+        val wholeMapActionIcon = ImageView(this).apply {
+            setImageResource(R.drawable.camera)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+        }
+        val wholeMapActionText = TextView(this).apply {
+            text = "Take Entire Map Picture"
+            textSize = 15f
+            setTextColor(Color.BLACK)
+            setPadding(dp(6), 0, dp(4), 0)
+        }
+        wholeMapAction.addView(wholeMapActionIcon, LinearLayout.LayoutParams(dp(42), dp(48)))
+        wholeMapAction.addView(wholeMapActionText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
+        wholeMapAction.setOnClickListener {
+            wholeMapAction.visibility = View.GONE
+            promptWholeMapPicture()
+        }
+        contentRoot.addView(wholeMapAction, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(56)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            rightMargin = dp(18)
+            bottomMargin = dp(86)
+        })
+
+        val wholeMapFab = ImageButton(this).apply {
+            setImageResource(R.drawable.camera)
+            contentDescription = "Map picture"
+            setPadding(dp(13), dp(13), dp(13), dp(13))
+            background = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Color.WHITE)
+                setStroke(dp(1), Color.LTGRAY)
+            }
+            elevation = dp(7).toFloat()
+            setOnClickListener {
+                wholeMapAction.visibility = if (wholeMapAction.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            }
+        }
+        contentRoot.addView(wholeMapFab, FrameLayout.LayoutParams(dp(60), dp(60)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+            rightMargin = dp(18)
+            bottomMargin = dp(18)
+        })
 
         val drawer = buildToolsDrawer()
         drawerLayout.addView(contentRoot, DrawerLayout.LayoutParams(-1, -1))
@@ -410,7 +465,7 @@ class MapViewerActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Reads the local player at the moment the hamburger action is tapped, then scans. */
+    /** Reads the local player at the moment the map action is tapped, then scans. */
     private fun startPlayerOreSearch(diamond: Boolean) {
         val bridge = LevelDbSession.bridge
         if (bridge == null) {
@@ -1515,12 +1570,32 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun gameModeName(mode: Int): String = when (mode) {
-        0 -> "Survival"
-        1 -> "Creative"
-        2 -> "Adventure"
-        3 -> "Spectator"
-        4 -> "Hardcore"
+        0 -> "Survival (0)"
+        1 -> "Creative (1)"
+        2 -> "Adventure (2)"
+        3 -> "Spectator (3)"
+        4 -> "Hardcore (4)"
+        5 -> "Default Gamemode: ${defaultGameModeName()}"
         else -> "Unknown ($mode)"
+    }
+
+    private fun defaultGameModeName(): String {
+        return try {
+            val dat = NbtIO.readLevelDat(File(worldDir, "level.dat").readBytes())
+            val mode = (dat.root.entries["GameType"] as? NbtTag.Int)?.value
+                ?: (dat.root.entries["GameType"] as? NbtTag.Byte)?.value?.toInt()
+                ?: return "Unknown"
+            when (mode) {
+                0 -> "Survival (0)"
+                1 -> "Creative (1)"
+                2 -> "Adventure (2)"
+                3 -> "Spectator (3)"
+                4 -> "Hardcore (4)"
+                else -> "Unknown ($mode)"
+            }
+        } catch (_: Exception) {
+            "Unknown"
+        }
     }
 
     private fun dimensionName(): String = when (currentDimension) {
@@ -1586,7 +1661,7 @@ class MapViewerActivity : AppCompatActivity() {
     private fun drawerText(value: String, size: Float = 16f): TextView = TextView(this).apply {
         text = value
         textSize = size
-        setTextColor(Color.WHITE)
+        setTextColor(Color.BLACK)
         setPadding(dp(18), dp(10), dp(18), dp(10))
         gravity = Gravity.CENTER_VERTICAL
     }
@@ -1598,6 +1673,7 @@ class MapViewerActivity : AppCompatActivity() {
             setPadding(dp(12), dp(3), dp(8), dp(3))
             isClickable = true
             isFocusable = true
+            setBackgroundColor(Color.WHITE)
             setOnClickListener { action(); drawerLayout.closeDrawer(Gravity.LEFT) }
         }
         val image = ImageView(this).apply {
@@ -1610,8 +1686,9 @@ class MapViewerActivity : AppCompatActivity() {
         return row
     }
 
-    private fun drawerCategory(title: String): TextView = drawerText(title.uppercase(Locale.getDefault()), 13f).apply {
-        setTextColor(Color.LTGRAY)
+    private fun drawerCategory(title: String): TextView = drawerText(title, 13f).apply {
+        setTypeface(null, android.graphics.Typeface.BOLD)
+        setTextColor(Color.DKGRAY)
         setPadding(dp(18), dp(18), dp(18), dp(6))
     }
 
@@ -1619,14 +1696,14 @@ class MapViewerActivity : AppCompatActivity() {
         val scroll = ScrollView(this)
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.rgb(30, 30, 30))
+            setBackgroundColor(Color.WHITE)
             setPadding(0, dp(4), 0, dp(18))
         }
 
         val icon = ImageView(this).apply {
             val file = LocalWorldStore.worldIconFile(worldDir)
             if (file != null) setImageBitmap(BitmapFactory.decodeFile(file.absolutePath))
-            else setImageResource(com.spaimic.nbttool.R.drawable.map)
+            else setImageResource(R.drawable.map)
             scaleType = ImageView.ScaleType.CENTER_CROP
         }
         panel.addView(icon, LinearLayout.LayoutParams(-1, dp(180)))
@@ -1642,42 +1719,66 @@ class MapViewerActivity : AppCompatActivity() {
         drawerGameModeText = drawerText("Player Gamemode: Loading…", 14f)
         panel.addView(drawerGameModeText)
 
-        panel.addView(drawerCategory("Map & Search"))
-        panel.addView(drawerRow(R.drawable.search, "Find Diamonds Near Player") { findDiamondsNearPlayer() })
-        panel.addView(drawerRow(R.drawable.search, "Find Ancient Debris Near Player") { findAncientDebrisNearPlayer() })
-        panel.addView(drawerRow(R.drawable.map, "Take Entire Map Picture") { promptWholeMapPicture() })
+        panel.addView(drawerCategory("World Editor"))
         panel.addView(drawerRow(R.drawable.player, "Player Editor") { openLocalPlayerLazily() })
-
-        panel.addView(drawerCategory("World Editors"))
-        panel.addView(drawerRow(R.drawable.map, "World Settings Editor") { openLevelDatEditor() })
         panel.addView(drawerRow(R.drawable.multiplayer, "Multiplayer Editor") { showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_server_") } })
+        panel.addView(drawerRow(R.drawable.world_setting, "World Editor") { openLevelDatEditor() })
         panel.addView(drawerRow(R.drawable.mcstructure, "MCStructure Editor") { showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") } })
-        panel.addView(drawerRow(R.drawable.map, "Ticking Areas Editor") { showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") } })
-        panel.addView(drawerRow(R.drawable.map, "Village Editor") { showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_Overworld_") } })
+        panel.addView(drawerRow(R.drawable.tickingarea, "Ticking Areas Editor") { showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") } })
+        panel.addView(drawerRow(R.drawable.search, "Village Editor") { showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_Overworld_") } })
 
-        panel.addView(drawerCategory("Map Markers"))
-        panel.addView(drawerRow(R.drawable.player, "Toggle Entities on Map") {
+        panel.addView(drawerCategory("Map Options"))
+        gridToggleText = drawerText(if (mapView.showGrid) "Hide Grid" else "Show Grid")
+        panel.addView(drawerOptionRow(R.drawable.grid, gridToggleText) {
+            mapView.showGrid = !mapView.showGrid
+            gridToggleText.text = if (mapView.showGrid) "Hide Grid" else "Show Grid"
+        })
+        entityToggleText = drawerText(if (mapView.showEntityIcons) "Hide Entities on the Map" else "Show Entities on the Map")
+        panel.addView(drawerOptionRow(R.drawable.toggle, entityToggleText) {
             mapView.showEntityIcons = !mapView.showEntityIcons
-            mapView.invalidate()
+            entityToggleText.text = if (mapView.showEntityIcons) "Hide Entities on the Map" else "Show Entities on the Map"
         })
-        panel.addView(drawerRow(R.drawable.map, "Toggle Tile Entities on Map") {
+        tileEntityToggleText = drawerText(if (mapView.showTileEntityIcons) "Hide Tile Entities on the Map" else "Show Tile Entities on the Map")
+        panel.addView(drawerOptionRow(R.drawable.toggle, tileEntityToggleText) {
             mapView.showTileEntityIcons = !mapView.showTileEntityIcons
-            mapView.invalidate()
+            tileEntityToggleText.text = if (mapView.showTileEntityIcons) "Hide Tile Entities on the Map" else "Show Tile Entities on the Map"
         })
 
-        panel.addView(drawerCategory("NBT & Clipboards"))
-        panel.addView(drawerRow(R.drawable.copy, "Overworld NBT Data") { showExactKey("Overworld NBT Data", "Overworld") })
-        panel.addView(drawerRow(R.drawable.copy, "Nether NBT Data") { showExactKey("Nether NBT Data", "Nether") })
-        panel.addView(drawerRow(R.drawable.copy, "The End NBT Data") { showExactKey("The End NBT Data", "TheEnd") })
-        panel.addView(drawerRow(R.drawable.clipboard, "NBT Tag Clipboard") { startActivity(Intent(this, ClipboardActivity::class.java)) })
+        panel.addView(drawerCategory("Clipboard"))
+        panel.addView(drawerRow(R.drawable.clipboard, "NBT Clipboard") { startActivity(Intent(this, ClipboardActivity::class.java)) })
         panel.addView(drawerRow(R.drawable.clipboard, "Chunk Clipboard") { startActivity(Intent(this, ChunkClipboardActivity::class.java)) })
+
+        panel.addView(drawerCategory("Other NBTs"))
+        panel.addView(drawerRow(R.drawable.other_nbt, "Overworld NBT Data") { showExactKey("Overworld NBT Data", "Overworld") })
+        panel.addView(drawerRow(R.drawable.other_nbt, "Nether NBT Data") { showExactKey("Nether NBT Data", "Nether") })
+        panel.addView(drawerRow(R.drawable.other_nbt, "The End NBT Data") { showExactKey("The End NBT Data", "TheEnd") })
 
         panel.addView(drawerCategory("Advanced"))
         panel.addView(drawerRow(R.drawable.search, "Open LevelDB Key by Name") { promptOpenLevelDbKeyByName() })
-        panel.addView(drawerRow(R.drawable.search, "Browse Extra DB Keys") { openAllKeysBrowser() })
+        panel.addView(drawerRow(R.drawable.other_nbt, "Browse Extra LevelDB Keys") { openAllKeysBrowser() })
 
         scroll.addView(panel)
         return scroll
+    }
+
+    private fun drawerOptionRow(icon: Int, label: TextView, action: () -> Unit): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(3), dp(8), dp(3))
+            isClickable = true
+            isFocusable = true
+            setBackgroundColor(Color.WHITE)
+            setOnClickListener { action(); drawerLayout.closeDrawer(Gravity.LEFT) }
+        }
+        val image = ImageView(this).apply {
+            setImageResource(icon)
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
+        }
+        row.addView(image, LinearLayout.LayoutParams(dp(42), dp(42)))
+        row.addView(label, LinearLayout.LayoutParams(0, dp(52), 1f))
+        return row
     }
 
     private fun promptOpenLevelDbKeyByName() {

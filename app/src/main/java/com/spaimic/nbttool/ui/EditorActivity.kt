@@ -1,5 +1,7 @@
 package com.spaimic.nbttool.ui
 
+import com.spaimic.nbttool.R
+
 import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
@@ -58,12 +60,18 @@ class EditorActivity : AppCompatActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
-        menu.add(0, MENU_SAVE, 0, "Save")
+        menu.add(0, MENU_SAVE, 0, "Save").apply {
+            setIcon(R.drawable.save)
+            setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+        }
         menu.add(0, MENU_EXPORT_JSON, 0, "Export JSON")
         menu.add(0, MENU_IMPORT_JSON, 0, "Import JSON")
         menu.add(0, MENU_UNDO, 0, "Undo")
         menu.add(0, MENU_REDO, 0, "Redo")
-        menu.add(0, MENU_SEARCH, 0, "Global NBT Search")
+        menu.add(0, MENU_SEARCH, 0, "Global NBT Search").apply {
+            setIcon(R.drawable.search)
+            setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
+        }
         return true
     }
 
