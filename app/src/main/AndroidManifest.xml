@@ -19,6 +19,11 @@
         android:requestLegacyExternalStorage="true">
 
         <activity
+            android:name=".ui.IntroActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.Light.NoActionBar" />
+
+        <activity
             android:name=".ui.WorldListActivity"
             android:exported="true">
             <intent-filter>

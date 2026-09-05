@@ -117,10 +117,16 @@ class MapViewerActivity : AppCompatActivity() {
 
         // Dimension switching intentionally remains on the main map screen.
         val dimensionButton = ImageButton(this).apply {
+            // Explicitly clear any inherited image tint. Build 199 could inherit a
+            // theme tint on some Android versions, making the supplied map icon
+            // effectively disappear against the white button.
             setImageResource(R.drawable.map)
+            imageTintList = null
+            setColorFilter(Color.BLACK, android.graphics.PorterDuff.Mode.SRC_IN)
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
             contentDescription = "Change map dimension"
             setBackgroundColor(Color.WHITE)
-            setPadding(12, 12, 12, 12)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
             setOnClickListener { showDimensionMenu() }
         }
         contentRoot.addView(
@@ -132,7 +138,8 @@ class MapViewerActivity : AppCompatActivity() {
             }
         )
 
-        // Small camera FAB: tapping it expands the dedicated whole-map export action.
+        // Small map-options FAB: tapping it reveals extra map actions such as the
+        // already-prepared whole-map picture export.
         val wholeMapAction = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -164,21 +171,25 @@ class MapViewerActivity : AppCompatActivity() {
             bottomMargin = dp(86)
         })
 
-        val wholeMapFab = ImageButton(this).apply {
-            setImageResource(R.drawable.camera)
-            contentDescription = "Map picture"
-            setPadding(dp(13), dp(13), dp(13), dp(13))
+        val wholeMapFab = TextView(this).apply {
+            text = "⋮"
+            textSize = 27f
+            gravity = Gravity.CENTER
+            setTextColor(Color.BLACK)
+            contentDescription = "Map options"
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
                 setColor(Color.WHITE)
                 setStroke(dp(1), Color.LTGRAY)
             }
             elevation = dp(7).toFloat()
+            isClickable = true
+            isFocusable = true
             setOnClickListener {
                 wholeMapAction.visibility = if (wholeMapAction.visibility == View.VISIBLE) View.GONE else View.VISIBLE
             }
         }
-        contentRoot.addView(wholeMapFab, FrameLayout.LayoutParams(dp(60), dp(60)).apply {
+        contentRoot.addView(wholeMapFab, FrameLayout.LayoutParams(dp(52), dp(52)).apply {
             gravity = Gravity.BOTTOM or Gravity.END
             rightMargin = dp(18)
             bottomMargin = dp(18)

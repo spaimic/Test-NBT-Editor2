@@ -53,6 +53,10 @@ class NbtTreeAdapter(
     private val expanded = HashSet<String>()
     private var rows: List<Pair<String, NbtRow>> = emptyList()
     private var attachedRecyclerView: RecyclerView? = null
+    // Build 200: animate the children revealed by a Compound/List expansion.
+    private var animationRootPath: String? = null
+    private var animationGeneration = 0
+    private val animatedPaths = HashSet<String>()
 
     init { rebuild() }
 
@@ -298,24 +302,40 @@ class NbtTreeAdapter(
 
     private var highlightPath: String? = null
 
-    inner class VH(val row: LinearLayout, val icon: ImageView, val text: TextView) : RecyclerView.ViewHolder(row)
+    inner class VH(
+        val row: LinearLayout,
+        val branch: TextView,
+        val icon: ImageView,
+        val text: TextView
+    ) : RecyclerView.ViewHolder(row)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        val branch = TextView(parent.context).apply {
+            textSize = 18f
+            setTextColor(android.graphics.Color.BLACK)
+            alpha = 0.30f
+            gravity = android.view.Gravity.CENTER
+            typeface = Typeface.DEFAULT
+            layoutParams = LinearLayout.LayoutParams(34, 56)
+        }
         val icon = ImageView(parent.context).apply {
             layoutParams = LinearLayout.LayoutParams(56, 56).apply { rightMargin = 16 }
+            scaleType = ImageView.ScaleType.CENTER_INSIDE
         }
         val text = TextView(parent.context).apply {
             textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
+            setTextColor(android.graphics.Color.BLACK)
         }
         val row = LinearLayout(parent.context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER_VERTICAL
             setPadding(24, 20, 24, 20)
+            addView(branch)
             addView(icon)
             addView(text)
         }
-        return VH(row, icon, text)
+        return VH(row, branch, icon, text)
     }
 
     override fun onBindViewHolder(holder: VH, position: Int) {
@@ -324,6 +344,13 @@ class NbtTreeAdapter(
         holder.icon.setImageResource(NbtIcons.iconFor(row.tag))
         holder.text.text = "${row.label}: ${NbtTag.typeName(row.tag.id)} = $summary"
         holder.row.setPadding(24 + row.depth * 48, 20, 24, 20)
+        if (row.depth > 0) {
+            holder.branch.text = "└─"
+            holder.branch.visibility = android.view.View.VISIBLE
+        } else {
+            holder.branch.text = ""
+            holder.branch.visibility = android.view.View.VISIBLE
+        }
         if (path == highlightPath) {
             holder.row.alpha = 1.0f
             holder.row.setBackgroundColor(0x66FFCC33)
@@ -332,10 +359,38 @@ class NbtTreeAdapter(
             holder.row.setBackgroundColor(android.graphics.Color.TRANSPARENT)
         }
 
+        // Animate rows that became visible because their parent Compound/List was opened.
+        val animationRoot = animationRootPath
+        val isRevealedChild = animationRoot != null &&
+            (path.startsWith("$animationRoot/") || path.startsWith("$animationRoot["))
+        if (isRevealedChild && animatedPaths.add("$animationGeneration:$path")) {
+            holder.row.alpha = 0f
+            holder.row.translationX = -dp(context, 10)
+            val delay = (row.depth * 18L).coerceAtMost(90L)
+            holder.row.animate()
+                .alpha(1f)
+                .translationX(0f)
+                .setStartDelay(delay)
+                .setDuration(180L)
+                .start()
+        } else {
+            holder.row.animate().cancel()
+            holder.row.alpha = 1f
+            holder.row.translationX = 0f
+        }
+
         val isContainer = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag
         holder.row.setOnClickListener {
             if (isContainer) {
-                if (path in expanded) expanded.remove(path) else expanded.add(path)
+                if (path in expanded) {
+                    expanded.remove(path)
+                    animationRootPath = null
+                } else {
+                    expanded.add(path)
+                    animationRootPath = path
+                    animationGeneration++
+                    animatedPaths.clear()
+                }
                 refresh()
             } else {
                 onLeafTapped(row)
@@ -348,6 +403,8 @@ class NbtTreeAdapter(
     }
 
     override fun getItemCount(): Int = rows.size
+
+    private fun dp(context: Context, value: Int): Float = value * context.resources.displayMetrics.density
 
     private fun summaryOf(t: NbtTag): String = when (t) {
         is NbtTag.Compound -> "{${t.entries.size} entries}"

@@ -28,6 +28,9 @@ class WorldListActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!IntroActivityState.hasSeen(this)) {
+            startActivity(Intent(this, IntroActivity::class.java))
+        }
         title = "My Worlds"
         val myWorldsHeader = android.widget.TextView(this).apply {
             text = "My Worlds"
