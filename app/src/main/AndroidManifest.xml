@@ -65,6 +65,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.McStructure3DPreviewActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.ClipboardActivity"
             android:exported="false" />
 

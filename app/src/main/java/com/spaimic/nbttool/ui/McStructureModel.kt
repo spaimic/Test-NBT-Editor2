@@ -16,14 +16,16 @@ data class McStructureBlock(
     val paletteIndex: Int,
     val name: String,
     val states: NbtTag.Compound?,
-    val version: Long?
+    val version: Long?,
+    val blockPositionData: NbtTag.Compound?
 )
 
 data class McStructurePaletteEntry(
     val index: Int,
     val name: String,
     val states: NbtTag.Compound?,
-    val version: Long?
+    val version: Long?,
+    val rawTag: NbtTag.Compound? = null
 ) {
     val color: Int
         get() = BlockColors.colorFor(name)
@@ -103,7 +105,7 @@ object McStructureDecoder {
             val name = compound?.entries?.get("name")?.asString() ?: "<palette entry $index>"
             val states = compound?.entries?.get("states") as? NbtTag.Compound
             val version = compound?.entries?.get("version")?.asLongOrNull()
-            McStructurePaletteEntry(index, name, states, version)
+            McStructurePaletteEntry(index, name, states, version, compound)
         }
     }
 
@@ -118,6 +120,12 @@ object McStructureDecoder {
      */
     private fun linearIndex(x: Int, y: Int, z: Int, sy: Int, sz: Int): Int =
         z + sz * (y + sy * x)
+
+    private fun defaultPalettePositionData(structure: NbtTag.Compound, index: Int): NbtTag.Compound? {
+        val default = findDefaultPalette(structure) ?: return null
+        val data = default.entries["block_position_data"] as? NbtTag.Compound ?: return null
+        return data.entries[index.toString()] as? NbtTag.Compound
+    }
 
     fun decode(root: NbtTag.Compound): McStructureAnalysis {
         val size = root.entries["size"]?.asIntList() ?: emptyList()
@@ -154,7 +162,8 @@ object McStructureDecoder {
                         if (paletteIndex < 0) continue
                         val entry = palette.getOrNull(paletteIndex)
                         val name = entry?.name ?: "<invalid palette index $paletteIndex>"
-                        blocks.add(McStructureBlock(x, y, z, paletteIndex, name, entry?.states, entry?.version))
+                        val positionData = defaultPalettePositionData(structure, i)
+                        blocks.add(McStructureBlock(x, y, z, paletteIndex, name, entry?.states, entry?.version, positionData))
                     }
                 }
             }

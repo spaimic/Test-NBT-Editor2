@@ -13,10 +13,7 @@ import com.spaimic.nbttool.shizuku.LevelDbSession
 
 /** Detailed, read-only Build 205 MCStructure decoder. */
 class McStructureAnalyzerActivity : AppCompatActivity() {
-    private lateinit var preview: McStructurePreviewView
     private lateinit var infoText: TextView
-    private lateinit var layerLabel: TextView
-    private lateinit var layerSeek: SeekBar
     private var analysis: McStructureAnalysis? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -45,34 +42,34 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
             setPadding(0, dp(12), 0, dp(12))
         }
         content.addView(loading)
-        preview = McStructurePreviewView(this)
-        content.addView(preview, LinearLayout.LayoutParams(-1, dp(310)))
+        val previewButton = Button(this).apply {
+            text = "Open Full 3D Preview"
+            setOnClickListener {
+                val i = android.content.Intent(this@McStructureAnalyzerActivity, McStructure3DPreviewActivity::class.java)
+                i.putExtra(McStructure3DPreviewActivity.EXTRA_DISPLAY_NAME, displayName)
+                intent.getStringExtra(EXTRA_SOURCE_URI)?.let { i.putExtra(McStructure3DPreviewActivity.EXTRA_SOURCE_URI, it) }
+                startActivity(i)
+            }
+        }
+        content.addView(previewButton, LinearLayout.LayoutParams(-1, dp(52)))
         infoText = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.BLACK)
             setPadding(0, dp(12), 0, dp(12))
         }
         content.addView(infoText)
-        layerLabel = TextView(this).apply {
-            textSize = 14f
-            setTextColor(Color.BLACK)
-        }
-        content.addView(layerLabel)
-        layerSeek = SeekBar(this)
-        content.addView(layerSeek, LinearLayout.LayoutParams(-1, dp(48)))
-
         load(displayName, loading, content)
     }
 
     private fun load(displayName: String, loading: TextView, content: LinearLayout) {
         val bridge = LevelDbSession.bridge
-        if (bridge == null) {
+        val sourceUri = intent.getStringExtra(EXTRA_SOURCE_URI)
+        if (sourceUri.isNullOrBlank() && bridge == null) {
             loading.text = "World database isn't open."
             return
         }
         Thread {
             try {
-                val sourceUri = intent.getStringExtra(EXTRA_SOURCE_URI)
                 val bytes = if (!sourceUri.isNullOrBlank()) {
                     contentResolver.openInputStream(android.net.Uri.parse(sourceUri))?.use { it.readBytes() }
                         ?: throw IllegalStateException("Couldn't open the imported .mcstructure file.")
@@ -97,10 +94,6 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
     }
 
     private fun bind(a: McStructureAnalysis, content: LinearLayout) {
-        preview.setAnalysis(a)
-        preview.onBlockSelected = { block ->
-            if (block != null) showBlockDetails(block)
-        }
         infoText.text = buildString {
             append("FORMAT / ROOT\n")
             append("format_version = ${McStructureDecoder.valueText(a.raw.entries["format_version"])}\n")
@@ -192,24 +185,6 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(8), dp(8), dp(8))
             })
         }
-
-        layerSeek.max = maxOf(0, a.sizeY - 1)
-        layerSeek.progress = 0
-        layerLabel.text = "Layer preview: all Y levels"
-        layerSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (a.sizeY <= 0) return
-                layerLabel.text = "Layer preview: Y = $progress"
-                preview.setSelectedLayer(progress, true)
-            }
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
-        })
-        val all = Button(this).apply {
-            text = "Show All Layers"
-            setOnClickListener { layerLabel.text = "Layer preview: all Y levels"; preview.clearLayerFilter() }
-        }
-        content.addView(all, LinearLayout.LayoutParams(-1, dp(48)))
     }
 
     private fun sectionTitle(text: String) = TextView(this).apply {
@@ -221,19 +196,42 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
     }
 
     private fun showBlockDetails(block: McStructureBlock) {
-        val stateText = block.states?.entries?.entries?.joinToString("\n") { (k, v) ->
-            "  $k = ${McStructureDecoder.valueText(v)}"
-        } ?: "<none>"
-        AlertDialog.Builder(this)
-            .setTitle("Block ${block.name}")
-            .setMessage(
-                "Local position: (${block.x}, ${block.y}, ${block.z})\n" +
-                    "Linear index: ${block.z + (analysis?.sizeZ ?: 0) * (block.y + (analysis?.sizeY ?: 0) * block.x)}\n" +
-                    "Palette index: ${block.paletteIndex}\n" +
-                    "Version: ${block.version ?: "<missing>"}\n\nStates:\n$stateText"
-            )
-            .setPositiveButton("OK", null)
-            .show()
+        val a = analysis
+        val index = if (a == null) -1 else block.z + a.sizeZ * (block.y + a.sizeY * block.x)
+        val palette = a?.palette?.getOrNull(block.paletteIndex)
+        val message = buildString {
+            append("Local position: (${block.x}, ${block.y}, ${block.z})\n")
+            append("Linear index (ZYX): $index\n")
+            append("Palette index: ${block.paletteIndex}\n")
+            append("Palette name: ${block.name}\n")
+            append("Version: ${block.version ?: "<missing>"}\n\n")
+            append("STATES\n")
+            append(prettyNbt(block.states ?: palette?.states))
+            append("\n\nBLOCK POSITION DATA\n")
+            append(prettyNbt(block.blockPositionData))
+            append("\n\nPALETTE ENTRY (RAW)\n")
+            append(prettyNbt(palette?.rawTag))
+        }
+        AlertDialog.Builder(this).setTitle("Block (${block.x}, ${block.y}, ${block.z})").setMessage(message).setPositiveButton("OK", null).show()
+    }
+
+    private fun prettyNbt(tag: NbtTag?): String {
+        if (tag == null) return "<none>"
+        return when (tag) {
+            is NbtTag.Compound -> if (tag.entries.isEmpty()) "{}" else tag.entries.entries.joinToString("\n") { "  ${it.key}: ${prettyNbt(it.value)}" }
+            is NbtTag.ListTag -> "[${tag.items.joinToString(", ") { prettyNbt(it) }}]"
+            is NbtTag.Byte -> "${tag.value}b"
+            is NbtTag.Short -> "${tag.value}s"
+            is NbtTag.Int -> tag.value.toString()
+            is NbtTag.Long -> "${tag.value}L"
+            is NbtTag.Float -> "${tag.value}f"
+            is NbtTag.Double -> tag.value.toString()
+            is NbtTag.Str -> "\"${tag.value}\""
+            is NbtTag.ByteArray -> "ByteArray(${tag.value.size})"
+            is NbtTag.IntArray -> tag.value.contentToString()
+            is NbtTag.LongArray -> tag.value.contentToString()
+            is NbtTag.End -> "End"
+        }
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
