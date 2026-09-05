@@ -57,6 +57,14 @@
             android:exported="false" />
 
         <activity
+            android:name=".ui.McStructureBrowserActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ui.McStructureAnalyzerActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ui.ClipboardActivity"
             android:exported="false" />
 

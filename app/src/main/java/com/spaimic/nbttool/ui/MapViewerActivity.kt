@@ -1750,7 +1750,7 @@ class MapViewerActivity : AppCompatActivity() {
         panel.addView(drawerRow(R.drawable.player, "Player Editor") { openLocalPlayerLazily() })
         panel.addView(drawerRow(R.drawable.multiplayer, "Multiplayer Editor") { showKeyPickerLazily("Multiplayer Players") { it.startsWith("player_server_") } })
         panel.addView(drawerRow(R.drawable.world_setting, "World Editor") { openLevelDatEditor() })
-        panel.addView(drawerRow(R.drawable.mcstructure, "MCStructure Editor") { showKeyPickerLazily("MCStructures") { it.startsWith("structuretemplate_") } })
+        panel.addView(drawerRow(R.drawable.mcstructure, "MCStructure Editor") { startActivity(Intent(this, McStructureBrowserActivity::class.java)) })
         panel.addView(drawerRow(R.drawable.tickingarea, "Ticking Areas Editor") { showKeyPickerLazily("Ticking Areas") { it.startsWith("tickingarea_") } })
         panel.addView(drawerRow(R.drawable.search, "Village Editor") { showKeyPickerLazily("Village Data") { it.startsWith("VILLAGE_Overworld_") } })
 

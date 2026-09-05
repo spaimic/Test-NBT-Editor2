@@ -1,0 +1,207 @@
+package com.spaimic.nbttool.ui
+
+import android.app.AlertDialog
+import android.graphics.Color
+import android.os.Bundle
+import android.view.Gravity
+import android.view.View
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import com.spaimic.nbttool.nbt.NbtIO
+import com.spaimic.nbttool.nbt.NbtTag
+import com.spaimic.nbttool.shizuku.LevelDbSession
+
+/** Detailed, read-only Build 203 MCStructure decoder. */
+class McStructureAnalyzerActivity : AppCompatActivity() {
+    private lateinit var preview: McStructurePreviewView
+    private lateinit var infoText: TextView
+    private lateinit var layerLabel: TextView
+    private lateinit var layerSeek: SeekBar
+    private var analysis: McStructureAnalysis? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME) ?: "MCStructure"
+        title = displayName
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.WHITE)
+        }
+        val scroll = ScrollView(this)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(20))
+            setBackgroundColor(Color.WHITE)
+        }
+        scroll.addView(content)
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+        setContentView(root)
+
+        val loading = TextView(this).apply {
+            text = "Reading MCStructure data…"
+            textSize = 16f
+            setTextColor(Color.BLACK)
+            setPadding(0, dp(12), 0, dp(12))
+        }
+        content.addView(loading)
+        preview = McStructurePreviewView(this)
+        content.addView(preview, LinearLayout.LayoutParams(-1, dp(310)))
+        infoText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.BLACK)
+            setPadding(0, dp(12), 0, dp(12))
+        }
+        content.addView(infoText)
+        layerLabel = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.BLACK)
+        }
+        content.addView(layerLabel)
+        layerSeek = SeekBar(this)
+        content.addView(layerSeek, LinearLayout.LayoutParams(-1, dp(48)))
+
+        load(displayName, loading, content)
+    }
+
+    private fun load(displayName: String, loading: TextView, content: LinearLayout) {
+        val bridge = LevelDbSession.bridge
+        if (bridge == null) {
+            loading.text = "World database isn't open."
+            return
+        }
+        Thread {
+            try {
+                val sourceUri = intent.getStringExtra(EXTRA_SOURCE_URI)
+                val bytes = if (!sourceUri.isNullOrBlank()) {
+                    contentResolver.openInputStream(android.net.Uri.parse(sourceUri))?.use { it.readBytes() }
+                        ?: throw IllegalStateException("Couldn't open the imported .mcstructure file.")
+                } else {
+                    val rawKey = LevelDbSession.keyBytesByName[displayName] ?: displayName.toByteArray(Charsets.UTF_8)
+                    bridge.read(rawKey) ?: throw IllegalStateException("The LevelDB value no longer exists.")
+                }
+                val root = NbtIO.readRootCompoundNoHeader(bytes)
+                val decoded = McStructureDecoder.decode(root)
+                analysis = decoded
+                runOnUiThread {
+                    loading.visibility = View.GONE
+                    bind(decoded, content)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    loading.text = "Couldn't decode this MCStructure."
+                    infoText.text = "\n${e.message ?: e.javaClass.simpleName}"
+                }
+            }
+        }.start()
+    }
+
+    private fun bind(a: McStructureAnalysis, content: LinearLayout) {
+        preview.setAnalysis(a)
+        preview.onBlockSelected = { block ->
+            if (block != null) showBlockDetails(block)
+        }
+        infoText.text = buildString {
+            append("FORMAT / ROOT\n")
+            append("format_version = ${McStructureDecoder.valueText(a.raw.entries["format_version"])}\n")
+            append("size = [${a.sizeX}, ${a.sizeY}, ${a.sizeZ}]\n")
+            append("structure_world_origin = ${a.origin?.contentToString() ?: "<missing>"}\n")
+            append("\nDECODED COUNTS\n")
+            append(McStructureDecoder.summaryText(a))
+            append("\n\nINDEXING MODEL\n")
+            append("Build 203 currently interprets block_indices as:\n")
+            append("index = x + sizeX * (z + sizeZ * y)\n")
+            append("block_indices layer 0 length = ${a.layer0.size}\n")
+            append("block_indices layer 1 length = ${a.layer1.size}\n")
+            append("Expected positions = ${a.volume}\n")
+            append("Two block-index layers are supported; layer 1 overrides layer 0 when its entry is >= 0.\n")
+            append("\nROOT KEYS\n")
+            append(a.raw.entries.keys.joinToString(", "))
+            if (a.unknownRootEntries.isNotEmpty()) {
+                append("\n\nUNRECOGNIZED ROOT KEYS\n")
+                append(a.unknownRootEntries.joinToString(", "))
+            }
+        }
+
+        val paletteTitle = sectionTitle("PALETTE (${a.palette.size})")
+        content.addView(paletteTitle)
+        a.palette.forEach { entry ->
+            val row = TextView(this).apply {
+                text = "#${entry.index}  ${entry.name}\n    states: ${entry.states?.entries?.size ?: 0}   version: ${entry.version ?: "<missing>"}"
+                textSize = 14f
+                setTextColor(Color.BLACK)
+                setPadding(dp(8), dp(7), dp(8), dp(7))
+            }
+            content.addView(row)
+        }
+
+        val blocksTitle = sectionTitle("BLOCKS (${a.blocks.size}) — first 300 shown")
+        content.addView(blocksTitle)
+        a.blocks.take(300).forEach { b ->
+            val row = TextView(this).apply {
+                text = "(${b.x}, ${b.y}, ${b.z})  index=${b.paletteIndex}  ${b.name}"
+                textSize = 13f
+                setTextColor(Color.BLACK)
+                setPadding(dp(8), dp(4), dp(8), dp(4))
+                setOnClickListener { showBlockDetails(b) }
+            }
+            content.addView(row)
+        }
+        if (a.blocks.size > 300) {
+            content.addView(TextView(this).apply {
+                text = "… ${a.blocks.size - 300} more blocks are present."
+                setTextColor(Color.DKGRAY)
+                setPadding(dp(8), dp(8), dp(8), dp(8))
+            })
+        }
+
+        layerSeek.max = maxOf(0, a.sizeY - 1)
+        layerSeek.progress = 0
+        layerLabel.text = "Layer preview: all Y levels"
+        layerSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (a.sizeY <= 0) return
+                layerLabel.text = "Layer preview: Y = $progress"
+                preview.setSelectedLayer(progress, true)
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        val all = Button(this).apply {
+            text = "Show All Layers"
+            setOnClickListener { layerLabel.text = "Layer preview: all Y levels"; preview.clearLayerFilter() }
+        }
+        content.addView(all, 0)
+    }
+
+    private fun sectionTitle(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 15f
+        setTypeface(null, android.graphics.Typeface.BOLD)
+        setTextColor(Color.BLACK)
+        setPadding(dp(0), dp(16), dp(0), dp(7))
+    }
+
+    private fun showBlockDetails(block: McStructureBlock) {
+        val stateText = block.states?.entries?.entries?.joinToString("\n") { (k, v) ->
+            "  $k = ${McStructureDecoder.valueText(v)}"
+        } ?: "<none>"
+        AlertDialog.Builder(this)
+            .setTitle("Block ${block.name}")
+            .setMessage(
+                "Local position: (${block.x}, ${block.y}, ${block.z})\n" +
+                    "Linear index: ${block.x + (analysis?.sizeX ?: 0) * (block.z + (analysis?.sizeZ ?: 0) * block.y)}\n" +
+                    "Palette index: ${block.paletteIndex}\n" +
+                    "Version: ${block.version ?: "<missing>"}\n\nStates:\n$stateText"
+            )
+            .setPositiveButton("OK", null)
+            .show()
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
+
+    companion object {
+        const val EXTRA_DISPLAY_NAME = "display_name"
+        const val EXTRA_SOURCE_URI = "source_uri"
+    }
+}
