@@ -60,7 +60,7 @@ private class Build200IntroView(
         when {
             elapsed < convergeMs -> drawConvergingS(canvas, elapsed.toFloat() / convergeMs)
             elapsed < convergeMs + gifMs -> drawImpactGif(canvas, elapsed - convergeMs)
-            elapsed < convergeMs + gifMs + logoMs -> drawLogoSequence(canvas, elapsed - convergeMs - gifMs)
+            elapsed < convergeMs + gifMs + logoMs -> drawLogoSequence(canvas, (elapsed - convergeMs - gifMs).toFloat())
             elapsed < totalMs -> {
                 drawLogoSequence(canvas, logoMs.toFloat())
                 val fade = ((elapsed - convergeMs - gifMs - logoMs).toFloat() / fadeMs).coerceIn(0f, 1f)
@@ -110,9 +110,9 @@ private class Build200IntroView(
 
     private fun drawImpactGif(canvas: Canvas, gifElapsed: Long) {
         movie.setTime(gifElapsed.coerceAtMost(gifMs - 1).toInt())
-        val scale = minOf(width / movie.width.toFloat(), height / movie.height.toFloat(), 3.2f)
-        val drawW = movie.width * scale
-        val drawH = movie.height * scale
+        val scale = minOf(getWidth() / movie.width().toFloat(), getHeight() / movie.height().toFloat(), 3.2f)
+        val drawW = movie.width() * scale
+        val drawH = movie.height() * scale
         val left = (width - drawW) / 2f
         val top = (height - drawH) / 2f
         canvas.save()
