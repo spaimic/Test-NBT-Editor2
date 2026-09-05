@@ -12,7 +12,7 @@ import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.R
 import com.spaimic.nbttool.shizuku.LevelDbSession
 
-/** Build 203 read-only browser for structuretemplate_ LevelDB records. */
+/** Build 205 read-only browser for structuretemplate_ LevelDB records. */
 class McStructureBrowserActivity : AppCompatActivity() {
     private lateinit var list: LinearLayout
     private lateinit var progress: ProgressBar
@@ -26,7 +26,7 @@ class McStructureBrowserActivity : AppCompatActivity() {
             setBackgroundColor(Color.WHITE)
         }
         val header = TextView(this).apply {
-            text = "MCStructure Analyzer\nSelect a structuretemplate_ record to inspect its format. Build 203 is read-only."
+            text = "MCStructure Analyzer\nSelect a structuretemplate_ record to inspect its format. Build 205 is read-only."
             textSize = 16f
             setTextColor(Color.BLACK)
             setPadding(dp(18), dp(18), dp(18), dp(14))
@@ -112,10 +112,16 @@ class McStructureBrowserActivity : AppCompatActivity() {
             setPadding(dp(14), dp(8), dp(14), dp(8))
             isClickable = true
             isFocusable = true
+            // Normal tap keeps the original raw NBT editor behavior.
             setOnClickListener {
+                openRawEditor(name)
+            }
+            // Long press is now the dedicated MCStructure analysis action.
+            setOnLongClickListener {
                 startActivity(android.content.Intent(this@McStructureBrowserActivity, McStructureAnalyzerActivity::class.java).apply {
                     putExtra(McStructureAnalyzerActivity.EXTRA_DISPLAY_NAME, name)
                 })
+                true
             }
         }
         val icon = android.widget.ImageView(this).apply {
@@ -134,6 +140,33 @@ class McStructureBrowserActivity : AppCompatActivity() {
         list.addView(row, LinearLayout.LayoutParams(-1, -2))
         val divider = View(this).apply { setBackgroundColor(0xFFE0E0E0.toInt()) }
         list.addView(divider, LinearLayout.LayoutParams(-1, 1))
+    }
+
+    private fun openRawEditor(displayName: String) {
+        Thread {
+            try {
+                if (!LevelDbSession.loadedEntries.containsKey(displayName)) {
+                    val rawKey = LevelDbSession.keyBytesByName[displayName]
+                        ?: displayName.toByteArray(Charsets.UTF_8)
+                    val bytes = LevelDbSession.bridge?.read(rawKey)
+                        ?: throw IllegalStateException("The structure record no longer exists.")
+                    LevelDbSession.loadedEntries[displayName] = com.spaimic.nbttool.nbt.NbtIO.readRootCompoundNoHeader(bytes)
+                }
+                runOnUiThread {
+                    startActivity(android.content.Intent(this, DbEntryEditorActivity::class.java).apply {
+                        putExtra(DbEntryEditorActivity.EXTRA_DISPLAY_NAME, displayName)
+                    })
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    AlertDialog.Builder(this)
+                        .setTitle("Couldn't open MCStructure")
+                        .setMessage(e.message ?: e.javaClass.simpleName)
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+        }.start()
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {

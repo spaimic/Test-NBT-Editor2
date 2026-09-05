@@ -11,7 +11,7 @@ import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbSession
 
-/** Detailed, read-only Build 203 MCStructure decoder. */
+/** Detailed, read-only Build 205 MCStructure decoder. */
 class McStructureAnalyzerActivity : AppCompatActivity() {
     private lateinit var preview: McStructurePreviewView
     private lateinit var infoText: TextView
@@ -109,8 +109,9 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
             append("\nDECODED COUNTS\n")
             append(McStructureDecoder.summaryText(a))
             append("\n\nINDEXING MODEL\n")
-            append("Build 203 currently interprets block_indices as:\n")
-            append("index = x + sizeX * (z + sizeZ * y)\n")
+            append("Build 205 decodes the Bedrock structure compound as:\n")
+            append("structure.block_indices / structure.entities / structure.palette\n")
+            append("Index order is ZYX: z + sizeZ * (y + sizeY * x)\n")
             append("block_indices layer 0 length = ${a.layer0.size}\n")
             append("block_indices layer 1 length = ${a.layer1.size}\n")
             append("Expected positions = ${a.volume}\n")
@@ -133,6 +134,43 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
                 setPadding(dp(8), dp(7), dp(8), dp(7))
             }
             content.addView(row)
+        }
+
+        val entitiesTitle = sectionTitle("ENTITIES (${a.entities?.items?.size ?: 0})")
+        content.addView(entitiesTitle)
+        val entityItems = a.entities?.items.orEmpty()
+        if (entityItems.isEmpty()) {
+            content.addView(TextView(this).apply {
+                text = "No entities stored in structure.entities."
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+                setPadding(dp(8), dp(4), dp(8), dp(8))
+            })
+        } else {
+            entityItems.forEachIndexed { index, tag ->
+                val compound = tag as? NbtTag.Compound
+                val id = compound?.entries?.get("identifier") as? NbtTag.Str
+                    ?: compound?.entries?.get("id") as? NbtTag.Str
+                val pos = compound?.entries?.get("Pos")
+                val row = TextView(this).apply {
+                    text = buildString {
+                        append("#$index  ")
+                        append(id?.value ?: "<entity>")
+                        if (pos != null) append("\n    Pos = ${McStructureDecoder.valueText(pos)}")
+                    }
+                    textSize = 13f
+                    setTextColor(Color.BLACK)
+                    setPadding(dp(8), dp(5), dp(8), dp(5))
+                    setOnClickListener {
+                        AlertDialog.Builder(this@McStructureAnalyzerActivity)
+                            .setTitle("Entity #$index")
+                            .setMessage(McStructureDecoder.valueText(tag))
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }
+                content.addView(row)
+            }
         }
 
         val blocksTitle = sectionTitle("BLOCKS (${a.blocks.size}) — first 300 shown")
@@ -171,7 +209,7 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
             text = "Show All Layers"
             setOnClickListener { layerLabel.text = "Layer preview: all Y levels"; preview.clearLayerFilter() }
         }
-        content.addView(all, 0)
+        content.addView(all, LinearLayout.LayoutParams(-1, dp(48)))
     }
 
     private fun sectionTitle(text: String) = TextView(this).apply {
@@ -190,7 +228,7 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
             .setTitle("Block ${block.name}")
             .setMessage(
                 "Local position: (${block.x}, ${block.y}, ${block.z})\n" +
-                    "Linear index: ${block.x + (analysis?.sizeX ?: 0) * (block.z + (analysis?.sizeZ ?: 0) * block.y)}\n" +
+                    "Linear index: ${block.z + (analysis?.sizeZ ?: 0) * (block.y + (analysis?.sizeY ?: 0) * block.x)}\n" +
                     "Palette index: ${block.paletteIndex}\n" +
                     "Version: ${block.version ?: "<missing>"}\n\nStates:\n$stateText"
             )

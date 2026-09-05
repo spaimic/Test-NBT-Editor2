@@ -5,7 +5,7 @@ import com.spaimic.nbttool.chunk.BlockColors
 import com.spaimic.nbttool.nbt.NbtTag
 
 /**
- * Build 203: read-only decoder for Bedrock .mcstructure data stored in a
+ * Build 205: read-only decoder for Bedrock .mcstructure data stored in a
  * structuretemplate_ LevelDB value. It intentionally keeps the raw NBT model
  * intact and builds a small, inspectable representation on top of it.
  */
@@ -89,13 +89,13 @@ object McStructureDecoder {
     private fun rootCompound(root: NbtTag.Compound, name: String): NbtTag.Compound? =
         (root.entries[name] as? NbtTag.Compound)
 
-    private fun findDefaultPalette(root: NbtTag.Compound): NbtTag.Compound? {
-        val palette = rootCompound(root, "palette") ?: return null
+    private fun findDefaultPalette(structure: NbtTag.Compound): NbtTag.Compound? {
+        val palette = rootCompound(structure, "palette") ?: return null
         return rootCompound(palette, "default") ?: palette
     }
 
-    private fun readPalette(root: NbtTag.Compound): List<McStructurePaletteEntry> {
-        val default = findDefaultPalette(root) ?: return emptyList()
+    private fun readPalette(structure: NbtTag.Compound): List<McStructurePaletteEntry> {
+        val default = findDefaultPalette(structure) ?: return emptyList()
         val raw = default.entries["block_palette"] ?: return emptyList()
         val list = raw as? NbtTag.ListTag ?: return emptyList()
         return list.items.mapIndexed { index, item ->
@@ -107,19 +107,17 @@ object McStructureDecoder {
         }
     }
 
-    private fun readIndices(root: NbtTag.Compound, key: String): List<Int> {
-        return root.entries[key]?.asIntList() ?: emptyList()
+    private fun readIndices(structure: NbtTag.Compound, key: String): List<Int> {
+        return structure.entries[key]?.asIntList() ?: emptyList()
     }
 
     /**
-     * Bedrock's structure arrays are treated as X-fastest, then Z, then Y:
-     * index = x + sizeX * (z + sizeZ * y).
-     *
-     * Build 203 displays the mapping explicitly so future real-world test files
-     * can be used to verify this assumption before placement support is added.
+     * Bedrock's structure arrays use ZYX order: Z changes fastest, then Y,
+     * then X. For size [X,Y,Z], the flattened index is:
+     * index = z + sizeZ * (y + sizeY * x).
      */
-    private fun linearIndex(x: Int, y: Int, z: Int, sx: Int, sz: Int): Int =
-        x + sx * (z + sz * y)
+    private fun linearIndex(x: Int, y: Int, z: Int, sy: Int, sz: Int): Int =
+        z + sz * (y + sy * x)
 
     fun decode(root: NbtTag.Compound): McStructureAnalysis {
         val size = root.entries["size"]?.asIntList() ?: emptyList()
@@ -127,24 +125,25 @@ object McStructureDecoder {
         val sy = (size.getOrNull(1) ?: 0).coerceAtLeast(0)
         val sz = (size.getOrNull(2) ?: 0).coerceAtLeast(0)
         val expected = sx.toLong() * sy.toLong() * sz.toLong()
-        require(expected <= 5_000_000L) { "Structure is too large to inspect safely in Build 203 (${expected} positions)." }
+        require(expected <= 5_000_000L) { "Structure is too large to inspect safely (${expected} positions)." }
 
-        val indices0 = readIndices(root, "block_indices")
-        val layers = (root.entries["block_indices"] as? NbtTag.ListTag)?.items ?: emptyList()
-        val layer0 = if (layers.getOrNull(0) != null) {
-            layers[0].asIntList() ?: indices0
-        } else indices0
-        val layer1 = if (layers.getOrNull(1) != null) {
-            layers[1].asIntList() ?: emptyList()
-        } else emptyList()
+        // The important discovery from real .mcstructure files: block_indices,
+        // entities and palette are NOT root keys. They live inside the root
+        // "structure" compound.
+        val structure = root.entries["structure"] as? NbtTag.Compound
+            ?: throw IllegalArgumentException("This MCStructure has no structure compound.")
 
-        val palette = readPalette(root)
+        val layers = (structure.entries["block_indices"] as? NbtTag.ListTag)?.items ?: emptyList()
+        val layer0 = layers.getOrNull(0)?.asIntList() ?: emptyList()
+        val layer1 = layers.getOrNull(1)?.asIntList() ?: emptyList()
+
+        val palette = readPalette(structure)
         val blocks = ArrayList<McStructureBlock>()
         if (sx > 0 && sy > 0 && sz > 0) {
-            for (y in 0 until sy) {
-                for (z in 0 until sz) {
-                    for (x in 0 until sx) {
-                        val i = linearIndex(x, y, z, sx, sz)
+            for (x in 0 until sx) {
+                for (y in 0 until sy) {
+                    for (z in 0 until sz) {
+                        val i = linearIndex(x, y, z, sy, sz)
                         val p0 = layer0.getOrNull(i) ?: -1
                         val p1 = layer1.getOrNull(i) ?: -1
                         val paletteIndex = when {
@@ -155,19 +154,18 @@ object McStructureDecoder {
                         if (paletteIndex < 0) continue
                         val entry = palette.getOrNull(paletteIndex)
                         val name = entry?.name ?: "<invalid palette index $paletteIndex>"
-                        blocks.add(
-                            McStructureBlock(
-                                x, y, z, paletteIndex, name,
-                                entry?.states, entry?.version
-                            )
-                        )
+                        blocks.add(McStructureBlock(x, y, z, paletteIndex, name, entry?.states, entry?.version))
                     }
                 }
             }
         }
 
+        val defaultPalette = findDefaultPalette(structure)
+        val blockPositionData = defaultPalette?.entries?.get("block_position_data") as? NbtTag.Compound
+        val entities = structure.entries["entities"] as? NbtTag.ListTag
+
         val rootNames = root.entries.keys.toList()
-        val known = setOf("format_version", "size", "structure_world_origin", "block_indices", "palette", "block_position_data", "entities")
+        val known = setOf("format_version", "size", "structure", "structure_world_origin")
         return McStructureAnalysis(
             raw = root,
             sizeX = sx,
@@ -178,8 +176,8 @@ object McStructureDecoder {
             blocks = blocks,
             layer0 = layer0,
             layer1 = layer1,
-            blockPositionData = root.entries["block_position_data"] as? NbtTag.Compound,
-            entities = root.entries["entities"] as? NbtTag.ListTag,
+            blockPositionData = blockPositionData,
+            entities = entities,
             unknownRootEntries = rootNames.filter { it !in known }
         )
     }
