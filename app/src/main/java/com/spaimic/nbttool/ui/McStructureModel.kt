@@ -70,13 +70,18 @@ object McStructureDecoder {
         else -> null
     }
 
-    private fun NbtTag.asIntList(): List<Int>? = when (this) {
-        is NbtTag.IntArray -> value.toList()
-        is NbtTag.ListTag -> {
-            if (elementTypeId != 3 && elementTypeId != 1 && elementTypeId != 2 && elementTypeId != 4) return null
-            items.mapNotNull { it.asIntOrNull() }
+    private fun NbtTag.asIntList(): List<Int>? {
+        return when (this) {
+            is NbtTag.IntArray -> value.toList()
+            is NbtTag.ListTag -> {
+                if (elementTypeId != 3 && elementTypeId != 1 && elementTypeId != 2 && elementTypeId != 4) {
+                    null
+                } else {
+                    items.mapNotNull { it.asIntOrNull() }
+                }
+            }
+            else -> null
         }
-        else -> null
     }
 
     private fun NbtTag.asString(): String? = (this as? NbtTag.Str)?.value
