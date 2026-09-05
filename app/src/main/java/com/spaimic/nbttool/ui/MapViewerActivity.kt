@@ -138,37 +138,53 @@ class MapViewerActivity : AppCompatActivity() {
             }
         )
 
-        // Small map-options FAB: tapping it reveals extra map actions such as the
-        // already-prepared whole-map picture export.
-        val wholeMapAction = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(8), dp(4), dp(10), dp(4))
+        // Small map-options FAB: tapping it reveals extra map actions.
+        val mapOptionsPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
             setBackgroundColor(Color.WHITE)
             visibility = View.GONE
             elevation = dp(6).toFloat()
         }
-        val wholeMapActionIcon = ImageView(this).apply {
-            setImageResource(R.drawable.camera)
-            setPadding(dp(4), dp(4), dp(4), dp(4))
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
+
+        fun mapActionRow(icon: Int, label: String, action: () -> Unit): View {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(2), dp(10), dp(2))
+                setBackgroundColor(Color.WHITE)
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    mapOptionsPanel.visibility = View.GONE
+                    action()
+                }
+            }
+            val image = ImageView(this).apply {
+                setImageResource(icon)
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+            }
+            val text = TextView(this).apply {
+                this.text = label
+                textSize = 14f
+                setTextColor(Color.BLACK)
+                setPadding(dp(5), 0, 0, 0)
+            }
+            row.addView(image, LinearLayout.LayoutParams(dp(40), dp(44)))
+            row.addView(text, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)))
+            return row
         }
-        val wholeMapActionText = TextView(this).apply {
-            text = "Take Entire Map Picture"
-            textSize = 15f
-            setTextColor(Color.BLACK)
-            setPadding(dp(6), 0, dp(4), 0)
-        }
-        wholeMapAction.addView(wholeMapActionIcon, LinearLayout.LayoutParams(dp(42), dp(48)))
-        wholeMapAction.addView(wholeMapActionText, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)))
-        wholeMapAction.setOnClickListener {
-            wholeMapAction.visibility = View.GONE
-            promptWholeMapPicture()
-        }
-        contentRoot.addView(wholeMapAction, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(56)).apply {
+
+        mapOptionsPanel.addView(mapActionRow(R.drawable.camera, "Take Entire Map Picture") { promptWholeMapPicture() })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.search_diamond, "Find Diamonds Near Player") { findDiamondsNearPlayer() })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.search_ancient_debris, "Find Ancient Debris Near Player") { findAncientDebrisNearPlayer() })
+
+        contentRoot.addView(mapOptionsPanel, FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.BOTTOM or Gravity.END
             rightMargin = dp(18)
-            bottomMargin = dp(86)
+            bottomMargin = dp(76)
         })
 
         val wholeMapFab = TextView(this).apply {
@@ -186,7 +202,7 @@ class MapViewerActivity : AppCompatActivity() {
             isClickable = true
             isFocusable = true
             setOnClickListener {
-                wholeMapAction.visibility = if (wholeMapAction.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                mapOptionsPanel.visibility = if (mapOptionsPanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
             }
         }
         contentRoot.addView(wholeMapFab, FrameLayout.LayoutParams(dp(52), dp(52)).apply {

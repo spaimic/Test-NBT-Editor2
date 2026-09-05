@@ -43,8 +43,13 @@ private class Build200IntroView(
     // cannot accidentally continue into the following logo animation.
     private val gifMs = 1200L
     private val logoMs = 1800L
+    private val experimentWarningMs = 3000L
     private val fadeMs = 500L
-    private val totalMs = convergeMs + gifMs + logoMs + fadeMs
+    private val experimentMode = ExperimentMode.isEnabled(activity)
+    private val warningStartMs = convergeMs + gifMs + logoMs
+    private val warningEndMs = warningStartMs + if (experimentMode) experimentWarningMs else 0L
+    private val totalMs = warningEndMs + fadeMs
+    private var lastWarningTapMs = 0L
 
     init {
         setBackgroundColor(Color.WHITE)
@@ -60,10 +65,15 @@ private class Build200IntroView(
         when {
             elapsed < convergeMs -> drawConvergingS(canvas, elapsed.toFloat() / convergeMs)
             elapsed < convergeMs + gifMs -> drawImpactGif(canvas, elapsed - convergeMs)
-            elapsed < convergeMs + gifMs + logoMs -> drawLogoSequence(canvas, (elapsed - convergeMs - gifMs).toFloat())
+            elapsed < warningStartMs -> drawLogoSequence(canvas, (elapsed - convergeMs - gifMs).toFloat())
+            elapsed < warningEndMs -> {
+                drawLogoSequence(canvas, logoMs.toFloat())
+                drawExperimentWarning(canvas)
+            }
             elapsed < totalMs -> {
                 drawLogoSequence(canvas, logoMs.toFloat())
-                val fade = ((elapsed - convergeMs - gifMs - logoMs).toFloat() / fadeMs).coerceIn(0f, 1f)
+                if (experimentMode) drawExperimentWarning(canvas)
+                val fade = ((elapsed - warningEndMs).toFloat() / fadeMs).coerceIn(0f, 1f)
                 alpha = 1f - fade
             }
             else -> {
@@ -167,6 +177,44 @@ private class Build200IntroView(
         }
     }
 
+
+    private fun drawExperimentWarning(canvas: Canvas) {
+        val cx = width / 2f
+        val baseY = height * 0.67f
+        paint.textAlign = Paint.Align.CENTER
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        paint.color = Color.BLACK
+        paint.textSize = 34f * density
+        canvas.drawText("⚠️", cx, baseY, paint)
+        paint.textSize = 15f * density
+        val lines = arrayOf(
+            "WARNING: Experiment Mode was activated.",
+            "You should be careful about what are you doing",
+            "and also make sure you created backups for worlds."
+        )
+        lines.forEachIndexed { index, line ->
+            canvas.drawText(line, cx, baseY + (34f + index * 20f) * density, paint)
+        }
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        if (event.action == android.view.MotionEvent.ACTION_UP && experimentMode) {
+            val elapsed = SystemClock.uptimeMillis() - startedAt
+            if (elapsed >= warningStartMs && elapsed < warningEndMs) {
+                val now = SystemClock.uptimeMillis()
+                if (now - lastWarningTapMs <= 450L) {
+                    finished = true
+                    IntroActivityState.markSeen(context)
+                    onFinished()
+                } else {
+                    lastWarningTapMs = now
+                }
+                return true
+            }
+        }
+        return true
+    }
+
     private fun easeInOut(x: Float): Float = if (x < 0.5f) 4f * x * x * x else 1f - ((-2f * x + 2f).let { it * it * it } / 2f)
     private fun easeOutCubic(x: Float): Float { val a = 1f - x; return 1f - a * a * a }
     private fun easeInCubic(x: Float): Float = x * x * x
@@ -176,6 +224,17 @@ private class Build200IntroView(
 object IntroActivityState {
     private const val PREFS = "build200_intro"
     private const val SEEN = "seen"
+    private const val ALWAYS_PLAY = "always_play_intro"
+
+    /** Build 202: ON by default. The intro is shown on every app entry while enabled. */
+    fun shouldPlayIntro(context: android.content.Context): Boolean =
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .getBoolean(ALWAYS_PLAY, true)
+
+    fun setAlwaysPlayIntro(context: android.content.Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean(ALWAYS_PLAY, enabled).apply()
+    }
 
     fun hasSeen(context: android.content.Context): Boolean =
         context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getBoolean(SEEN, false)

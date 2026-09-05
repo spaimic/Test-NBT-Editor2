@@ -28,7 +28,7 @@ class WorldListActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!IntroActivityState.hasSeen(this)) {
+        if (IntroActivityState.shouldPlayIntro(this)) {
             startActivity(Intent(this, IntroActivity::class.java))
         }
         title = "My Worlds"
@@ -346,13 +346,23 @@ class WorldListActivity : AppCompatActivity() {
     }
 
     override fun onCreateOptionsMenu(menu: android.view.Menu): Boolean {
-        menu.add(0, MENU_ITEM_CLIPBOARD, 0, "Clipboard")
+        val introItem = menu.add(0, MENU_ITEM_ALWAYS_PLAY_INTRO, 0, "Always play the intro")
+        introItem.setCheckable(true)
+        introItem.setChecked(IntroActivityState.shouldPlayIntro(this))
+        introItem.setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_NEVER)
         return true
     }
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
-        if (item.itemId == MENU_ITEM_CLIPBOARD) {
-            startActivity(Intent(this, ClipboardActivity::class.java))
+        if (item.itemId == MENU_ITEM_ALWAYS_PLAY_INTRO) {
+            val enabled = !IntroActivityState.shouldPlayIntro(this)
+            IntroActivityState.setAlwaysPlayIntro(this, enabled)
+            item.isChecked = enabled
+            Toast.makeText(
+                this,
+                if (enabled) "Always play the intro: ON" else "Always play the intro: OFF",
+                Toast.LENGTH_SHORT
+            ).show()
             return true
         }
         return super.onOptionsItemSelected(item)
@@ -360,6 +370,6 @@ class WorldListActivity : AppCompatActivity() {
 
     companion object {
         private const val REQUEST_CODE_PICK_FILE = 2001
-        private const val MENU_ITEM_CLIPBOARD = 1
+        private const val MENU_ITEM_ALWAYS_PLAY_INTRO = 1
     }
 }
