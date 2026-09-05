@@ -75,7 +75,7 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
                         ?: throw IllegalStateException("Couldn't open the imported .mcstructure file.")
                 } else {
                     val rawKey = LevelDbSession.keyBytesByName[displayName] ?: displayName.toByteArray(Charsets.UTF_8)
-                    bridge.read(rawKey) ?: throw IllegalStateException("The LevelDB value no longer exists.")
+                    bridge!!.read(rawKey) ?: throw IllegalStateException("The LevelDB value no longer exists.")
                 }
                 val root = NbtIO.readRootCompoundNoHeader(bytes)
                 val decoded = McStructureDecoder.decode(root)
