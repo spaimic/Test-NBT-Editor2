@@ -52,6 +52,26 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
             }
         }
         content.addView(previewButton, LinearLayout.LayoutParams(-1, dp(52)))
+
+        val placementButton = Button(this).apply {
+            text = "🏗️ Place Structure in World (Prototype)"
+            setOnClickListener {
+                if (!ExperimentMode.isEnabled(this@McStructureAnalyzerActivity)) {
+                    AlertDialog.Builder(this@McStructureAnalyzerActivity)
+                        .setTitle("Experiment Mode Required")
+                        .setMessage("Direct MCStructure placement can modify and potentially corrupt a world. Activate Experiment Mode and make a backup before using this prototype.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                    return@setOnClickListener
+                }
+                val i = android.content.Intent(this@McStructureAnalyzerActivity, McStructurePlacementActivity::class.java)
+                i.putExtra(McStructurePlacementActivity.EXTRA_DISPLAY_NAME, displayName)
+                intent.getStringExtra(EXTRA_SOURCE_URI)?.let { i.putExtra(McStructurePlacementActivity.EXTRA_SOURCE_URI, it) }
+                startActivity(i)
+            }
+        }
+        placementButton.setTextColor(Color.BLACK)
+        content.addView(placementButton, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(6) })
         infoText = TextView(this).apply {
             textSize = 14f
             setTextColor(Color.BLACK)
