@@ -6,11 +6,14 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.View
 import android.widget.*
+import android.text.Editable
+import android.text.TextWatcher
 import androidx.appcompat.app.AppCompatActivity
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbSession
 import com.spaimic.nbttool.chunk.McStructurePlacer
+import com.spaimic.nbttool.chunk.ChunkScanner
 import com.spaimic.nbttool.worlds.LocalWorldStore
 
 /**
@@ -23,6 +26,10 @@ class McStructurePlacementActivity : AppCompatActivity() {
     private lateinit var zField: EditText
     private lateinit var dimensionSpinner: Spinner
     private lateinit var summary: TextView
+    private lateinit var placementPreview: McStructurePlacementPreviewView
+    private lateinit var coordinateLabel: TextView
+    private var previewLoadGeneration = 0
+    private var currentPlayerPosition: Triple<Int, Int, Int>? = null
     private var analysis: McStructureAnalysis? = null
     private var displayName: String = "MCStructure"
 
@@ -50,18 +57,60 @@ class McStructurePlacementActivity : AppCompatActivity() {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
         content.addView(TextView(this).apply {
-            text = "🏗️ MCStructure Placement Prototype"
+            text = "🏗️ MCStructure Placement Preview"
             textSize = 20f
             setTypeface(null, android.graphics.Typeface.BOLD)
             setTextColor(Color.BLACK)
             setPadding(0, 0, 0, dp(8))
         })
         content.addView(TextView(this).apply {
-            text = "The structure is placed with its local (0,0,0) at the world coordinates below. Rotation is not implemented yet. A full world backup is created immediately before writing."
+            text = "Choose the placement origin below. The 3D preview shows the nearby terrain/chunks and a gold bounding box for the MCStructure. Drag the preview to rotate and pinch to zoom; use the eight buttons to move the structure without moving the camera."
             textSize = 14f
             setTextColor(Color.DKGRAY)
-            setPadding(0, 0, 0, dp(12))
+            setPadding(0, 0, 0, dp(10))
         })
+
+        placementPreview = McStructurePlacementPreviewView(this)
+        content.addView(placementPreview, LinearLayout.LayoutParams(-1, dp(360)))
+
+        coordinateLabel = TextView(this).apply {
+            textSize = 15f
+            setTypeface(null, android.graphics.Typeface.BOLD)
+            setTextColor(Color.BLACK)
+            setPadding(0, dp(10), 0, dp(6))
+        }
+        content.addView(coordinateLabel)
+
+        val moveGrid = GridLayout(this).apply {
+            columnCount = 4
+            rowCount = 2
+            alignmentMode = GridLayout.ALIGN_BOUNDS
+            useDefaultMargins = true
+        }
+        fun moveButton(label: String, dx: Int = 0, dy: Int = 0, dz: Int = 0) {
+            val b = Button(this).apply {
+                text = label
+                textSize = 17f
+                setOnClickListener {
+                    movePlacement(dx, dy, dz)
+                }
+            }
+            moveGrid.addView(b, GridLayout.LayoutParams().apply {
+                width = 0
+                height = dp(48)
+                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                rowSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+            })
+        }
+        moveButton("⬆️⚡", dy = 5)
+        moveButton("⬆️", dy = 1)
+        moveButton("⬇️", dy = -1)
+        moveButton("⬇️⚡", dy = -5)
+        moveButton("⬅️⚡", dx = -5)
+        moveButton("⬅️", dx = -1)
+        moveButton("➡️", dx = 1)
+        moveButton("➡️⚡", dx = 5)
+        content.addView(moveGrid, LinearLayout.LayoutParams(-1, dp(112)))
 
         val worldButton = Button(this).apply {
             text = "Use Current Player Position"
@@ -73,10 +122,34 @@ class McStructurePlacementActivity : AppCompatActivity() {
         yField = numberField(content, "World Y")
         zField = numberField(content, "World Z")
 
+        val coordinateWatcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (::placementPreview.isInitialized) refreshPlacementPreview(forceTerrainReload = false)
+            }
+            override fun afterTextChanged(s: Editable?) = Unit
+        }
+        xField.addTextChangedListener(coordinateWatcher)
+        yField.addTextChangedListener(coordinateWatcher)
+        zField.addTextChangedListener(coordinateWatcher)
+
         content.addView(TextView(this).apply { text = "Dimension"; textSize = 14f; setTextColor(Color.BLACK); setPadding(0, dp(8), 0, dp(4)) })
         dimensionSpinner = Spinner(this)
         dimensionSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, arrayOf("Overworld", "Nether", "The End"))
         content.addView(dimensionSpinner, LinearLayout.LayoutParams(-1, dp(50)))
+
+        val previewRefresh = Button(this).apply {
+            text = "Refresh 3D Placement Preview"
+            setOnClickListener { refreshPlacementPreview(forceTerrainReload = true) }
+        }
+        content.addView(previewRefresh, LinearLayout.LayoutParams(-1, dp(48)))
+
+        dimensionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                refreshPlacementPreview(forceTerrainReload = true)
+            }
+        }
 
         summary = TextView(this).apply {
             textSize = 14f
@@ -101,6 +174,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
         setContentView(root)
         loadStructure()
         loadPlayerPositionIntoFields()
+        refreshPlacementPreview(forceTerrainReload = true)
     }
 
     private fun numberField(parent: LinearLayout, label: String): EditText {
@@ -134,6 +208,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
                 val decoded = McStructureDecoder.decode(NbtIO.readRootCompoundNoHeader(bytes))
                 analysis = decoded
                 runOnUiThread {
+                    placementPreview.setStructure(decoded)
                     summary.text = buildString {
                         append("Structure: $displayName\n")
                         append("Size: ${decoded.sizeX} × ${decoded.sizeY} × ${decoded.sizeZ}\n")
@@ -146,6 +221,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
                         append("• Existing terrain chunks are edited; entirely new terrain chunks are not created.\n")
                         append("• Block-position-data/block entities are not written yet.\n")
                     }
+                    refreshPlacementPreview(forceTerrainReload = true)
                 }
             } catch (e: Throwable) {
                 runOnUiThread { summary.text = "Couldn't load structure: ${e.message ?: e.javaClass.simpleName}" }
@@ -161,27 +237,94 @@ class McStructurePlacementActivity : AppCompatActivity() {
                     ?: throw IllegalStateException("No ~local_player data exists.")
                 val root = NbtIO.readRootCompoundNoHeader(raw)
                 val pos = root.entries["Pos"] as? NbtTag.ListTag
-                    ?: throw IllegalStateException("Player position was not found.")
-                val x = numeric(pos.items.getOrNull(0)) ?: throw IllegalStateException("Invalid player X.")
-                val y = numeric(pos.items.getOrNull(1)) ?: throw IllegalStateException("Invalid player Y.")
-                val z = numeric(pos.items.getOrNull(2)) ?: throw IllegalStateException("Invalid player Z.")
-                val dim = when (val d = root.entries["Dimension"]) {
-                    is NbtTag.Int -> d.value
-                    is NbtTag.Short -> d.value.toInt()
+                    ?: throw IllegalStateException("Player position was not found in ~local_player.")
+                val x = numeric(pos.items.getOrNull(0)) ?: throw IllegalStateException("Invalid player X in ~local_player.")
+                val y = numeric(pos.items.getOrNull(1)) ?: throw IllegalStateException("Invalid player Y in ~local_player.")
+                val z = numeric(pos.items.getOrNull(2)) ?: throw IllegalStateException("Invalid player Z in ~local_player.")
+                val dim = when (val d = root.entries["Dimension"] ?: root.entries["DimensionId"] ?: root.entries["dimension"]) {
                     is NbtTag.Byte -> d.value.toInt()
+                    is NbtTag.Short -> d.value.toInt()
+                    is NbtTag.Int -> d.value
+                    is NbtTag.Long -> d.value.toInt()
                     else -> 0
-                }
+                }.coerceIn(0, 2)
+                val player = Triple(Math.floor(x).toInt(), Math.floor(y).toInt(), Math.floor(z).toInt())
                 runOnUiThread {
-                    xField.setText(Math.floor(x).toInt().toString())
-                    yField.setText(Math.floor(y).toInt().toString())
-                    zField.setText(Math.floor(z).toInt().toString())
-                    dimensionSpinner.setSelection(dim.coerceIn(0, 2))
+                    currentPlayerPosition = player
+                    xField.setText(player.first.toString())
+                    yField.setText(player.second.toString())
+                    zField.setText(player.third.toString())
+                    dimensionSpinner.setSelection(dim)
+                    coordinateLabel.text = "Placement coordinates: X=${player.first}  Y=${player.second}  Z=${player.third}"
+                    summary.text = "Current player position loaded from ~local_player: (${player.first}, ${player.second}, ${player.third})"
+                    refreshPlacementPreview(forceTerrainReload = true)
                 }
             } catch (e: Throwable) {
                 runOnUiThread { Toast.makeText(this, e.message ?: "Couldn't read player position.", Toast.LENGTH_LONG).show() }
             }
         }.start()
     }
+
+    private fun movePlacement(dx: Int, dy: Int, dz: Int) {
+        val x = xField.text.toString().trim().toIntOrNull() ?: return
+        val y = yField.text.toString().trim().toIntOrNull() ?: return
+        val z = zField.text.toString().trim().toIntOrNull() ?: return
+        xField.setText((x + dx).toString())
+        yField.setText((y + dy).toString())
+        zField.setText((z + dz).toString())
+        coordinateLabel.text = "Placement coordinates: X=${x + dx}  Y=${y + dy}  Z=${z + dz}"
+        refreshPlacementPreview(forceTerrainReload = dx != 0 || dz != 0)
+    }
+
+    private fun refreshPlacementPreview(forceTerrainReload: Boolean) {
+        if (!::placementPreview.isInitialized || !::xField.isInitialized || !::yField.isInitialized || !::zField.isInitialized || !::dimensionSpinner.isInitialized) return
+        val structure = analysis ?: return
+        val x = xField.text.toString().trim().toIntOrNull() ?: return
+        val y = yField.text.toString().trim().toIntOrNull() ?: return
+        val z = zField.text.toString().trim().toIntOrNull() ?: return
+        val dim = dimensionSpinner.selectedItemPosition
+        placementPreview.setStructure(structure)
+        placementPreview.setPlacement(x, y, z, dim)
+        coordinateLabel.text = "Placement coordinates: X=$x  Y=$y  Z=$z"
+
+        val minCx = Math.floorDiv(x, 16)
+        val maxCx = Math.floorDiv(x + structure.sizeX - 1, 16)
+        val minCz = Math.floorDiv(z, 16)
+        val maxCz = Math.floorDiv(z + structure.sizeZ - 1, 16)
+        val margin = 1
+        val wantedMinCx = minCx - margin
+        val wantedMaxCx = maxCx + margin
+        val wantedMinCz = minCz - margin
+        val wantedMaxCz = maxCz + margin
+        if (!forceTerrainReload && previewRange == PreviewRange(wantedMinCx, wantedMaxCx, wantedMinCz, wantedMaxCz, dim)) return
+
+        previewRange = PreviewRange(wantedMinCx, wantedMaxCx, wantedMinCz, wantedMaxCz, dim)
+        val generation = ++previewLoadGeneration
+        val bridge = LevelDbSession.bridge ?: return
+        Thread {
+            try {
+                val terrain = LinkedHashMap<Pair<Int, Int>, Array<Array<com.spaimic.nbttool.chunk.ColumnInfo>>>()
+                for (cx in wantedMinCx..wantedMaxCx) {
+                    for (cz in wantedMinCz..wantedMaxCz) {
+                        if (generation != previewLoadGeneration) return@Thread
+                        val subchunks = bridge.readSubchunks(cx, cz, dim)
+                        val grid = ChunkScanner.loadChunkFromRawDataFast(subchunks, null, dim)
+                        if (grid != null) terrain[cx to cz] = grid
+                    }
+                }
+                runOnUiThread {
+                    if (generation == previewLoadGeneration && !isFinishing && !isDestroyed) placementPreview.setColumns(terrain)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    if (generation == previewLoadGeneration && !isFinishing && !isDestroyed) Toast.makeText(this, "3D terrain preview failed: ${e.message ?: e.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private data class PreviewRange(val minCx: Int, val maxCx: Int, val minCz: Int, val maxCz: Int, val dimension: Int)
+    private var previewRange: PreviewRange? = null
 
     private fun confirmPlacement() {
         val decoded = analysis ?: run {
@@ -196,7 +339,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
         val dim = dimensionSpinner.selectedItemPosition
         AlertDialog.Builder(this)
             .setTitle("Place MCStructure?")
-            .setMessage("Place $displayName at ($x, $y, $z) in ${dimensionName(dim)}?\n\n${decoded.blocks.size} blocks will be written. ${decoded.entities?.items?.size ?: 0} structure entities will be copied with fresh actor IDs. A full world backup will be created first.\n\nThis is the first placement prototype. Block entities are not written yet.")
+            .setMessage("Place $displayName at ($x, $y, $z) in ${dimensionName(dim)}?\n\n${decoded.blocks.size} blocks will be written. ${decoded.entities?.items?.size ?: 0} structure entities will be copied with fresh actor IDs. A full world backup will be created first.\n\nPlacement uses the selected preview coordinates. Block entities are not written yet.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Create Backup & Place") { _, _ -> performPlacement(decoded, x, y, z, dim) }
             .show()
