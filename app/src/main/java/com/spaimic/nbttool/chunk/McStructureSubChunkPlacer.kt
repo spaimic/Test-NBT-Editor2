@@ -12,18 +12,18 @@ import java.io.DataInputStream
  * compounds. The caller decides which chunk/subchunk records to write.
  */
 object McStructureSubChunkPlacer {
-    data class Placement(val x: Int, val y: Int, val z: Int, val palette: NbtTag.Compound)
+    data class Placement(val x: Int, val localY: Int, val z: Int, val subChunkY: Int, val palette: NbtTag.Compound)
 
     private data class Layer(val palette: MutableList<NbtTag.Compound>, val indices: IntArray)
     private data class Decoded(val version: Int, val indexByte: Int?, val layers: MutableList<Layer>)
 
     fun apply(bytes: ByteArray, placements: List<Placement>): ByteArray {
-        require(placements.all { it.x in 0..15 && it.y in 0..15 && it.z in 0..15 })
+        require(placements.all { it.x in 0..15 && it.localY in 0..15 && it.z in 0..15 })
         val decoded = decode(bytes)
         val layer = decoded.layers.last()
         for (p in placements) {
             val paletteIndex = findOrAddExact(layer.palette, p.palette)
-            layer.indices[(p.x shl 8) or (p.z shl 4) or p.y] = paletteIndex
+            layer.indices[(p.x shl 8) or (p.z shl 4) or p.localY] = paletteIndex
         }
         return encode(decoded)
     }
@@ -34,8 +34,8 @@ object McStructureSubChunkPlacer {
         val air = NbtTag.Compound(linkedMapOf("name" to NbtTag.Str("minecraft:air")))
         palette += air
         for (p in placements) {
-            require(p.x in 0..15 && p.y in 0..15 && p.z in 0..15)
-            indices[(p.x shl 8) or (p.z shl 4) or p.y] = findOrAddExact(palette, p.palette)
+            require(p.x in 0..15 && p.localY in 0..15 && p.z in 0..15)
+            indices[(p.x shl 8) or (p.z shl 4) or p.localY] = findOrAddExact(palette, p.palette)
         }
         return encode(Decoded(8, null, mutableListOf(Layer(palette, indices))))
     }

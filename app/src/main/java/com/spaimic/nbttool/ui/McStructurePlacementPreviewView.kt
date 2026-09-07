@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewParent
 import com.spaimic.nbttool.chunk.ColumnInfo
 import kotlin.math.abs
 import kotlin.math.cos
@@ -191,9 +192,24 @@ class McStructurePlacementPreviewView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> { lastX = event.x; lastY = event.y; rotating = true; return true }
-            MotionEvent.ACTION_POINTER_DOWN -> { lastDistance = distance(event); rotating = false; return true }
+            MotionEvent.ACTION_DOWN -> {
+                // The preview lives inside a ScrollView. Keep the parent from stealing
+                // vertical drags so rotating the 3D view does not accidentally scroll
+                // the placement screen.
+                parent.requestDisallowInterceptTouchEvent(true)
+                lastX = event.x
+                lastY = event.y
+                rotating = true
+                return true
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                parent.requestDisallowInterceptTouchEvent(true)
+                lastDistance = distance(event)
+                rotating = false
+                return true
+            }
             MotionEvent.ACTION_MOVE -> {
+                parent.requestDisallowInterceptTouchEvent(true)
                 if (event.pointerCount >= 2) {
                     val d = distance(event)
                     if (lastDistance > 0f) zoom = (zoom * d / lastDistance).coerceIn(.35f, 3.5f)
@@ -206,7 +222,12 @@ class McStructurePlacementPreviewView(context: Context) : View(context) {
                 }
                 invalidate(); return true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { rotating = false; return true }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                rotating = false
+                lastDistance = 0f
+                parent.requestDisallowInterceptTouchEvent(false)
+                return true
+            }
         }
         return true
     }

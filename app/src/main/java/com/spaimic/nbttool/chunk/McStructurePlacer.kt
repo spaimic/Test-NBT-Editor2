@@ -42,7 +42,7 @@ object McStructurePlacer {
             val localZ = Math.floorMod(wz, 16)
             val subY = Math.floorDiv(wy, 16)
             grouped.getOrPut(cx to cz) { ArrayList() }.add(
-                McStructureSubChunkPlacer.Placement(localX, localY, localZ, paletteCompound(structure, block.paletteIndex))
+                McStructureSubChunkPlacer.Placement(localX, localY, localZ, subY, paletteCompound(structure, block.paletteIndex))
             )
         }
 
@@ -58,7 +58,7 @@ object McStructurePlacer {
         var subchunksChanged = 0
         for ((chunk, placements) in grouped) {
             val (cx, cz) = chunk
-            val bySubY = placements.groupBy { p -> p.y }
+            val bySubY = placements.groupBy { p -> p.subChunkY }
             val existing = bridge.readSubchunks(cx, cz, dimension).associateBy { it.first }
             for ((subY, cells) in bySubY) {
                 val old = existing[subY]
