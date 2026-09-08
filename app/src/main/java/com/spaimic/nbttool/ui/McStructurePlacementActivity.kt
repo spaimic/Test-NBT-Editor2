@@ -64,7 +64,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
             setPadding(0, 0, 0, dp(8))
         })
         content.addView(TextView(this).apply {
-            text = "Choose the placement origin below. The 3D preview shows the nearby terrain/chunks and a gold bounding box for the MCStructure. Drag the preview to rotate and pinch to zoom; use the eight buttons to move the structure without moving the camera."
+            text = "Choose the placement origin below. The 3D preview shows the nearby terrain/chunks and a gold bounding box for the MCStructure. Drag the preview to rotate and pinch to zoom; use the 12 buttons to move the structure without moving the camera."
             textSize = 14f
             setTextColor(Color.DKGRAY)
             setPadding(0, 0, 0, dp(10))
@@ -82,35 +82,42 @@ class McStructurePlacementActivity : AppCompatActivity() {
         content.addView(coordinateLabel)
 
         val moveGrid = GridLayout(this).apply {
-            columnCount = 4
-            rowCount = 2
+            // Exactly four rows × three columns:
+            // X: ⬅️ | Y: ⬆️⚡ | X: ➡️
+            // X: ⬅️⚡ | Y: ⬆️ | X: ➡️⚡
+            // Z: ⬅️ | Y: ⬇️ | Z: ➡️
+            // Z: ⬅️⚡ | Y: ⬇️⚡ | Z: ➡️⚡
+            columnCount = 3
+            rowCount = 4
             alignmentMode = GridLayout.ALIGN_BOUNDS
             useDefaultMargins = true
         }
-        fun moveButton(label: String, dx: Int = 0, dy: Int = 0, dz: Int = 0) {
+        fun moveButton(row: Int, col: Int, label: String, dx: Int = 0, dy: Int = 0, dz: Int = 0) {
             val b = Button(this).apply {
                 text = label
-                textSize = 17f
-                setOnClickListener {
-                    movePlacement(dx, dy, dz)
-                }
+                textSize = 16f
+                setOnClickListener { movePlacement(dx, dy, dz) }
             }
             moveGrid.addView(b, GridLayout.LayoutParams().apply {
                 width = 0
                 height = dp(48)
-                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
-                rowSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
+                columnSpec = GridLayout.spec(col, 1, 1f)
+                rowSpec = GridLayout.spec(row, 1, 1f)
             })
         }
-        moveButton("⬆️⚡", dy = 5)
-        moveButton("⬆️", dy = 1)
-        moveButton("⬇️", dy = -1)
-        moveButton("⬇️⚡", dy = -5)
-        moveButton("⬅️⚡", dx = -5)
-        moveButton("⬅️", dx = -1)
-        moveButton("➡️", dx = 1)
-        moveButton("➡️⚡", dx = 5)
-        content.addView(moveGrid, LinearLayout.LayoutParams(-1, dp(112)))
+        moveButton(0, 0, "X: ⬅️", dx = -1)
+        moveButton(0, 1, "Y: ⬆️⚡", dy = 5)
+        moveButton(0, 2, "X: ➡️", dx = 1)
+        moveButton(1, 0, "X: ⬅️⚡", dx = -5)
+        moveButton(1, 1, "Y: ⬆️", dy = 1)
+        moveButton(1, 2, "X: ➡️⚡", dx = 5)
+        moveButton(2, 0, "Z: ⬅️", dz = -1)
+        moveButton(2, 1, "Y: ⬇️", dy = -1)
+        moveButton(2, 2, "Z: ➡️", dz = 1)
+        moveButton(3, 0, "Z: ⬅️⚡", dz = -5)
+        moveButton(3, 1, "Y: ⬇️⚡", dy = -5)
+        moveButton(3, 2, "Z: ➡️⚡", dz = 5)
+        content.addView(moveGrid, LinearLayout.LayoutParams(-1, dp(200)))
 
         val worldButton = Button(this).apply {
             text = "Use Current Player Position"
@@ -217,7 +224,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
                         append("Block-position-data entries: ${decoded.blockPositionData?.entries?.size ?: 0}\n")
                         append("\nPrototype notes:\n")
                         append("• Blocks preserve the full palette compounds, including states and version.\n")
-                        append("• Structure entities are copied to world actor storage with fresh IDs.\n")
+                        append("• Structure entities are copied to modern actor storage with fresh IDs.\n")
                         append("• Existing terrain chunks are edited; entirely new terrain chunks are not created.\n")
                         append("• Block-position-data/block entities are not written yet.\n")
                     }

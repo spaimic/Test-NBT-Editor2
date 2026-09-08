@@ -7,9 +7,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ThreadLocalRandom
 
-/** First real MCStructure placement prototype. Blocks and structure.entities are placed;
- * block_position_data is reported but intentionally not written yet because its mapping to
- * the world's block-entity list needs additional format validation. */
+/** MCStructure placement. Blocks are written to terrain and structure entities are
+ * converted into modern Bedrock actorprefix/digp records. Block-position-data is
+ * still reported but not written yet. */
 object McStructurePlacer {
     data class Result(
         val blocksPlaced: Int,
@@ -126,9 +126,14 @@ object McStructurePlacer {
             // in source data could otherwise turn a perfectly readable structure into
             // an EOFException during this preparation step.
             val root = deepCopyCompound(source)
-            val worldX = x + ox
-            val worldY = y + oy
-            val worldZ = z + oz
+            val structureOrigin = structure.origin ?: intArrayOf(0, 0, 0)
+            require(structureOrigin.size >= 3) { "MCStructure world-origin must contain X/Y/Z." }
+            // Bedrock structure entity coordinates are saved in the source world
+            // coordinate system. When loading a structure, the game translates them
+            // by subtracting structure_world_origin and adding the placement origin.
+            val worldX = x - structureOrigin[0].toDouble() + ox
+            val worldY = y - structureOrigin[1].toDouble() + oy
+            val worldZ = z - structureOrigin[2].toDouble() + oz
 
             val rawActorId = freshActorId(bridge, generatedStorageKeys)
             val storageKey = EntityKeys.storageKeyBytes(rawActorId)
@@ -145,25 +150,27 @@ object McStructurePlacer {
                     NbtTag.Float(worldZ.toFloat())
                 )
             )
-            // These are the raw world ActorUniqueID values. The LevelDB key uses the
-            // derived storage key, not these raw bytes.
+            // Keep the raw world actor IDs in the entity payload. The actorprefix key
+            // and digp entry use the same storage ID, encoded little-endian.
             root.entries["UniqueID"] = NbtTag.Long(rawActorId)
             root.entries["ActorUniqueID"] = NbtTag.Long(rawActorId)
+
+            val internalComponents = NbtTag.Compound(linkedMapOf(
+                "EntityStorageKeyComponent" to NbtTag.Compound(linkedMapOf(
+                    // This value is serialized as the exact 8-byte storage key by NbtIO.
+                    "StorageKey" to NbtTag.Str("")
+                ))
+            ))
+            root.entries["internalComponents"] = internalComponents
 
             val actorKey = EntityKeys.actorPrefixKey(storageKey)
             if (bridge.read(actorKey) != null) {
                 throw IllegalStateException("Generated actor storage key already exists for structure entity #$entityIndex.")
             }
-            // Modern Bedrock actorprefix values are not the structure entity compound directly.
-            // They contain a root compound with the actual actor data under the `Entity` tag.
-            // Keeping this wrapper is essential: the structure's `entities` list contains the
-            // actor payload, while the LevelDB actor record has one additional storage layer.
-            val actorRecord = NbtTag.Compound(
-                linkedMapOf("Entity" to root)
-            )
+            // Modern Bedrock ActorPrefix records are the entity compound itself.
             validateActorEntityInMemory(root, entityIndex)
             val actorNbt = try {
-                NbtIO.writeRootCompoundNoHeader(actorRecord)
+                NbtIO.writeActorPrefixCompound(root, storageKey)
             } catch (e: Exception) {
                 throw IllegalStateException(
                     "Entity #$entityIndex could not be serialized: ${e.message ?: e.javaClass.simpleName}",

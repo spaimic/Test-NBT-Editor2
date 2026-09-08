@@ -73,6 +73,22 @@ object NbtIO {
         return out.toByteArray()
     }
 
+    /**
+     * Serializes a modern Bedrock actorprefix record. The actor record is a
+     * root entity compound (not an extra Entity wrapper). Bedrock stores
+     * internalComponents.EntityStorageKeyComponent.StorageKey as an 8-byte
+     * binary string, so that single string must bypass UTF-8 encoding.
+     */
+    fun writeActorPrefixCompound(root: NbtTag.Compound, storageKey: ByteArray): ByteArray {
+        require(storageKey.size == 8) { "Actor storage key must be exactly 8 bytes." }
+        val out = ByteArrayOutputStream()
+        val dout = LEDataOutput(DataOutputStream(out))
+        dout.writeUByte(10)
+        dout.writeString("")
+        writeActorCompoundBody(dout, root, emptyList(), storageKey)
+        return out.toByteArray()
+    }
+
     /** Standalone (de)serialization of a single tag's payload — used by the in-app NBT clipboard. */
     fun serializeTag(tag: NbtTag): ByteArray {
         val out = ByteArrayOutputStream()
@@ -210,6 +226,49 @@ object NbtIO {
             writeTagPayload(dout, tag)
         }
         dout.writeUByte(0) // TAG_End
+    }
+
+    private fun writeActorCompoundBody(
+        dout: LEDataOutput,
+        compound: NbtTag.Compound,
+        path: List<String>,
+        storageKey: ByteArray
+    ) {
+        for ((name, tag) in compound.entries) {
+            dout.writeUByte(tag.id)
+            dout.writeString(name)
+            val childPath = path + name
+            if (tag is NbtTag.Str && childPath == listOf("internalComponents", "EntityStorageKeyComponent", "StorageKey")) {
+                dout.writeShortLE(storageKey.size.toShort())
+                dout.writeBytes(storageKey)
+            } else {
+                writeActorTagPayload(dout, tag, childPath, storageKey)
+            }
+        }
+        dout.writeUByte(0)
+    }
+
+    private fun writeActorTagPayload(
+        dout: LEDataOutput,
+        tag: NbtTag,
+        path: List<String>,
+        storageKey: ByteArray
+    ) {
+        when (tag) {
+            is NbtTag.Compound -> writeActorCompoundBody(dout, tag, path, storageKey)
+            is NbtTag.ListTag -> {
+                dout.writeUByte(tag.elementTypeId)
+                dout.writeIntLE(tag.items.size)
+                for ((index, item) in tag.items.withIndex()) {
+                    require(item.id == tag.elementTypeId) {
+                        "NBT list element $index has type ${item.id}, expected ${tag.elementTypeId}."
+                    }
+                    writeActorTagPayload(dout, item, path + index.toString(), storageKey)
+                }
+            }
+            is NbtTag.Str -> dout.writeString(tag.value)
+            else -> writeTagPayload(dout, tag)
+        }
     }
 }
 
