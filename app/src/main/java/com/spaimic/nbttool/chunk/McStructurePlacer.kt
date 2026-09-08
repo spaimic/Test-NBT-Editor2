@@ -150,9 +150,27 @@ object McStructurePlacer {
             if (bridge.read(actorKey) != null) {
                 throw IllegalStateException("Generated actor storage key already exists for structure entity #$entityIndex.")
             }
-            val actorNbt = NbtIO.writeRootCompoundNoHeader(root)
+            // Modern Bedrock actorprefix values are not the structure entity compound directly.
+            // They contain a root compound with the actual actor data under the `Entity` tag.
+            // Keeping this wrapper is essential: the structure's `entities` list contains the
+            // actor payload, while the LevelDB actor record has one additional storage layer.
+            val actorRecord = NbtTag.Compound(
+                linkedMapOf("Entity" to root)
+            )
+            val actorNbt = NbtIO.writeRootCompoundNoHeader(actorRecord)
             if (actorNbt.isEmpty()) {
-                throw IllegalStateException("Entity #$entityIndex produced empty NBT data; placement was aborted.")
+                throw IllegalStateException("Entity #$entityIndex produced empty actor-record NBT; placement was aborted.")
+            }
+            // Round-trip the exact bytes before committing anything so a malformed record
+            // cannot be introduced into the world database.
+            val roundTrip = NbtIO.readRootCompoundNoHeader(actorNbt)
+            val roundTripEntity = roundTrip.entries["Entity"] as? NbtTag.Compound
+                ?: throw IllegalStateException("Entity #$entityIndex actor record is missing its Entity compound; placement was aborted.")
+            if (roundTripEntity.entries["Pos"] !is NbtTag.ListTag ||
+                roundTripEntity.entries["UniqueID"] !is NbtTag.Long ||
+                roundTripEntity.entries["ActorUniqueID"] !is NbtTag.Long
+            ) {
+                throw IllegalStateException("Entity #$entityIndex actor record failed required-field validation; placement was aborted.")
             }
             writes += actorKey to actorNbt
 
