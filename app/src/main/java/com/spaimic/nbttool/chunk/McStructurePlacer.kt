@@ -74,7 +74,7 @@ object McStructurePlacer {
 
         // Structure entities live in the structure NBT, but real world actor records are separate.
         // Generate fresh world-global actor IDs and append them to the appropriate digp lists.
-        val entityWrites = placeEntities(bridge, structure.entities, originX, originY, originZ, dimension)
+        val entityWrites = placeEntities(bridge, structure.entities, structure.origin, originX, originY, originZ, dimension)
         writes.addAll(entityWrites)
         bridge.writeBatch(writes)
 
@@ -95,6 +95,7 @@ object McStructurePlacer {
     private fun placeEntities(
         bridge: LevelDbBridge,
         entities: NbtTag.ListTag?,
+        structureOrigin: IntArray?,
         ox: Int, oy: Int, oz: Int,
         dimension: Int
     ): List<Pair<ByteArray, ByteArray>> {
@@ -126,14 +127,14 @@ object McStructurePlacer {
             // in source data could otherwise turn a perfectly readable structure into
             // an EOFException during this preparation step.
             val root = deepCopyCompound(source)
-            val structureOrigin = structure.origin ?: intArrayOf(0, 0, 0)
-            require(structureOrigin.size >= 3) { "MCStructure world-origin must contain X/Y/Z." }
+            val sourceOrigin = structureOrigin ?: intArrayOf(0, 0, 0)
+            require(sourceOrigin.size >= 3) { "MCStructure world-origin must contain X/Y/Z." }
             // Bedrock structure entity coordinates are saved in the source world
             // coordinate system. When loading a structure, the game translates them
             // by subtracting structure_world_origin and adding the placement origin.
-            val worldX = x - structureOrigin[0].toDouble() + ox
-            val worldY = y - structureOrigin[1].toDouble() + oy
-            val worldZ = z - structureOrigin[2].toDouble() + oz
+            val worldX = x - sourceOrigin[0].toDouble() + ox
+            val worldY = y - sourceOrigin[1].toDouble() + oy
+            val worldZ = z - sourceOrigin[2].toDouble() + oz
 
             val rawActorId = freshActorId(bridge, generatedStorageKeys)
             val storageKey = EntityKeys.storageKeyBytes(rawActorId)
