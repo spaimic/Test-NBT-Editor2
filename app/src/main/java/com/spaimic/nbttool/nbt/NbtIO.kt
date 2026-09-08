@@ -176,9 +176,20 @@ object NbtIO {
             }
             is NbtTag.Str -> dout.writeString(tag.value)
             is NbtTag.ListTag -> {
+                // Bedrock NBT lists declare one element type and then store every
+                // element using that type's payload format. Do not trust a malformed
+                // in-memory item subtype when serializing; validate it against the
+                // declared element type first so a later read can never desynchronize.
                 dout.writeUByte(tag.elementTypeId)
                 dout.writeIntLE(tag.items.size)
-                for (item in tag.items) writeTagPayload(dout, item)
+                for ((index, item) in tag.items.withIndex()) {
+                    if (item.id != tag.elementTypeId) {
+                        throw IllegalArgumentException(
+                            "NBT list element $index has type ${item.id}, expected ${tag.elementTypeId}."
+                        )
+                    }
+                    writeTagPayload(dout, item)
+                }
             }
             is NbtTag.Compound -> writeCompoundBody(dout, tag)
             is NbtTag.IntArray -> {

@@ -120,8 +120,12 @@ object McStructurePlacer {
             val z = numeric(pos.items.getOrNull(2))
                 ?: throw IllegalStateException("Structure entity #$entityIndex has an invalid Pos Z value.")
 
-            // Round-trip through NBT so the decoded MCStructure entity itself is never mutated.
-            val root = NbtIO.readRootCompoundNoHeader(NbtIO.writeRootCompoundNoHeader(source))
+            // Deep-copy the entity tree so placement never mutates the decoded
+            // MCStructure analysis object. Do this in memory rather than serializing
+            // and parsing the structure entity again: a malformed list declaration
+            // in source data could otherwise turn a perfectly readable structure into
+            // an EOFException during this preparation step.
+            val root = deepCopyCompound(source)
             val worldX = x + ox
             val worldY = y + oy
             val worldZ = z + oz
@@ -134,7 +138,7 @@ object McStructurePlacer {
             }
 
             root.entries["Pos"] = NbtTag.ListTag(
-                elementTypeId = 6,
+                elementTypeId = 5,
                 items = mutableListOf(
                     NbtTag.Float(worldX.toFloat()),
                     NbtTag.Float(worldY.toFloat()),
@@ -157,20 +161,17 @@ object McStructurePlacer {
             val actorRecord = NbtTag.Compound(
                 linkedMapOf("Entity" to root)
             )
-            val actorNbt = NbtIO.writeRootCompoundNoHeader(actorRecord)
+            validateActorEntityInMemory(root, entityIndex)
+            val actorNbt = try {
+                NbtIO.writeRootCompoundNoHeader(actorRecord)
+            } catch (e: Exception) {
+                throw IllegalStateException(
+                    "Entity #$entityIndex could not be serialized: ${e.message ?: e.javaClass.simpleName}",
+                    e
+                )
+            }
             if (actorNbt.isEmpty()) {
                 throw IllegalStateException("Entity #$entityIndex produced empty actor-record NBT; placement was aborted.")
-            }
-            // Round-trip the exact bytes before committing anything so a malformed record
-            // cannot be introduced into the world database.
-            val roundTrip = NbtIO.readRootCompoundNoHeader(actorNbt)
-            val roundTripEntity = roundTrip.entries["Entity"] as? NbtTag.Compound
-                ?: throw IllegalStateException("Entity #$entityIndex actor record is missing its Entity compound; placement was aborted.")
-            if (roundTripEntity.entries["Pos"] !is NbtTag.ListTag ||
-                roundTripEntity.entries["UniqueID"] !is NbtTag.Long ||
-                roundTripEntity.entries["ActorUniqueID"] !is NbtTag.Long
-            ) {
-                throw IllegalStateException("Entity #$entityIndex actor record failed required-field validation; placement was aborted.")
             }
             writes += actorKey to actorNbt
 
@@ -210,6 +211,40 @@ object McStructurePlacer {
         }
 
         return writes
+    }
+
+
+    private fun validateActorEntityInMemory(root: NbtTag.Compound, entityIndex: Int) {
+        val pos = root.entries["Pos"] as? NbtTag.ListTag
+            ?: throw IllegalStateException("Entity #$entityIndex actor record is missing Pos; placement was aborted.")
+        if (pos.elementTypeId != 5 || pos.items.size != 3 || pos.items.any { it !is NbtTag.Float }) {
+            throw IllegalStateException("Entity #$entityIndex Pos must be a 3-element Float list; placement was aborted.")
+        }
+        if (root.entries["UniqueID"] !is NbtTag.Long || root.entries["ActorUniqueID"] !is NbtTag.Long) {
+            throw IllegalStateException("Entity #$entityIndex requires Long UniqueID and ActorUniqueID; placement was aborted.")
+        }
+    }
+
+    private fun deepCopyCompound(source: NbtTag.Compound): NbtTag.Compound {
+        return NbtTag.Compound(LinkedHashMap<String, NbtTag>().also { out ->
+            for ((name, tag) in source.entries) out[name] = deepCopyTag(tag)
+        })
+    }
+
+    private fun deepCopyTag(tag: NbtTag): NbtTag = when (tag) {
+        is NbtTag.End -> NbtTag.End
+        is NbtTag.Byte -> NbtTag.Byte(tag.value)
+        is NbtTag.Short -> NbtTag.Short(tag.value)
+        is NbtTag.Int -> NbtTag.Int(tag.value)
+        is NbtTag.Long -> NbtTag.Long(tag.value)
+        is NbtTag.Float -> NbtTag.Float(tag.value)
+        is NbtTag.Double -> NbtTag.Double(tag.value)
+        is NbtTag.ByteArray -> NbtTag.ByteArray(tag.value.copyOf())
+        is NbtTag.Str -> NbtTag.Str(tag.value)
+        is NbtTag.ListTag -> NbtTag.ListTag(tag.elementTypeId, tag.items.mapTo(ArrayList()) { deepCopyTag(it) })
+        is NbtTag.Compound -> deepCopyCompound(tag)
+        is NbtTag.IntArray -> NbtTag.IntArray(tag.value.copyOf())
+        is NbtTag.LongArray -> NbtTag.LongArray(tag.value.copyOf())
     }
 
     private fun numeric(tag: NbtTag?): Double? = when (tag) {
