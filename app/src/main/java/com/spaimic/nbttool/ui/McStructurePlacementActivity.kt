@@ -17,8 +17,8 @@ import com.spaimic.nbttool.chunk.ChunkScanner
 import com.spaimic.nbttool.worlds.LocalWorldStore
 
 /**
- * Build 208 first direct MCStructure placement prototype.
- * It is deliberately behind Experiment Mode and creates a complete world backup before writing.
+ * MCStructure placement is deliberately behind Experiment Mode.
+ * A dedicated pre-placement backup is created once per world and reused for later placements.
  */
 class McStructurePlacementActivity : AppCompatActivity() {
     private lateinit var xField: EditText
@@ -339,9 +339,9 @@ class McStructurePlacementActivity : AppCompatActivity() {
         val dim = dimensionSpinner.selectedItemPosition
         AlertDialog.Builder(this)
             .setTitle("Place MCStructure?")
-            .setMessage("Place $displayName at ($x, $y, $z) in ${dimensionName(dim)}?\n\n${decoded.blocks.size} blocks will be written. ${decoded.entities?.items?.size ?: 0} structure entities will be copied with fresh actor IDs. A full world backup will be created first.\n\nPlacement uses the selected preview coordinates. Block entities are not written yet.")
+            .setMessage("Place $displayName at ($x, $y, $z) in ${dimensionName(dim)}?\n\n${decoded.blocks.size} blocks will be written. ${decoded.entities?.items?.size ?: 0} structure entities will be copied with fresh actor IDs.\n\nThe dedicated MCStructure placement backup is created only once for this world. If it already exists, it will be reused. A normal backup does not replace this dedicated backup.\n\nPlacement uses the selected preview coordinates. Block entities are not written yet.")
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Create Backup & Place") { _, _ -> performPlacement(decoded, x, y, z, dim) }
+            .setPositiveButton("Backup & Place") { _, _ -> performPlacement(decoded, x, y, z, dim) }
             .show()
     }
 
@@ -359,7 +359,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
         }
         Thread {
             try {
-                val backup = LocalWorldStore.createBackup(this, world)
+                val backup = LocalWorldStore.createStructurePlacementBackupIfMissing(this, world)
                 runOnUiThread { dialog.setMessage("Writing structure blocks and entities…") }
                 val result = McStructurePlacer.place(bridge, decoded, x, y, z, dim, backup.absolutePath)
                 runOnUiThread {

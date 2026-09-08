@@ -14,6 +14,7 @@ object ChunkKeys {
     const val TAG_SUBCHUNK_PREFIX = 0x2F  // one 16x16x16 slice of block data
     const val TAG_LEGACY_TERRAIN = 0x30   // pre-1.0 flat format — NOT decoded by SubChunkParser
     const val TAG_BLOCK_ENTITY = 0x31     // chests, shulker boxes, signs, furnaces, etc.
+    const val TAG_ACTOR_DIGEST_VERSION = 0x41 // modern actor-storage digest version
 
     data class Info(val chunkX: Int, val chunkZ: Int, val dimension: Int, val tag: Int, val subChunkY: Int?)
 
@@ -76,6 +77,19 @@ object ChunkKeys {
         writeI32LE(chunkZ)
         if (dimension != 0) writeI32LE(dimension)
         out.write(TAG_BLOCK_ENTITY)
+        return out.toByteArray()
+    }
+
+    fun actorDigestVersionKey(chunkX: Int, chunkZ: Int, dimension: Int = 0): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        fun writeI32LE(v: Int) {
+            out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
+            out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        }
+        writeI32LE(chunkX)
+        writeI32LE(chunkZ)
+        if (dimension != 0) writeI32LE(dimension)
+        out.write(TAG_ACTOR_DIGEST_VERSION)
         return out.toByteArray()
     }
 

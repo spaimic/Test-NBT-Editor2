@@ -100,36 +100,97 @@ object McStructurePlacer {
     ): List<Pair<ByteArray, ByteArray>> {
         val list = entities?.items.orEmpty()
         if (list.isEmpty()) return emptyList()
+
         val writes = ArrayList<Pair<ByteArray, ByteArray>>()
         val digpAdds = LinkedHashMap<Pair<Int, Int>, MutableList<ByteArray>>()
+        val generatedStorageKeys = HashSet<String>()
+        var entityIndex = 0
+
         for (tag in list) {
-            val root = tag as? NbtTag.Compound ?: continue
-            val pos = root.entries["Pos"] as? NbtTag.ListTag ?: continue
-            val x = numeric(pos.items.getOrNull(0)) ?: continue
-            val y = numeric(pos.items.getOrNull(1)) ?: continue
-            val z = numeric(pos.items.getOrNull(2)) ?: continue
-            val worldX = x + ox; val worldY = y + oy; val worldZ = z + oz
-            val newId = freshActorId(bridge)
+            entityIndex++
+            val source = tag as? NbtTag.Compound
+                ?: throw IllegalStateException("Structure entity #$entityIndex is not a compound NBT tag.")
+
+            val pos = source.entries["Pos"] as? NbtTag.ListTag
+                ?: throw IllegalStateException("Structure entity #$entityIndex is missing a valid Pos list.")
+            val x = numeric(pos.items.getOrNull(0))
+                ?: throw IllegalStateException("Structure entity #$entityIndex has an invalid Pos X value.")
+            val y = numeric(pos.items.getOrNull(1))
+                ?: throw IllegalStateException("Structure entity #$entityIndex has an invalid Pos Y value.")
+            val z = numeric(pos.items.getOrNull(2))
+                ?: throw IllegalStateException("Structure entity #$entityIndex has an invalid Pos Z value.")
+
+            // Round-trip through NBT so the decoded MCStructure entity itself is never mutated.
+            val root = NbtIO.readRootCompoundNoHeader(NbtIO.writeRootCompoundNoHeader(source))
+            val worldX = x + ox
+            val worldY = y + oy
+            val worldZ = z + oz
+
+            val rawActorId = freshActorId(bridge, generatedStorageKeys)
+            val storageKey = EntityKeys.storageKeyBytes(rawActorId)
+            val storageHex = EntityKeys.actorIdBytesHex(storageKey)
+            if (!generatedStorageKeys.add(storageHex)) {
+                throw IllegalStateException("Generated duplicate actor storage key for structure entity #$entityIndex.")
+            }
+
             root.entries["Pos"] = NbtTag.ListTag(
                 elementTypeId = 6,
-                items = mutableListOf(NbtTag.Float(worldX.toFloat()), NbtTag.Float(worldY.toFloat()), NbtTag.Float(worldZ.toFloat()))
+                items = mutableListOf(
+                    NbtTag.Float(worldX.toFloat()),
+                    NbtTag.Float(worldY.toFloat()),
+                    NbtTag.Float(worldZ.toFloat())
+                )
             )
-            val unique = bytesToLong(newId)
-            root.entries["UniqueID"] = NbtTag.Long(unique)
-            if (root.entries["ActorUniqueID"] is NbtTag.Long) root.entries["ActorUniqueID"] = NbtTag.Long(unique)
-            writes += EntityKeys.actorPrefixKey(newId) to NbtIO.writeRootCompoundNoHeader(root)
+            // These are the raw world ActorUniqueID values. The LevelDB key uses the
+            // derived storage key, not these raw bytes.
+            root.entries["UniqueID"] = NbtTag.Long(rawActorId)
+            root.entries["ActorUniqueID"] = NbtTag.Long(rawActorId)
+
+            val actorKey = EntityKeys.actorPrefixKey(storageKey)
+            if (bridge.read(actorKey) != null) {
+                throw IllegalStateException("Generated actor storage key already exists for structure entity #$entityIndex.")
+            }
+            val actorNbt = NbtIO.writeRootCompoundNoHeader(root)
+            if (actorNbt.isEmpty()) {
+                throw IllegalStateException("Entity #$entityIndex produced empty NBT data; placement was aborted.")
+            }
+            writes += actorKey to actorNbt
+
             val cx = Math.floorDiv(Math.floor(worldX).toInt(), 16)
             val cz = Math.floorDiv(Math.floor(worldZ).toInt(), 16)
-            digpAdds.getOrPut(cx to cz) { ArrayList() }.add(newId)
+            digpAdds.getOrPut(cx to cz) { ArrayList() }.add(storageKey)
         }
 
-        for ((chunk, ids) in digpAdds) {
+        // Validate every existing digest before changing it. A malformed digest would make
+        // Minecraft unable to parse the actor list for that chunk, so never append to one.
+        for ((chunk, storageKeys) in digpAdds) {
             val existing = bridge.read(EntityKeys.digpKey(chunk.first, chunk.second, dimension)) ?: ByteArray(0)
-            val out = ByteArray(existing.size + ids.size * 8)
+            if (existing.size % 8 != 0) {
+                throw IllegalStateException("Existing actor digest for chunk (${chunk.first},${chunk.second}) is malformed; placement was aborted.")
+            }
+            val out = ByteArray(existing.size + storageKeys.size * 8)
             existing.copyInto(out)
-            ids.forEachIndexed { i, id -> id.copyInto(out, existing.size + i * 8) }
+            storageKeys.forEachIndexed { i, key -> key.copyInto(out, existing.size + i * 8) }
             writes += EntityKeys.digpKey(chunk.first, chunk.second, dimension) to out
+
+            // Modern Bedrock chunks identify the actor-digest format with tag 0x41.
+            // Existing chunks normally already contain it; add version 0 only when it is absent.
+            val digestVersionKey = ChunkKeys.actorDigestVersionKey(chunk.first, chunk.second, dimension)
+            if (bridge.read(digestVersionKey) == null) {
+                writes += digestVersionKey to byteArrayOf(0)
+            }
         }
+
+        // Final validation: every actorprefix write must have exactly one matching digest entry.
+        val actorWriteKeys = writes.filter { EntityKeys.isActorPrefixKey(it.first) }.map { EntityKeys.actorIdBytes(it.first) }
+        val digestKeys = digpAdds.values.flatten()
+        if (actorWriteKeys.size != list.size || digestKeys.size != list.size) {
+            throw IllegalStateException("Entity placement validation failed; no entity writes were committed.")
+        }
+        if (actorWriteKeys.map { EntityKeys.actorIdBytesHex(it) }.toSet().size != actorWriteKeys.size) {
+            throw IllegalStateException("Duplicate actor storage keys were generated; no entity writes were committed.")
+        }
+
         return writes
     }
 
@@ -143,15 +204,14 @@ object McStructurePlacer {
         else -> null
     }
 
-    private fun freshActorId(bridge: LevelDbBridge): ByteArray {
-        repeat(64) {
-            val id = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-                .putLong(ThreadLocalRandom.current().nextLong()).array()
-            if (bridge.read(EntityKeys.actorPrefixKey(id)) == null) return id
+    private fun freshActorId(bridge: LevelDbBridge, generatedStorageKeys: Set<String>): Long {
+        repeat(128) {
+            val rawActorId = ThreadLocalRandom.current().nextLong()
+            val storageKey = EntityKeys.storageKeyBytes(rawActorId)
+            val storageHex = EntityKeys.actorIdBytesHex(storageKey)
+            if (storageHex in generatedStorageKeys) return@repeat
+            if (bridge.read(EntityKeys.actorPrefixKey(storageKey)) == null) return rawActorId
         }
-        throw IllegalStateException("Couldn't allocate a unique actor ID for structure entity placement.")
+        throw IllegalStateException("Couldn't allocate a unique actor storage key for structure entity placement.")
     }
-
-    private fun bytesToLong(id: ByteArray): Long =
-        ByteBuffer.wrap(id).order(ByteOrder.LITTLE_ENDIAN).long
 }

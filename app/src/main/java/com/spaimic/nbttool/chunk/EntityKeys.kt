@@ -1,20 +1,14 @@
 package com.spaimic.nbttool.chunk
 
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
- * Bedrock stores entities ("actors") separately from terrain, using two key
- * families with ASCII string prefixes (not the numeric tag bytes chunk terrain
- * keys use, so these never collide with [ChunkKeys]'s detection):
- *
- *   "digp" + chunkX(4 LE) + chunkZ(4 LE) [+ dimension(4 LE) if not Overworld]
- *     -> a value that's just N × 8-byte actor unique IDs concatenated — the
- *        list of every entity currently in that chunk.
- *
- *   "actorprefix" + <8-byte actor unique ID>
- *     -> that entity's full NBT compound (same header-less shape as level.dat
- *        entries — see NbtIO.readRootCompoundNoHeader), including an
- *        "identifier" string (e.g. "minecraft:cow") and a "Pos" float list.
+ * Bedrock modern actor storage uses a per-chunk digest (`digp`) containing 8-byte
+ * BIG-ENDIAN storage keys, plus one `actorprefix` record per actor. The raw
+ * ActorUniqueID remains inside the actor NBT; the LevelDB key uses the derived
+ * storage key documented for the modern actor format.
  */
 object EntityKeys {
     private val DIGP_PREFIX = "digp".toByteArray(Charsets.US_ASCII)
@@ -29,14 +23,25 @@ object EntityKeys {
         return out.toByteArray()
     }
 
-    fun actorPrefixKey(actorId: ByteArray): ByteArray {
+    fun actorPrefixKey(storageKey: ByteArray): ByteArray {
+        require(storageKey.size == 8) { "Actor storage key must be exactly 8 bytes." }
         val out = ByteArrayOutputStream()
         out.write(ACTORPREFIX)
-        out.write(actorId)
+        out.write(storageKey)
         return out.toByteArray()
     }
 
-    /** Splits a digp value into the individual 8-byte actor IDs it lists. */
+    /**
+     * Converts Bedrock's raw signed ActorUniqueID into its 64-bit storage key.
+     * The result is the value serialized in BIG-ENDIAN form in both actorprefix
+     * keys and digp values. Java/Kotlin Long overflow is intentional here.
+     */
+    fun storageKeyBytes(actorUniqueId: Long): ByteArray {
+        val storageKey = (actorUniqueId xor -4294967296L) + 4294967296L
+        return ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(storageKey).array()
+    }
+
+    /** Splits a digp value into the individual 8-byte BIG-ENDIAN actor storage keys it lists. */
     fun splitActorIds(digpValue: ByteArray): List<ByteArray> {
         val count = digpValue.size / 8
         return (0 until count).map { i -> digpValue.copyOfRange(i * 8, i * 8 + 8) }

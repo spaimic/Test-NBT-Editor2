@@ -221,6 +221,51 @@ object LocalWorldStore {
         return out
     }
 
+
+    /**
+     * Creates the one persistent safety backup reserved for MCStructure placement.
+     * A normal user-created backup does not count: placement has its own clearly named
+     * backup so it is always available as the pre-placement restore point. Once that
+     * backup exists, later structure placements reuse it forever until the user deletes it.
+     */
+    @Synchronized
+    fun createStructurePlacementBackupIfMissing(context: Context, worldDir: File): File {
+        if (!File(worldDir, "level.dat").isFile) {
+            throw IllegalStateException("This is not a valid local world")
+        }
+        val out = File(backupsDir(context), "${worldDir.name}_structure_placement.nbtbackup")
+        if (out.isFile && out.length() > 0L) return out
+
+        fun addFile(zos: ZipOutputStream, file: File, basePath: String) {
+            if (file.isDirectory) {
+                file.listFiles()?.forEach { addFile(zos, it, "$basePath${file.name}/") }
+            } else {
+                zos.putNextEntry(ZipEntry("$basePath${file.name}"))
+                file.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+            }
+        }
+
+        val temp = File(backupsDir(context), ".${out.name}.tmp_${System.nanoTime()}")
+        try {
+            temp.outputStream().use { fos ->
+                ZipOutputStream(fos).use { zos ->
+                    worldDir.listFiles()?.forEach { addFile(zos, it, "") }
+                }
+            }
+            if (!temp.renameTo(out)) {
+                if (out.isFile && out.length() > 0L) {
+                    temp.delete()
+                    return out
+                }
+                throw IllegalStateException("Couldn't install the MCStructure placement backup")
+            }
+            return out
+        } finally {
+            if (temp.exists()) temp.delete()
+        }
+    }
+
     fun listBackups(context: Context, worldDir: File): List<File> =
         backupsDir(context).listFiles { f ->
             f.isFile && f.name.startsWith("${worldDir.name}_") && f.name.endsWith(".nbtbackup")
