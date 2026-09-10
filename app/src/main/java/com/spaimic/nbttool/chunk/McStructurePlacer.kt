@@ -173,6 +173,12 @@ object McStructurePlacer {
             if (bridge.read(actorKey) != null) {
                 throw IllegalStateException("Generated actor storage key already exists for structure entity #$entityIndex.")
             }
+            // A structure entity is intended to be copied from a world actor, but
+            // some exported structures omit fields that modern ActorPrefix records
+            // require on disk. Fill only missing base actor fields with Bedrock's
+            // neutral defaults; preserve every field that the structure already has.
+            normalizeActorBaseFields(root, entityIndex)
+
             // Modern Bedrock ActorPrefix records are the entity compound itself.
             validateActorEntityInMemory(root, entityIndex)
             val actorNbt = try {
@@ -235,6 +241,66 @@ object McStructurePlacer {
         return writes
     }
 
+
+    private fun normalizeActorBaseFields(root: NbtTag.Compound, entityIndex: Int) {
+        require(root.entries["identifier"] is NbtTag.Str) {
+            "Entity #$entityIndex is missing the required identifier; placement was aborted."
+        }
+
+        fun byteField(name: String) {
+            if (root.entries[name] == null) root.entries[name] = NbtTag.Byte(0)
+            require(root.entries[name] is NbtTag.Byte) {
+                "Entity #$entityIndex has an invalid $name field; placement was aborted."
+            }
+        }
+        fun intField(name: String) {
+            if (root.entries[name] == null) root.entries[name] = NbtTag.Int(0)
+            require(root.entries[name] is NbtTag.Int) {
+                "Entity #$entityIndex has an invalid $name field; placement was aborted."
+            }
+        }
+        fun floatField(name: String) {
+            if (root.entries[name] == null) root.entries[name] = NbtTag.Float(0f)
+            require(root.entries[name] is NbtTag.Float) {
+                "Entity #$entityIndex has an invalid $name field; placement was aborted."
+            }
+        }
+
+        // Required base ActorPrefix fields documented by current Bedrock tooling.
+        listOf(
+            "Chested", "Color", "Color2", "Invulnerable", "IsAngry",
+            "IsAutonomous", "IsBaby", "IsEating", "IsGliding", "IsGlobal",
+            "IsIllagerCaptain", "IsOrphaned", "IsOutOfControl", "IsRoaring",
+            "IsScared", "IsStunned", "IsSwimming", "IsTamed", "IsTrusting",
+            "LootDropped", "OnGround", "Saddled", "Sheared", "ShowBottom",
+            "Sitting"
+        ).forEach(::byteField)
+
+        floatField("FallDistance")
+        intField("MarkVariant")
+        intField("PortalCooldown")
+        intField("SkinID")
+        intField("Strength")
+        intField("StrengthMax")
+        intField("Variant")
+
+        if (root.entries["OwnerNew"] == null) root.entries["OwnerNew"] = NbtTag.Long(-1L)
+        require(root.entries["OwnerNew"] is NbtTag.Long) {
+            "Entity #$entityIndex has an invalid OwnerNew field; placement was aborted."
+        }
+
+        if (root.entries["Rotation"] == null) {
+            root.entries["Rotation"] = NbtTag.ListTag(
+                elementTypeId = 5,
+                items = mutableListOf(NbtTag.Float(0f), NbtTag.Float(0f))
+            )
+        }
+        val rotation = root.entries["Rotation"] as? NbtTag.ListTag
+            ?: throw IllegalStateException("Entity #$entityIndex has an invalid Rotation field; placement was aborted.")
+        require(rotation.elementTypeId == 5 && rotation.items.size == 2 && rotation.items.all { it is NbtTag.Float }) {
+            "Entity #$entityIndex Rotation must be a 2-element Float list; placement was aborted."
+        }
+    }
 
     private fun validateActorEntityInMemory(root: NbtTag.Compound, entityIndex: Int) {
         val pos = root.entries["Pos"] as? NbtTag.ListTag

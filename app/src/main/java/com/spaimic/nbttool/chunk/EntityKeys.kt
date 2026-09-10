@@ -38,7 +38,7 @@ object EntityKeys {
     fun storageKeyBytes(actorUniqueId: Long): ByteArray =
         ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(actorUniqueId).array()
 
-    /** Splits a digp value into the individual 8-byte BIG-ENDIAN actor storage keys it lists. */
+    /** Splits a digp value into the individual opaque 8-byte actor storage keys it lists. */
     fun splitActorIds(digpValue: ByteArray): List<ByteArray> {
         val count = digpValue.size / 8
         return (0 until count).map { i -> digpValue.copyOfRange(i * 8, i * 8 + 8) }

@@ -82,27 +82,30 @@ class McStructurePlacementActivity : AppCompatActivity() {
         content.addView(coordinateLabel)
 
         val moveGrid = GridLayout(this).apply {
-            // Exactly four rows × three columns:
-            // X: ⬅️ | Y: ⬆️⚡ | X: ➡️
-            // X: ⬅️⚡ | Y: ⬆️ | X: ➡️⚡
-            // Z: ⬅️ | Y: ⬇️ | Z: ➡️
-            // Z: ⬅️⚡ | Y: ⬇️⚡ | Z: ➡️⚡
+            // Exactly four rows × three columns. Use wrap_content instead of a
+            // fixed 200dp height: four 48dp rows plus margins/padding can exceed
+            // 200dp on Android, which previously clipped rows 2–4.
             columnCount = 3
             rowCount = 4
             alignmentMode = GridLayout.ALIGN_BOUNDS
-            useDefaultMargins = true
+            useDefaultMargins = false
+            setPadding(0, dp(2), 0, dp(2))
         }
         fun moveButton(row: Int, col: Int, label: String, dx: Int = 0, dy: Int = 0, dz: Int = 0) {
             val b = Button(this).apply {
                 text = label
-                textSize = 16f
+                textSize = 13f
+                setPadding(dp(2), 0, dp(2), 0)
+                minHeight = 0
+                minimumHeight = 0
                 setOnClickListener { movePlacement(dx, dy, dz) }
             }
             moveGrid.addView(b, GridLayout.LayoutParams().apply {
                 width = 0
-                height = dp(48)
+                height = dp(50)
                 columnSpec = GridLayout.spec(col, 1, 1f)
                 rowSpec = GridLayout.spec(row, 1, 1f)
+                setMargins(dp(2), dp(2), dp(2), dp(2))
             })
         }
         moveButton(0, 0, "X: ⬅️", dx = -1)
@@ -117,7 +120,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
         moveButton(3, 0, "Z: ⬅️⚡", dz = -5)
         moveButton(3, 1, "Y: ⬇️⚡", dy = -5)
         moveButton(3, 2, "Z: ➡️⚡", dz = 5)
-        content.addView(moveGrid, LinearLayout.LayoutParams(-1, dp(200)))
+        content.addView(moveGrid, LinearLayout.LayoutParams(-1, dp(220)))
 
         val worldButton = Button(this).apply {
             text = "Use Current Player Position"
