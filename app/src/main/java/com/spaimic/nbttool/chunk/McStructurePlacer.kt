@@ -156,12 +156,17 @@ object McStructurePlacer {
             root.entries["UniqueID"] = NbtTag.Long(rawActorId)
             root.entries["ActorUniqueID"] = NbtTag.Long(rawActorId)
 
-            val internalComponents = NbtTag.Compound(linkedMapOf(
-                "EntityStorageKeyComponent" to NbtTag.Compound(linkedMapOf(
-                    // This value is serialized as the exact 8-byte storage key by NbtIO.
-                    "StorageKey" to NbtTag.Str("")
-                ))
-            ))
+            // Preserve any internalComponents already present in the structure entity.
+            // Structure exports can contain runtime-specific internal state, and replacing
+            // the whole compound can silently remove fields Minecraft needs for some entity
+            // types. Only replace/create the EntityStorageKeyComponent that identifies the
+            // LevelDB actor record.
+            val internalComponents = (root.entries["internalComponents"] as? NbtTag.Compound)
+                ?: NbtTag.Compound(LinkedHashMap())
+            val storageComponent = (internalComponents.entries["EntityStorageKeyComponent"] as? NbtTag.Compound)
+                ?: NbtTag.Compound(LinkedHashMap())
+            storageComponent.entries["StorageKey"] = NbtTag.Str("")
+            internalComponents.entries["EntityStorageKeyComponent"] = storageComponent
             root.entries["internalComponents"] = internalComponents
 
             val actorKey = EntityKeys.actorPrefixKey(storageKey)
@@ -216,6 +221,15 @@ object McStructurePlacer {
         }
         if (actorWriteKeys.map { EntityKeys.actorIdBytesHex(it) }.toSet().size != actorWriteKeys.size) {
             throw IllegalStateException("Duplicate actor storage keys were generated; no entity writes were committed.")
+        }
+
+        // Every generated actor must be referenced exactly once by the digest for the
+        // chunk containing its position. This catches cross-chunk bookkeeping mistakes
+        // before the LevelDB batch is committed.
+        val generatedHex = actorWriteKeys.map { EntityKeys.actorIdBytesHex(it) }.toSet()
+        val referencedHex = digestKeys.map { EntityKeys.actorIdBytesHex(it) }
+        if (referencedHex.toSet() != generatedHex || referencedHex.size != generatedHex.size) {
+            throw IllegalStateException("Actor/digest mapping validation failed; no entity writes were committed.")
         }
 
         return writes
