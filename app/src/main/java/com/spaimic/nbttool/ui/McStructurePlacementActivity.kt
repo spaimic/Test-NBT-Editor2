@@ -81,45 +81,54 @@ class McStructurePlacementActivity : AppCompatActivity() {
         }
         content.addView(coordinateLabel)
 
-        val moveGrid = GridLayout(this).apply {
-            // Exactly four rows × three columns. Use wrap_content instead of a
-            // fixed 200dp height: four 48dp rows plus margins/padding can exceed
-            // 200dp on Android, which previously clipped rows 2–4.
-            columnCount = 3
-            rowCount = 4
-            alignmentMode = GridLayout.ALIGN_BOUNDS
-            useDefaultMargins = false
-            setPadding(0, dp(2), 0, dp(2))
+        // Four explicit horizontal rows avoid GridLayout/parent clipping on smaller screens.
+        // Each row is allowed to measure at its natural height, so all 12 movement controls
+        // remain visible inside the ScrollView.
+        val moveGrid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(2), 0, dp(6))
         }
-        fun moveButton(row: Int, col: Int, label: String, dx: Int = 0, dy: Int = 0, dz: Int = 0) {
-            val b = Button(this).apply {
-                text = label
-                textSize = 13f
-                setPadding(dp(2), 0, dp(2), 0)
-                minHeight = 0
-                minimumHeight = 0
-                setOnClickListener { movePlacement(dx, dy, dz) }
+        fun moveRow(vararg controls: Triple<String, IntArray, String>) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
             }
-            moveGrid.addView(b, GridLayout.LayoutParams().apply {
-                width = 0
-                height = dp(50)
-                columnSpec = GridLayout.spec(col, 1, 1f)
-                rowSpec = GridLayout.spec(row, 1, 1f)
-                setMargins(dp(2), dp(2), dp(2), dp(2))
-            })
+            controls.forEach { (label, delta, _) ->
+                val b = Button(this).apply {
+                    text = label
+                    textSize = 11f
+                    setPadding(dp(1), 0, dp(1), 0)
+                    minHeight = 0
+                    minimumHeight = 0
+                    minWidth = 0
+                    minimumWidth = 0
+                    setOnClickListener { movePlacement(delta[0], delta[1], delta[2]) }
+                }
+                row.addView(b, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    setMargins(dp(2), dp(2), dp(2), dp(2))
+                })
+            }
+            moveGrid.addView(row, LinearLayout.LayoutParams(-1, dp(52)))
         }
-        moveButton(0, 0, "X: ⬅️", dx = -1)
-        moveButton(0, 1, "Y: ⬆️⚡", dy = 5)
-        moveButton(0, 2, "X: ➡️", dx = 1)
-        moveButton(1, 0, "X: ⬅️⚡", dx = -5)
-        moveButton(1, 1, "Y: ⬆️", dy = 1)
-        moveButton(1, 2, "X: ➡️⚡", dx = 5)
-        moveButton(2, 0, "Z: ⬅️", dz = -1)
-        moveButton(2, 1, "Y: ⬇️", dy = -1)
-        moveButton(2, 2, "Z: ➡️", dz = 1)
-        moveButton(3, 0, "Z: ⬅️⚡", dz = -5)
-        moveButton(3, 1, "Y: ⬇️⚡", dy = -5)
-        moveButton(3, 2, "Z: ➡️⚡", dz = 5)
+        moveRow(
+            Triple("X: ⬅️", intArrayOf(-1, 0, 0), ""),
+            Triple("Y: ⬆️⚡", intArrayOf(0, 5, 0), ""),
+            Triple("X: ➡️", intArrayOf(1, 0, 0), "")
+        )
+        moveRow(
+            Triple("X: ⬅️⚡", intArrayOf(-5, 0, 0), ""),
+            Triple("Y: ⬆️", intArrayOf(0, 1, 0), ""),
+            Triple("X: ➡️⚡", intArrayOf(5, 0, 0), "")
+        )
+        moveRow(
+            Triple("Z: ⬅️", intArrayOf(0, 0, -1), ""),
+            Triple("Y: ⬇️", intArrayOf(0, -1, 0), ""),
+            Triple("Z: ➡️", intArrayOf(0, 0, 1), "")
+        )
+        moveRow(
+            Triple("Z: ⬅️⚡", intArrayOf(0, 0, -5), ""),
+            Triple("Y: ⬇️⚡", intArrayOf(0, -5, 0), ""),
+            Triple("Z: ➡️⚡", intArrayOf(0, 0, 5), "")
+        )
         content.addView(moveGrid, LinearLayout.LayoutParams(-1, dp(220)))
 
         val worldButton = Button(this).apply {
