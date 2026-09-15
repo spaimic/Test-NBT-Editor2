@@ -127,6 +127,11 @@ object McStructurePlacer {
             }
             val fresh = freshActorId(bridge, generatedStorageKeys)
             newActorIds[i] = fresh
+            // Record the newly allocated storage key immediately. Build 219 accidentally
+            // passed the bookkeeping set as read-only and never inserted the generated key,
+            // causing every entity to fail the later consistency check even though the key
+            // itself was valid and collision-free.
+            generatedStorageKeys += EntityKeys.actorIdBytesHex(EntityKeys.storageKeyBytes(fresh))
             if (raw != null) oldToNewActorIds[raw.value] = fresh
         }
 
