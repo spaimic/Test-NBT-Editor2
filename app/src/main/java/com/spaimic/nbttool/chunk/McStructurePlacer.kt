@@ -105,34 +105,39 @@ object McStructurePlacer {
         val writes = ArrayList<Pair<ByteArray, ByteArray>>()
         val digpAdds = LinkedHashMap<Pair<Int, Int>, MutableList<ByteArray>>()
         val generatedStorageKeys = HashSet<String>()
+        val generatedUniqueIds = HashSet<Long>()
         var entityIndex = 0
 
-        // Allocate all new actor IDs first and remember the source UniqueID -> new ID mapping.
-        // MCStructure files containing many related entities can contain references between
-        // actors (RiderID/RideID/OwnerNew/etc.). Those references must be rewritten when the
-        // actors receive fresh world IDs, otherwise Minecraft can encounter references to actors
-        // that do not exist in the destination world.
+        // Allocate two independent identities per actor:
+        //  * UniqueID = the entity's world/runtime identity stored in its NBT.
+        //  * StorageKey = the opaque ID used by actorprefix and digp.
+        // These are related by the game, but they are not required to be the same value.
+        // Keeping them separate is especially important for large structure placements where
+        // Minecraft may rely on the distinction between actor identity and storage identity.
         val sourceEntities = list.mapIndexed { idx, tag ->
             val source = tag as? NbtTag.Compound
                 ?: throw IllegalStateException("Structure entity #${idx + 1} is not a compound NBT tag.")
             source
         }
-        val newActorIds = LongArray(sourceEntities.size)
-        val oldToNewActorIds = LinkedHashMap<Long, Long>()
+        val newStorageIds = LongArray(sourceEntities.size)
+        val newUniqueIds = LongArray(sourceEntities.size)
+        val oldToNewUniqueIds = LinkedHashMap<Long, Long>()
         for (i in sourceEntities.indices) {
             val source = sourceEntities[i]
             val raw = source.entries["UniqueID"] as? NbtTag.Long
-            if (raw != null && oldToNewActorIds.containsKey(raw.value)) {
+            if (raw != null && oldToNewUniqueIds.containsKey(raw.value)) {
                 throw IllegalStateException("Structure contains duplicate source UniqueID ${raw.value}; entity references would be ambiguous, so placement was aborted.")
             }
-            val fresh = freshActorId(bridge, generatedStorageKeys)
-            newActorIds[i] = fresh
-            // Record the newly allocated storage key immediately. Build 219 accidentally
-            // passed the bookkeeping set as read-only and never inserted the generated key,
-            // causing every entity to fail the later consistency check even though the key
-            // itself was valid and collision-free.
-            generatedStorageKeys += EntityKeys.actorIdBytesHex(EntityKeys.storageKeyBytes(fresh))
-            if (raw != null) oldToNewActorIds[raw.value] = fresh
+
+            val storageId = freshActorStorageId(bridge, generatedStorageKeys)
+            newStorageIds[i] = storageId
+            generatedStorageKeys += EntityKeys.actorIdBytesHex(EntityKeys.storageKeyBytes(storageId))
+
+            val uniqueId = freshUniqueId(generatedUniqueIds)
+            newUniqueIds[i] = uniqueId
+            generatedUniqueIds += uniqueId
+
+            if (raw != null) oldToNewUniqueIds[raw.value] = uniqueId
         }
 
         for (i in sourceEntities.indices) {
@@ -151,7 +156,7 @@ object McStructurePlacer {
             // Rewrite any entity-to-entity Long references before setting this actor's own ID.
             // This intentionally remaps only values that exactly match a source entity UniqueID,
             // leaving unrelated numeric NBT fields unchanged.
-            remapActorReferences(root, oldToNewActorIds)
+            remapActorReferences(root, oldToNewUniqueIds)
 
             val sourceOrigin = structureOrigin ?: intArrayOf(0, 0, 0)
             require(sourceOrigin.size >= 3) { "MCStructure world-origin must contain X/Y/Z." }
@@ -159,8 +164,9 @@ object McStructurePlacer {
             val worldY = y - sourceOrigin[1].toDouble() + oy
             val worldZ = z - sourceOrigin[2].toDouble() + oz
 
-            val rawActorId = newActorIds[i]
-            val storageKey = EntityKeys.storageKeyBytes(rawActorId)
+            val uniqueId = newUniqueIds[i]
+            val storageId = newStorageIds[i]
+            val storageKey = EntityKeys.storageKeyBytes(storageId)
             val storageHex = EntityKeys.actorIdBytesHex(storageKey)
             if (!generatedStorageKeys.contains(storageHex)) {
                 throw IllegalStateException("Generated actor storage key bookkeeping failed for structure entity #$entityIndex.")
@@ -174,7 +180,7 @@ object McStructurePlacer {
                     NbtTag.Float(worldZ.toFloat())
                 )
             )
-            root.entries["UniqueID"] = NbtTag.Long(rawActorId)
+            root.entries["UniqueID"] = NbtTag.Long(uniqueId)
             // ActorUniqueID is an actor-storage implementation concept represented by the
             // actorprefix key/storage key in modern worlds. Do not invent a duplicate NBT field;
             // normal actor records inspected from worlds do not require it.
@@ -241,6 +247,10 @@ object McStructurePlacer {
 
         val actorWriteKeys = writes.filter { EntityKeys.isActorPrefixKey(it.first) }.map { EntityKeys.actorIdBytes(it.first) }
         val digestKeys = digpAdds.values.flatten()
+        val actorUniqueIds = newUniqueIds.toSet()
+        if (actorUniqueIds.size != newUniqueIds.size || actorUniqueIds.contains(-1L)) {
+            throw IllegalStateException("Entity UniqueID validation failed; no entity writes were committed.")
+        }
         if (actorWriteKeys.size != list.size || digestKeys.size != list.size) {
             throw IllegalStateException("Entity placement validation failed; no entity writes were committed.")
         }
@@ -372,14 +382,23 @@ object McStructurePlacer {
         else -> null
     }
 
-    private fun freshActorId(bridge: LevelDbBridge, generatedStorageKeys: Set<String>): Long {
+    private fun freshActorStorageId(bridge: LevelDbBridge, generatedStorageKeys: Set<String>): Long {
         repeat(128) {
-            val rawActorId = ThreadLocalRandom.current().nextLong()
-            val storageKey = EntityKeys.storageKeyBytes(rawActorId)
+            val candidate = ThreadLocalRandom.current().nextLong()
+            val storageKey = EntityKeys.storageKeyBytes(candidate)
             val storageHex = EntityKeys.actorIdBytesHex(storageKey)
             if (storageHex in generatedStorageKeys) return@repeat
-            if (bridge.read(EntityKeys.actorPrefixKey(storageKey)) == null) return rawActorId
+            if (bridge.read(EntityKeys.actorPrefixKey(storageKey)) == null) return candidate
         }
         throw IllegalStateException("Couldn't allocate a unique actor storage key for structure entity placement.")
+    }
+
+    private fun freshUniqueId(generatedUniqueIds: Set<Long>): Long {
+        repeat(128) {
+            val candidate = ThreadLocalRandom.current().nextLong()
+            if (candidate == -1L) return@repeat
+            if (candidate !in generatedUniqueIds) return candidate
+        }
+        throw IllegalStateException("Couldn't allocate a unique entity UniqueID for structure entity placement.")
     }
 }
