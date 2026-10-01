@@ -77,7 +77,8 @@ object NbtIO {
      * Serializes a modern Bedrock actorprefix record. The actor record is a
      * root entity compound (not an extra Entity wrapper). Bedrock stores
      * internalComponents.EntityStorageKeyComponent.StorageKey as an 8-byte
-     * binary string, so that single string must bypass UTF-8 encoding.
+     * binary string, so that single string must bypass UTF-8 encoding. The caller
+     * supplies the exact Bedrock storage-key bytes shared by actorprefix and digp.
      * [storageKeyComponent] is the exact 8-byte payload for that NBT property;
      * the caller uses the actor UID separately for the actorprefix/digp LevelDB keys.
      */

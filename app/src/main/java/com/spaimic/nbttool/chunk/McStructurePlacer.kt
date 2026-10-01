@@ -107,9 +107,9 @@ object McStructurePlacer {
         var entityIndex = 0
 
         // Bedrock's modern actor storage keeps a world-global UniqueID for each actor.
-        // Build 223 uses one fresh positive UID per actor and derives every storage-key
-        // representation from that same UID so the actorprefix key, digest entry, and NBT
-        // storage component cannot drift apart.
+        // Build 224 derives one Bedrock storage key from each fresh world actor UID.
+        // The exact same 8-byte storage-key bytes are used for actorprefix, digp, and
+        // EntityStorageKeyComponent.StorageKey so the three identities cannot drift apart.
         val sourceEntities = list.mapIndexed { idx, tag ->
             val source = tag as? NbtTag.Compound
                 ?: throw IllegalStateException("Structure entity #${idx + 1} is not a compound NBT tag.")
@@ -183,7 +183,7 @@ object McStructurePlacer {
                 ?: NbtTag.Compound(LinkedHashMap())
             val storageComponent = (internalComponents.entries["EntityStorageKeyComponent"] as? NbtTag.Compound)
                 ?: NbtTag.Compound(LinkedHashMap())
-            // NbtIO writes this empty String as the exact binary StorageKeyComponent payload.
+            // NbtIO replaces this placeholder String with the exact binary StorageKey payload.
             storageComponent.entries["StorageKey"] = NbtTag.Str("")
             internalComponents.entries["EntityStorageKeyComponent"] = storageComponent
             root.entries["internalComponents"] = internalComponents
