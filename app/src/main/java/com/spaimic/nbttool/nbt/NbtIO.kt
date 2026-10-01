@@ -78,14 +78,16 @@ object NbtIO {
      * root entity compound (not an extra Entity wrapper). Bedrock stores
      * internalComponents.EntityStorageKeyComponent.StorageKey as an 8-byte
      * binary string, so that single string must bypass UTF-8 encoding.
+     * [storageKeyComponent] is the exact 8-byte payload for that NBT property;
+     * the caller uses the actor UID separately for the actorprefix/digp LevelDB keys.
      */
-    fun writeActorPrefixCompound(root: NbtTag.Compound, storageKey: ByteArray): ByteArray {
-        require(storageKey.size == 8) { "Actor storage key must be exactly 8 bytes." }
+    fun writeActorPrefixCompound(root: NbtTag.Compound, storageKeyComponent: ByteArray): ByteArray {
+        require(storageKeyComponent.size == 8) { "Actor storage key must be exactly 8 bytes." }
         val out = ByteArrayOutputStream()
         val dout = LEDataOutput(DataOutputStream(out))
         dout.writeUByte(10)
         dout.writeString("")
-        writeActorCompoundBody(dout, root, emptyList(), storageKey)
+        writeActorCompoundBody(dout, root, emptyList(), storageKeyComponent)
         return out.toByteArray()
     }
 

@@ -20,6 +20,12 @@ import com.spaimic.nbttool.nbt.NbtTag
 sealed class NbtContainer {
     data class InCompound(val compound: NbtTag.Compound, val key: String) : NbtContainer()
     data class InList(val list: NbtTag.ListTag, val index: Int) : NbtContainer()
+
+    // Array elements are scalar values, but they still need a writable location
+    // so the normal Byte/Int/Long leaf editors can update them in place.
+    data class InByteArray(val array: NbtTag.ByteArray, val index: Int, val owner: NbtContainer) : NbtContainer()
+    data class InIntArray(val array: NbtTag.IntArray, val index: Int, val owner: NbtContainer) : NbtContainer()
+    data class InLongArray(val array: NbtTag.LongArray, val index: Int, val owner: NbtContainer) : NbtContainer()
 }
 
 /** One flattened, indented row of the tree currently on screen. */
@@ -33,6 +39,18 @@ data class NbtRow(
         when (val c = container) {
             is NbtContainer.InCompound -> c.compound.entries[c.key] = newTag
             is NbtContainer.InList -> c.list.items[c.index] = newTag
+            is NbtContainer.InByteArray -> {
+                require(newTag is NbtTag.Byte) { "ByteArray element requires a Byte tag." }
+                c.array.value[c.index] = newTag.value
+            }
+            is NbtContainer.InIntArray -> {
+                require(newTag is NbtTag.Int) { "IntArray element requires an Int tag." }
+                c.array.value[c.index] = newTag.value
+            }
+            is NbtContainer.InLongArray -> {
+                require(newTag is NbtTag.Long) { "LongArray element requires a Long tag." }
+                c.array.value[c.index] = newTag.value
+            }
         }
     }
 }
@@ -90,24 +108,62 @@ class NbtTreeAdapter(
     private fun rebuild() {
         val out = ArrayList<Pair<String, NbtRow>>()
 
-        fun walk(container: NbtTag, path: String, depth: Int) {
+        fun isExpandable(tag: NbtTag): Boolean = when (tag) {
+            is NbtTag.Compound, is NbtTag.ListTag,
+            is NbtTag.ByteArray, is NbtTag.IntArray, is NbtTag.LongArray -> true
+            else -> false
+        }
+
+        fun walk(container: NbtTag, path: String, depth: Int, owner: NbtContainer? = null) {
             when (container) {
                 is NbtTag.Compound -> {
                     for ((key, tag) in container.entries) {
                         val childPath = if (path.isEmpty()) key else "$path/$key"
-                        out.add(childPath to NbtRow(key, tag, depth, NbtContainer.InCompound(container, key)))
-                        if (childPath in expanded && (tag is NbtTag.Compound || tag is NbtTag.ListTag)) {
-                            walk(tag, childPath, depth + 1)
+                        val rowContainer = NbtContainer.InCompound(container, key)
+                        out.add(childPath to NbtRow(key, tag, depth, rowContainer))
+                        if (childPath in expanded && isExpandable(tag)) {
+                            walk(tag, childPath, depth + 1, rowContainer)
                         }
                     }
                 }
                 is NbtTag.ListTag -> {
                     for ((index, tag) in container.items.withIndex()) {
                         val childPath = "$path[$index]"
-                        out.add(childPath to NbtRow("[$index]", tag, depth, NbtContainer.InList(container, index)))
-                        if (childPath in expanded && (tag is NbtTag.Compound || tag is NbtTag.ListTag)) {
-                            walk(tag, childPath, depth + 1)
+                        val rowContainer = NbtContainer.InList(container, index)
+                        out.add(childPath to NbtRow("[$index]", tag, depth, rowContainer))
+                        if (childPath in expanded && isExpandable(tag)) {
+                            walk(tag, childPath, depth + 1, rowContainer)
                         }
+                    }
+                }
+                is NbtTag.ByteArray -> {
+                    val parent = requireNotNull(owner)
+                    for ((index, value) in container.value.withIndex()) {
+                        val childPath = "$path[$index]"
+                        out.add(childPath to NbtRow(
+                            "[$index]", NbtTag.Byte(value), depth,
+                            NbtContainer.InByteArray(container, index, parent)
+                        ))
+                    }
+                }
+                is NbtTag.IntArray -> {
+                    val parent = requireNotNull(owner)
+                    for ((index, value) in container.value.withIndex()) {
+                        val childPath = "$path[$index]"
+                        out.add(childPath to NbtRow(
+                            "[$index]", NbtTag.Int(value), depth,
+                            NbtContainer.InIntArray(container, index, parent)
+                        ))
+                    }
+                }
+                is NbtTag.LongArray -> {
+                    val parent = requireNotNull(owner)
+                    for ((index, value) in container.value.withIndex()) {
+                        val childPath = "$path[$index]"
+                        out.add(childPath to NbtRow(
+                            "[$index]", NbtTag.Long(value), depth,
+                            NbtContainer.InLongArray(container, index, parent)
+                        ))
                     }
                 }
                 else -> {}
@@ -175,13 +231,33 @@ class NbtTreeAdapter(
 
                 val matches = ArrayList<SearchMatch>()
 
+                fun arrayMatches(
+                    path: List<PathPart>,
+                    ancestors: List<List<PathPart>>,
+                    size: Int,
+                    typeName: String,
+                    valueAt: (Int) -> String
+                ) {
+                    for (i in 0 until size) {
+                        val childPath = path + PathPart.Index(i)
+                        val value = valueAt(i)
+                        if (value.contains(query, true)) {
+                            matches += SearchMatch(
+                                path = childPath,
+                                displayPath = displayPath(childPath),
+                                label = "${displayPath(childPath)}  —  $typeName = $value",
+                                ancestors = ancestors
+                            )
+                        }
+                    }
+                }
+
                 fun walk(tag: NbtTag, path: List<PathPart>, ancestors: List<List<PathPart>>) {
                     when (tag) {
                         is NbtTag.Compound -> {
                             for ((key, child) in tag.entries) {
                                 val childPath = path + PathPart.Key(key)
-                                val isMatch = key.contains(query, true) ||
-                                    summaryOf(child).contains(query, true)
+                                val isMatch = key.contains(query, true) || summaryOf(child).contains(query, true)
                                 if (isMatch) {
                                     matches += SearchMatch(
                                         path = childPath,
@@ -190,7 +266,8 @@ class NbtTreeAdapter(
                                         ancestors = ancestors
                                     )
                                 }
-                                if (child is NbtTag.Compound || child is NbtTag.ListTag) {
+                                if (child is NbtTag.Compound || child is NbtTag.ListTag ||
+                                    child is NbtTag.ByteArray || child is NbtTag.IntArray || child is NbtTag.LongArray) {
                                     walk(child, childPath, ancestors + listOf(childPath))
                                 }
                             }
@@ -207,11 +284,15 @@ class NbtTreeAdapter(
                                         ancestors = ancestors
                                     )
                                 }
-                                if (child is NbtTag.Compound || child is NbtTag.ListTag) {
+                                if (child is NbtTag.Compound || child is NbtTag.ListTag ||
+                                    child is NbtTag.ByteArray || child is NbtTag.IntArray || child is NbtTag.LongArray) {
                                     walk(child, childPath, ancestors + listOf(childPath))
                                 }
                             }
                         }
+                        is NbtTag.ByteArray -> arrayMatches(path, ancestors, tag.value.size, "Byte") { tag.value[it].toString() }
+                        is NbtTag.IntArray -> arrayMatches(path, ancestors, tag.value.size, "Int") { tag.value[it].toString() }
+                        is NbtTag.LongArray -> arrayMatches(path, ancestors, tag.value.size, "Long") { tag.value[it].toString() }
                         else -> Unit
                     }
                 }
@@ -379,7 +460,8 @@ class NbtTreeAdapter(
             holder.row.translationX = 0f
         }
 
-        val isContainer = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag
+        val isContainer = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag ||
+            row.tag is NbtTag.ByteArray || row.tag is NbtTag.IntArray || row.tag is NbtTag.LongArray
         holder.row.setOnClickListener {
             if (isContainer) {
                 if (path in expanded) {
@@ -422,16 +504,20 @@ class NbtTreeAdapter(
         NbtTag.End -> ""
     }
 
-    // ---- long-press menu: delete / rename / add child / copy / paste ----
+    // ---- long-press menu: delete / rename / add child/element / copy / paste ----
+
+    private fun isArrayTag(tag: NbtTag): Boolean =
+        tag is NbtTag.ByteArray || tag is NbtTag.IntArray || tag is NbtTag.LongArray
 
     private fun showRowMenu(row: NbtRow) {
-        val canHoldChildren = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag
+        val canHoldChildren = row.tag is NbtTag.Compound || row.tag is NbtTag.ListTag || isArrayTag(row.tag)
         val canRename = row.container is NbtContainer.InCompound
         val options = buildList {
             add("Delete")
             if (canRename) add("Rename")
             add("Copy to NBT clipboard")
-            if (canHoldChildren) add("Add child")
+            if (isArrayTag(row.tag)) add("Add element")
+            else if (canHoldChildren) add("Add child")
             if (canHoldChildren && NbtClipboard.listNames(context).isNotEmpty()) add("Paste from NBT clipboard")
         }
         AlertDialog.Builder(context)
@@ -441,11 +527,21 @@ class NbtTreeAdapter(
                     "Delete" -> deleteRow(row)
                     "Rename" -> promptRename(row.container as NbtContainer.InCompound)
                     "Copy to NBT clipboard" -> promptCopy(row)
-                    "Add child" -> promptAddChild(row.tag)
+                    "Add element" -> promptAddArrayElement(row)
+                    "Add child" -> promptAddChild(row.tag, row)
                     "Paste from NBT clipboard" -> promptPasteMenu(row)
                 }
             }
             .show()
+    }
+
+    private fun replaceOwnedValue(owner: NbtContainer, newTag: NbtTag) {
+        when (owner) {
+            is NbtContainer.InCompound -> owner.compound.entries[owner.key] = newTag
+            is NbtContainer.InList -> owner.list.items[owner.index] = newTag
+            is NbtContainer.InByteArray, is NbtContainer.InIntArray, is NbtContainer.InLongArray ->
+                error("Array elements cannot own nested arrays")
+        }
     }
 
     private fun deleteRow(row: NbtRow) {
@@ -453,6 +549,18 @@ class NbtTreeAdapter(
         when (val c = row.container) {
             is NbtContainer.InCompound -> c.compound.entries.remove(c.key)
             is NbtContainer.InList -> c.list.items.removeAt(c.index)
+            is NbtContainer.InByteArray -> {
+                val old = c.array.value
+                replaceOwnedValue(c.owner, NbtTag.ByteArray(ByteArray(old.size - 1) { i -> if (i < c.index) old[i] else old[i + 1] }))
+            }
+            is NbtContainer.InIntArray -> {
+                val old = c.array.value
+                replaceOwnedValue(c.owner, NbtTag.IntArray(IntArray(old.size - 1) { i -> if (i < c.index) old[i] else old[i + 1] }))
+            }
+            is NbtContainer.InLongArray -> {
+                val old = c.array.value
+                replaceOwnedValue(c.owner, NbtTag.LongArray(LongArray(old.size - 1) { i -> if (i < c.index) old[i] else old[i + 1] }))
+            }
         }
         refresh()
         onChanged()
@@ -546,7 +654,6 @@ class NbtTreeAdapter(
             }
             is NbtTag.ListTag -> {
                 if (target.items.isEmpty()) {
-                    // an empty list has no established element type yet — adopt the pasted tag's type
                     NbtHistory.recordBefore(root)
                     row.setValue(NbtTag.ListTag(copy.id, mutableListOf(copy)))
                 } else if (target.elementTypeId != copy.id) {
@@ -563,19 +670,81 @@ class NbtTreeAdapter(
                 refresh()
                 onChanged()
             }
-            else -> {}
+            is NbtTag.ByteArray -> pasteIntoByteArray(row, target, copy)
+            is NbtTag.IntArray -> pasteIntoIntArray(row, target, copy)
+            is NbtTag.LongArray -> pasteIntoLongArray(row, target, copy)
+            else -> Unit
         }
     }
 
-    /** Public entry point for adding a brand-new top-level tag directly to the root
-     * compound — the long-press "Add child" menu only works on an existing
-     * compound/list row, which can't reach the root itself since it has no row. */
-    fun promptAddChildToRoot() = promptAddChild(root)
+    private fun pasteIntoByteArray(row: NbtRow, target: NbtTag.ByteArray, copy: NbtTag) {
+        val values = when (copy) {
+            is NbtTag.Byte -> byteArrayOf(copy.value)
+            is NbtTag.ByteArray -> copy.value
+            else -> { showArrayTypeMismatch("ByteArray", copy.id); return }
+        }
+        NbtHistory.recordBefore(root)
+        row.setValue(NbtTag.ByteArray(target.value + values))
+        refresh()
+        onChanged()
+    }
 
-    private fun promptAddChild(target: NbtTag) {
+    private fun pasteIntoIntArray(row: NbtRow, target: NbtTag.IntArray, copy: NbtTag) {
+        val values = when (copy) {
+            is NbtTag.Int -> intArrayOf(copy.value)
+            is NbtTag.IntArray -> copy.value
+            else -> { showArrayTypeMismatch("IntArray", copy.id); return }
+        }
+        NbtHistory.recordBefore(root)
+        row.setValue(NbtTag.IntArray(target.value + values))
+        refresh()
+        onChanged()
+    }
+
+    private fun pasteIntoLongArray(row: NbtRow, target: NbtTag.LongArray, copy: NbtTag) {
+        val values = when (copy) {
+            is NbtTag.Long -> longArrayOf(copy.value)
+            is NbtTag.LongArray -> copy.value
+            else -> { showArrayTypeMismatch("LongArray", copy.id); return }
+        }
+        NbtHistory.recordBefore(root)
+        row.setValue(NbtTag.LongArray(target.value + values))
+        refresh()
+        onChanged()
+    }
+
+    private fun showArrayTypeMismatch(arrayName: String, clipboardType: Int) {
+        Toast.makeText(
+            context,
+            "Type mismatch: $arrayName accepts only its matching scalar tag or array type; clipboard is ${NbtTag.typeName(clipboardType)}",
+            Toast.LENGTH_LONG
+        ).show()
+    }
+
+    private fun promptAddArrayElement(row: NbtRow) {
+        val newTag = when (val target = row.tag) {
+            is NbtTag.ByteArray -> NbtTag.ByteArray(target.value.copyOf(target.value.size + 1))
+            is NbtTag.IntArray -> NbtTag.IntArray(target.value.copyOf(target.value.size + 1))
+            is NbtTag.LongArray -> NbtTag.LongArray(target.value.copyOf(target.value.size + 1))
+            else -> return
+        }
+        NbtHistory.recordBefore(root)
+        row.setValue(newTag)
+        val path = rows.firstOrNull { it.second === row }?.first
+        if (path != null) expanded.add(path)
+        refresh()
+        onChanged()
+    }
+
+    /** Public entry point for adding a brand-new top-level tag directly to the root
+     * compound — the long-press menu only reaches the root through this method. */
+    fun promptAddChildToRoot() = promptAddChild(root, null)
+
+    private fun promptAddChild(target: NbtTag, ownerRow: NbtRow?) {
         val typeNames = listOf(
             "Byte" to 1, "Short" to 2, "Int" to 3, "Long" to 4, "Float" to 5,
-            "Double" to 6, "String" to 8, "Compound" to 10, "List" to 9
+            "Double" to 6, "ByteArray" to 7, "String" to 8, "List" to 9,
+            "Compound" to 10, "IntArray" to 11, "LongArray" to 12
         )
         AlertDialog.Builder(context)
             .setTitle("Add child — type?")
@@ -588,9 +757,12 @@ class NbtTreeAdapter(
                     4 -> NbtTag.Long(0)
                     5 -> NbtTag.Float(0f)
                     6 -> NbtTag.Double(0.0)
+                    7 -> NbtTag.ByteArray(byteArrayOf())
                     8 -> NbtTag.Str("")
-                    10 -> NbtTag.Compound(LinkedHashMap())
                     9 -> NbtTag.ListTag(10, mutableListOf())
+                    10 -> NbtTag.Compound(LinkedHashMap())
+                    11 -> NbtTag.IntArray(intArrayOf())
+                    12 -> NbtTag.LongArray(longArrayOf())
                     else -> NbtTag.Str("")
                 }
                 when (target) {
@@ -603,19 +775,37 @@ class NbtTreeAdapter(
                                 NbtHistory.recordBefore(root)
                                 target.entries[keyInput.text.toString().ifBlank { "new_key" }] = newTag
                                 refresh()
+                                onChanged()
                             }
                             .setNegativeButton("Cancel", null)
                             .show()
                     }
                     is NbtTag.ListTag -> {
+                        if (target.items.isNotEmpty() && target.elementTypeId != newTag.id) {
+                            Toast.makeText(
+                                context,
+                                "Type mismatch: list holds ${NbtTag.typeName(target.elementTypeId)}, new tag is ${NbtTag.typeName(newTag.id)}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@setItems
+                        }
                         NbtHistory.recordBefore(root)
-                        target.items.add(newTag)
+                        if (target.items.isEmpty()) {
+                            val owner = ownerRow ?: run {
+                                Toast.makeText(context, "This empty list has no editable owner.", Toast.LENGTH_LONG).show()
+                                return@setItems
+                            }
+                            owner.setValue(NbtTag.ListTag(newTag.id, mutableListOf(newTag)))
+                        } else {
+                            target.items.add(newTag)
+                        }
                         refresh()
                         onChanged()
                     }
-                    else -> {}
+                    else -> Unit
                 }
             }
             .show()
     }
+
 }

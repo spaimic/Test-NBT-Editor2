@@ -7,8 +7,8 @@ import java.nio.ByteOrder
 /**
  * Bedrock modern actor storage uses a per-chunk digest (`digp`) containing the
  * 8-byte actor storage IDs, plus one `actorprefix` record per actor. The storage
- * ID is encoded little-endian in the LevelDB key and digest; the actor payload
- * also stores the same 8-byte value in internalComponents.EntityStorageKeyComponent.
+ * ID is encoded in the LevelDB key and digest; the actor payload stores the
+ * corresponding binary storage-key component separately inside the actor NBT.
  */
 object EntityKeys {
     private val DIGP_PREFIX = "digp".toByteArray(Charsets.US_ASCII)
@@ -31,12 +31,16 @@ object EntityKeys {
         return out.toByteArray()
     }
 
-    /**
-     * Encodes the actor storage ID exactly as Bedrock's modern actor storage
-     * implementation uses it: a signed 64-bit integer in little-endian form.
-     */
+    /** Raw 8-byte actor ID used in the actorprefix LevelDB key and digp digest. */
     fun storageKeyBytes(actorUniqueId: Long): ByteArray =
         ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(actorUniqueId).array()
+
+    /**
+     * Binary value written to internalComponents.EntityStorageKeyComponent.StorageKey.
+     * Bedrock tooling serializes this property as the actor UID in big-endian byte order.
+     */
+    fun storageKeyComponentBytes(actorUniqueId: Long): ByteArray =
+        ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(actorUniqueId).array()
 
     /** Splits a digp value into the individual opaque 8-byte actor storage keys it lists. */
     fun splitActorIds(digpValue: ByteArray): List<ByteArray> {

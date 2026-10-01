@@ -141,9 +141,15 @@ object McStructureDecoder {
         val structure = root.entries["structure"] as? NbtTag.Compound
             ?: throw IllegalArgumentException("This MCStructure has no structure compound.")
 
-        val layers = (structure.entries["block_indices"] as? NbtTag.ListTag)?.items ?: emptyList()
-        val layer0 = layers.getOrNull(0)?.asIntList() ?: emptyList()
-        val layer1 = layers.getOrNull(1)?.asIntList() ?: emptyList()
+        val rawBlockIndices = structure.entries["block_indices"]
+        val (layer0, layer1) = when (rawBlockIndices) {
+            is NbtTag.IntArray -> rawBlockIndices.value.toList() to emptyList()
+            is NbtTag.ListTag -> {
+                rawBlockIndices.items.getOrNull(0)?.asIntList().orEmpty() to
+                    rawBlockIndices.items.getOrNull(1)?.asIntList().orEmpty()
+            }
+            else -> emptyList<Int>() to emptyList()
+        }
 
         val palette = readPalette(structure)
         val blocks = ArrayList<McStructureBlock>()

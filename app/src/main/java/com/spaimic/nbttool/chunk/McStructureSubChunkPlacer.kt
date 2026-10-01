@@ -20,7 +20,7 @@ object McStructureSubChunkPlacer {
     fun apply(bytes: ByteArray, placements: List<Placement>): ByteArray {
         require(placements.all { it.x in 0..15 && it.localY in 0..15 && it.z in 0..15 })
         val decoded = decode(bytes)
-        val layer = decoded.layers.last()
+        val layer = decoded.layers.first()
         for (p in placements) {
             val paletteIndex = findOrAddExact(layer.palette, p.palette)
             layer.indices[(p.x shl 8) or (p.z shl 4) or p.localY] = paletteIndex

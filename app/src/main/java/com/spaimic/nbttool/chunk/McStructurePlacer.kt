@@ -3,8 +3,6 @@ package com.spaimic.nbttool.chunk
 import com.spaimic.nbttool.nbt.NbtIO
 import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbBridge
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.ThreadLocalRandom
 
 /** MCStructure placement. Blocks are written to terrain and structure entities are
@@ -108,18 +106,15 @@ object McStructurePlacer {
         val generatedUniqueIds = HashSet<Long>()
         var entityIndex = 0
 
-        // Allocate two independent identities per actor:
-        //  * UniqueID = the entity's world/runtime identity stored in its NBT.
-        //  * StorageKey = the opaque ID used by actorprefix and digp.
-        // These are related by the game, but they are not required to be the same value.
-        // Keeping them separate is especially important for large structure placements where
-        // Minecraft may rely on the distinction between actor identity and storage identity.
+        // Bedrock's modern actor storage keeps a world-global UniqueID for each actor.
+        // Build 223 uses one fresh positive UID per actor and derives every storage-key
+        // representation from that same UID so the actorprefix key, digest entry, and NBT
+        // storage component cannot drift apart.
         val sourceEntities = list.mapIndexed { idx, tag ->
             val source = tag as? NbtTag.Compound
                 ?: throw IllegalStateException("Structure entity #${idx + 1} is not a compound NBT tag.")
             source
         }
-        val newStorageIds = LongArray(sourceEntities.size)
         val newUniqueIds = LongArray(sourceEntities.size)
         val oldToNewUniqueIds = LinkedHashMap<Long, Long>()
         for (i in sourceEntities.indices) {
@@ -129,13 +124,12 @@ object McStructurePlacer {
                 throw IllegalStateException("Structure contains duplicate source UniqueID ${raw.value}; entity references would be ambiguous, so placement was aborted.")
             }
 
-            val storageId = freshActorStorageId(bridge, generatedStorageKeys)
-            newStorageIds[i] = storageId
-            generatedStorageKeys += EntityKeys.actorIdBytesHex(EntityKeys.storageKeyBytes(storageId))
-
-            val uniqueId = freshUniqueId(generatedUniqueIds)
+            val uniqueId = freshUniqueId(bridge, generatedUniqueIds)
             newUniqueIds[i] = uniqueId
             generatedUniqueIds += uniqueId
+
+            val storageKey = EntityKeys.storageKeyBytes(uniqueId)
+            generatedStorageKeys += EntityKeys.actorIdBytesHex(storageKey)
 
             if (raw != null) oldToNewUniqueIds[raw.value] = uniqueId
         }
@@ -165,8 +159,7 @@ object McStructurePlacer {
             val worldZ = z - sourceOrigin[2].toDouble() + oz
 
             val uniqueId = newUniqueIds[i]
-            val storageId = newStorageIds[i]
-            val storageKey = EntityKeys.storageKeyBytes(storageId)
+            val storageKey = EntityKeys.storageKeyBytes(uniqueId)
             val storageHex = EntityKeys.actorIdBytesHex(storageKey)
             if (!generatedStorageKeys.contains(storageHex)) {
                 throw IllegalStateException("Generated actor storage key bookkeeping failed for structure entity #$entityIndex.")
@@ -190,6 +183,7 @@ object McStructurePlacer {
                 ?: NbtTag.Compound(LinkedHashMap())
             val storageComponent = (internalComponents.entries["EntityStorageKeyComponent"] as? NbtTag.Compound)
                 ?: NbtTag.Compound(LinkedHashMap())
+            // NbtIO writes this empty String as the exact binary StorageKeyComponent payload.
             storageComponent.entries["StorageKey"] = NbtTag.Str("")
             internalComponents.entries["EntityStorageKeyComponent"] = storageComponent
             root.entries["internalComponents"] = internalComponents
@@ -202,7 +196,7 @@ object McStructurePlacer {
             normalizeActorBaseFields(root, entityIndex)
             validateActorEntityInMemory(root, entityIndex)
             val actorNbt = try {
-                NbtIO.writeActorPrefixCompound(root, storageKey)
+                NbtIO.writeActorPrefixCompound(root, EntityKeys.storageKeyComponentBytes(uniqueId))
             } catch (e: Exception) {
                 throw IllegalStateException(
                     "Entity #$entityIndex could not be serialized: ${e.message ?: e.javaClass.simpleName}",
@@ -382,23 +376,16 @@ object McStructurePlacer {
         else -> null
     }
 
-    private fun freshActorStorageId(bridge: LevelDbBridge, generatedStorageKeys: Set<String>): Long {
-        repeat(128) {
-            val candidate = ThreadLocalRandom.current().nextLong()
+    private fun freshUniqueId(bridge: LevelDbBridge, generatedUniqueIds: Set<Long>): Long {
+        repeat(512) {
+            // Keep the generated IDs positive and within 31 bits. This makes the
+            // actor storage-key derivation unambiguous across current Bedrock tooling.
+            val candidate = ThreadLocalRandom.current().nextLong(1L, Int.MAX_VALUE.toLong() + 1L)
+            if (candidate in generatedUniqueIds) return@repeat
             val storageKey = EntityKeys.storageKeyBytes(candidate)
-            val storageHex = EntityKeys.actorIdBytesHex(storageKey)
-            if (storageHex in generatedStorageKeys) return@repeat
             if (bridge.read(EntityKeys.actorPrefixKey(storageKey)) == null) return candidate
-        }
-        throw IllegalStateException("Couldn't allocate a unique actor storage key for structure entity placement.")
-    }
-
-    private fun freshUniqueId(generatedUniqueIds: Set<Long>): Long {
-        repeat(128) {
-            val candidate = ThreadLocalRandom.current().nextLong()
-            if (candidate == -1L) return@repeat
-            if (candidate !in generatedUniqueIds) return candidate
         }
         throw IllegalStateException("Couldn't allocate a unique entity UniqueID for structure entity placement.")
     }
+
 }

@@ -14,7 +14,7 @@ object NbtIcons {
         is NbtTag.Str -> R.drawable.nbt_string
         is NbtTag.ByteArray -> R.drawable.nbt_byte_arr
         is NbtTag.IntArray -> R.drawable.nbt_int_arr
-        is NbtTag.LongArray -> R.drawable.nbt_int_arr // no dedicated long-array icon supplied — closest match
+        is NbtTag.LongArray -> R.drawable.nbt_long // no dedicated long-array icon supplied — closest match
         is NbtTag.ListTag -> R.drawable.nbt_list
         is NbtTag.Compound -> R.drawable.nbt_compound
         NbtTag.End -> R.drawable.nbt_byte // never actually rendered as a row
