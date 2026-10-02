@@ -7,8 +7,8 @@ import java.nio.ByteOrder
 /**
  * Bedrock modern actor storage uses a per-chunk digest (`digp`) containing the
  * 8-byte actor storage IDs, plus one `actorprefix` record per actor. The storage
- * ID is encoded in the LevelDB key and digest; the actor payload stores the
- * corresponding binary storage-key component separately inside the actor NBT.
+ * ID is the Bedrock-derived storage key and is serialized consistently in the
+ * actorprefix key, digp digest, and actor NBT StorageKey component.
  */
 object EntityKeys {
     private val DIGP_PREFIX = "digp".toByteArray(Charsets.US_ASCII)
@@ -31,16 +31,27 @@ object EntityKeys {
         return out.toByteArray()
     }
 
-    /** Raw 8-byte actor ID used in the actorprefix LevelDB key and digp digest. */
-    fun storageKeyBytes(actorUniqueId: Long): ByteArray =
-        ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(actorUniqueId).array()
-
     /**
-     * Binary value written to internalComponents.EntityStorageKeyComponent.StorageKey.
-     * Bedrock tooling serializes this property as the actor UID in big-endian byte order.
+     * Converts an ActorUniqueID to Bedrock's modern actor storage-key bytes.
+     *
+     * Bedrock derives the opaque storage ID as:
+     *   (ActorUniqueID XOR 0xFFFFFFFF00000000) + 0x100000000
+     * The resulting 64-bit value is stored as two signed 32-bit words in
+     * little-endian order. Those exact 8 bytes are the identity used in the
+     * `actorprefix` key, the `digp` digest, and the binary NBT
+     * `internalComponents.EntityStorageKeyComponent.StorageKey` property.
+     *
+     * This little-endian representation is important: current Bedrock tooling
+     * reads/writes the StorageKey as two Int32LE values.
      */
+    fun storageKeyBytes(actorUniqueId: Long): ByteArray {
+        val storageId = (actorUniqueId xor -0x1_0000_0000L) + 0x1_0000_0000L
+        return ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putLong(storageId).array()
+    }
+
+    /** The exact same 8-byte storage-key payload used inside actor NBT. */
     fun storageKeyComponentBytes(actorUniqueId: Long): ByteArray =
-        ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putLong(actorUniqueId).array()
+        storageKeyBytes(actorUniqueId)
 
     /** Splits a digp value into the individual opaque 8-byte actor storage keys it lists. */
     fun splitActorIds(digpValue: ByteArray): List<ByteArray> {
