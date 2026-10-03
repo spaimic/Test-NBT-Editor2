@@ -98,7 +98,11 @@ class DbEntryEditorActivity : AppCompatActivity() {
             setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
         }
         menu.add(0, MENU_EXPORT_JSON, 0, "Export JSON")
+        if (displayName.startsWith("structuretemplate_")) {
+            menu.add(0, MENU_EXPORT_MCSTRUCTURE, 0, "Export .mcstructure")
+        }
         menu.add(0, MENU_IMPORT_JSON, 0, "Import JSON")
+        menu.add(0, MENU_DELETE_KEY, 0, "Delete Direct LevelDB Key")
         menu.add(0, MENU_UNDO, 0, "Undo")
         menu.add(0, MENU_REDO, 0, "Redo")
         menu.add(0, MENU_SEARCH, 0, "Global NBT Search").apply {
@@ -136,6 +140,14 @@ class DbEntryEditorActivity : AppCompatActivity() {
                 NbtJsonFileOps.launchExport(this, NbtJsonFileOps.sanitizeFileName(displayName))
                 return true
             }
+            MENU_EXPORT_MCSTRUCTURE -> {
+                NbtJsonFileOps.launchMcStructureExport(this, NbtJsonFileOps.sanitizeFileName(displayName.removePrefix("structuretemplate_")))
+                return true
+            }
+            MENU_DELETE_KEY -> {
+                confirmDeleteDirectKey()
+                return true
+            }
             MENU_UNDO -> { if (NbtHistory.undo(compound)) { hasUnsavedChanges = true; adapter.refresh() }; return true }
             MENU_REDO -> { if (NbtHistory.redo(compound)) { hasUnsavedChanges = true; adapter.refresh() }; return true }
             MENU_SEARCH -> { adapter.showGlobalSearch(); return true }
@@ -162,6 +174,14 @@ class DbEntryEditorActivity : AppCompatActivity() {
                     Toast.makeText(this, "Exported.", Toast.LENGTH_SHORT).show()
                 } catch (e: Exception) {
                     showErrorDialog(this, "Export failed", e)
+                }
+            }
+            NbtJsonFileOps.REQUEST_EXPORT_MCSTRUCTURE -> {
+                try {
+                    NbtJsonFileOps.writeBytes(this, uri, NbtIO.writeRootCompoundNoHeader(compound))
+                    Toast.makeText(this, "Exported .mcstructure.", Toast.LENGTH_SHORT).show()
+                } catch (e: Exception) {
+                    showErrorDialog(this, "MCStructure export failed", e)
                 }
             }
             NbtJsonFileOps.REQUEST_IMPORT_JSON -> {
@@ -222,6 +242,33 @@ class DbEntryEditorActivity : AppCompatActivity() {
         startActivityForResult(intent, REQUEST_IMPORT_MAP_IMAGE)
     }
 
+    private fun confirmDeleteDirectKey() {
+        val bridge = LevelDbSession.bridge ?: return
+        val rawKey = LevelDbSession.keyBytesByName[displayName] ?: return
+        val hex = rawKey.joinToString(" ") { "%02x".format(it) }
+        AlertDialog.Builder(this)
+            .setTitle("Delete LevelDB key?")
+            .setMessage("This permanently deletes this direct LevelDB key from the open world:\n\n$displayName\n$hex\n\nFor an entity, the actorprefix record is deleted directly; its chunk digest entry is not automatically rewritten.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                Thread {
+                    try {
+                        bridge.delete(rawKey)
+                        LevelDbSession.keyBytesByName.remove(displayName)
+                        LevelDbSession.loadedEntries.remove(displayName)
+                        LevelDbSession.dirtyEntries.remove(displayName)
+                        runOnUiThread {
+                            Toast.makeText(this, "LevelDB key deleted.", Toast.LENGTH_SHORT).show()
+                            finish()
+                        }
+                    } catch (e: Throwable) {
+                        runOnUiThread { showErrorDialog(this, "Delete failed", e) }
+                    }
+                }.start()
+            }
+            .show()
+    }
+
     override fun onBackPressed() {
         if (!hasUnsavedChanges) {
             super.onBackPressed()
@@ -264,6 +311,8 @@ class DbEntryEditorActivity : AppCompatActivity() {
         private const val MENU_SAVE = 1
         private const val MENU_EXPORT_JSON = 2
         private const val MENU_IMPORT_JSON = 3
+        private const val MENU_EXPORT_MCSTRUCTURE = 8
+        private const val MENU_DELETE_KEY = 9
         private const val MENU_UNDO = 4
         private const val MENU_REDO = 5
         private const val MENU_SEARCH = 6

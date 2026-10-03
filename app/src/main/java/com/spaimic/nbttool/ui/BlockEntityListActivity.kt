@@ -53,12 +53,17 @@ class BlockEntityListActivity : AppCompatActivity() {
             setIcon(R.drawable.save)
             setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
         }
+        menu.add(0, MENU_DELETE_KEY, 0, "Delete Direct LevelDB Key")
         return true
     }
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
         if (item.itemId == MENU_SAVE) {
             save()
+            return true
+        }
+        if (item.itemId == MENU_DELETE_KEY) {
+            confirmDeleteKey()
             return true
         }
         return super.onOptionsItemSelected(item)
@@ -131,6 +136,31 @@ class BlockEntityListActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun confirmDeleteKey() {
+        val bridge = LevelDbSession.bridge ?: return
+        val key = BlockEntitySession.rawKey ?: return
+        val hex = key.joinToString(" ") { "%02x".format(it) }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Delete block-entity LevelDB key?")
+            .setMessage("This deletes the complete BlockEntity key for chunk (${intent.getIntExtra(EXTRA_CHUNK_X, 0)}, ${intent.getIntExtra(EXTRA_CHUNK_Z, 0)}). All tile/block entities stored under this direct key will be removed.\n\n$hex")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                Thread {
+                    try {
+                        bridge.delete(key)
+                        BlockEntitySession.reset()
+                        runOnUiThread {
+                            Toast.makeText(this, "BlockEntity LevelDB key deleted.", Toast.LENGTH_SHORT).show()
+                            finish()
+                        }
+                    } catch (e: Throwable) {
+                        runOnUiThread { showErrorDialog(this, "Delete failed", e) }
+                    }
+                }.start()
+            }
+            .show()
+    }
+
     private fun save() {
         val bridge = LevelDbSession.bridge ?: return
         val key = BlockEntitySession.rawKey ?: return
@@ -155,6 +185,7 @@ class BlockEntityListActivity : AppCompatActivity() {
         const val EXTRA_CHUNK_Z = "chunk_z"
         const val EXTRA_DIMENSION = "dimension"
         private const val MENU_SAVE = 1
+        private const val MENU_DELETE_KEY = 2
 
         private fun dimensionName(dimension: Int) = when (dimension) {
             1 -> "Nether"

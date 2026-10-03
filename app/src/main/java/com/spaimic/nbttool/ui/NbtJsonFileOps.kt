@@ -9,6 +9,8 @@ import java.io.InputStreamReader
 /** Shared Save-As / Open-Document plumbing for NBT-as-JSON export/import —
  * only what happens with the resulting text differs per screen. */
 object NbtJsonFileOps {
+    const val REQUEST_EXPORT_MCSTRUCTURE = 9003
+
     const val REQUEST_EXPORT_JSON = 9001
     const val REQUEST_IMPORT_JSON = 9002
 
@@ -27,6 +29,22 @@ object NbtJsonFileOps {
             type = "*/*" // JSON files aren't always registered with a consistent MIME type
         }
         activity.startActivityForResult(intent, REQUEST_IMPORT_JSON)
+    }
+
+
+    fun launchMcStructureExport(activity: Activity, suggestedFileName: String) {
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/octet-stream"
+            putExtra(Intent.EXTRA_TITLE, "$suggestedFileName.mcstructure")
+        }
+        activity.startActivityForResult(intent, REQUEST_EXPORT_MCSTRUCTURE)
+    }
+
+    fun writeBytes(activity: Activity, uri: Uri, bytes: ByteArray) {
+        val stream = activity.contentResolver.openOutputStream(uri)
+            ?: throw IllegalStateException("Couldn't open the destination file")
+        stream.use { it.write(bytes) }
     }
 
     fun writeText(activity: Activity, uri: Uri, text: String) {

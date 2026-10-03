@@ -358,7 +358,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
         val dim = dimensionSpinner.selectedItemPosition
         AlertDialog.Builder(this)
             .setTitle("Place MCStructure?")
-            .setMessage("Place $displayName at ($x, $y, $z) in ${dimensionName(dim)}?\n\n${decoded.blocks.size} blocks will be written. ${decoded.entities?.items?.size ?: 0} structure entities will be copied with fresh actor IDs.\n\nThe dedicated MCStructure placement backup is created only once for this world. If it already exists, it will be reused. A normal backup does not replace this dedicated backup.\n\nPlacement uses the selected preview coordinates. Block entities are not written yet.")
+            .setMessage("Place $displayName at ($x, $y, $z) in ${dimensionName(dim)}?\n\n${decoded.blocks.size} blocks will be written. ${decoded.entities?.items?.size ?: 0} structure entities will be copied with fresh actor IDs.\n\nThe dedicated MCStructure placement backup is created only once for this world. If it already exists, it will be reused. A normal backup does not replace this dedicated backup.\n\nPlacement uses the selected preview coordinates. Block entities from block_position_data are also written to their destination chunk keys.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Backup & Place") { _, _ -> performPlacement(decoded, x, y, z, dim) }
             .show()
@@ -390,7 +390,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
                             append("Chunks changed: ${result.chunksChanged}\n")
                             append("Subchunks changed: ${result.subchunksChanged}\n")
                             append("Entities placed: ${result.entitiesPlaced}\n")
-                            append("Block entities pending: ${result.blockEntitiesPending}\n\n")
+                            append("Block entities placed: ${result.blockEntitiesPending}\n\n")
                             append("Backup:\n${result.backupPath}")
                         })
                         .setPositiveButton("OK") { _, _ -> finish() }

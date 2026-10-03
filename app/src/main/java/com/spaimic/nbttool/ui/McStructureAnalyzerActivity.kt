@@ -53,6 +53,28 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
         }
         content.addView(previewButton, LinearLayout.LayoutParams(-1, dp(52)))
 
+        val exportButton = Button(this).apply {
+            text = "Export .mcstructure"
+            setOnClickListener {
+                if (analysis == null) {
+                    Toast.makeText(this@McStructureAnalyzerActivity, "MCStructure is still loading.", Toast.LENGTH_SHORT).show()
+                } else {
+                    NbtJsonFileOps.launchMcStructureExport(
+                        this@McStructureAnalyzerActivity,
+                        NbtJsonFileOps.sanitizeFileName(displayName.removePrefix("structuretemplate_"))
+                    )
+                }
+            }
+        }
+        content.addView(exportButton, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(6) })
+
+        val deleteButton = Button(this).apply {
+            text = "Delete Direct LevelDB Key"
+            visibility = if (intent.getStringExtra(EXTRA_SOURCE_URI).isNullOrBlank()) View.VISIBLE else View.GONE
+            setOnClickListener { confirmDeleteStructureKey(displayName) }
+        }
+        content.addView(deleteButton, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(6) })
+
         val placementButton = Button(this).apply {
             text = "🏗️ Place Structure in World (Prototype)"
             setOnClickListener {
@@ -207,6 +229,33 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
         }
     }
 
+    private fun confirmDeleteStructureKey(displayName: String) {
+        val bridge = LevelDbSession.bridge ?: return
+        val rawKey = LevelDbSession.keyBytesByName[displayName] ?: return
+        val hex = rawKey.joinToString(" ") { "%02x".format(it) }
+        AlertDialog.Builder(this)
+            .setTitle("Delete MCStructure key?")
+            .setMessage("This permanently deletes the complete structuretemplate_ LevelDB key:\n\n$displayName\n$hex")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                Thread {
+                    try {
+                        bridge.delete(rawKey)
+                        LevelDbSession.keyBytesByName.remove(displayName)
+                        LevelDbSession.loadedEntries.remove(displayName)
+                        LevelDbSession.dirtyEntries.remove(displayName)
+                        runOnUiThread {
+                            Toast.makeText(this, "MCStructure LevelDB key deleted.", Toast.LENGTH_SHORT).show()
+                            finish()
+                        }
+                    } catch (e: Throwable) {
+                        runOnUiThread { showErrorDialog(this, "Delete failed", e) }
+                    }
+                }.start()
+            }
+            .show()
+    }
+
     private fun sectionTitle(text: String) = TextView(this).apply {
         this.text = text
         textSize = 15f
@@ -251,6 +300,19 @@ class McStructureAnalyzerActivity : AppCompatActivity() {
             is NbtTag.IntArray -> tag.value.contentToString()
             is NbtTag.LongArray -> tag.value.contentToString()
             is NbtTag.End -> "End"
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || requestCode != NbtJsonFileOps.REQUEST_EXPORT_MCSTRUCTURE) return
+        val uri = data?.data ?: return
+        try {
+            val root = analysis?.raw ?: throw IllegalStateException("MCStructure data is not loaded.")
+            NbtJsonFileOps.writeBytes(this, uri, NbtIO.writeRootCompoundNoHeader(root))
+            Toast.makeText(this, "Exported .mcstructure.", Toast.LENGTH_SHORT).show()
+        } catch (e: Throwable) {
+            showErrorDialog(this, "MCStructure export failed", e)
         }
     }
 

@@ -74,10 +74,22 @@ object McStructurePlacer {
         // Generate fresh world-global actor IDs and append them to the appropriate digp lists.
         val entityWrites = placeEntities(bridge, structure.entities, structure.origin, originX, originY, originZ, dimension)
         writes.addAll(entityWrites)
+
+        // Block entities are stored separately from terrain and modern actors.  Build 228
+        // only reported block_position_data; Build 229 materializes its block_entity_data
+        // into the destination chunk's BlockEntity key.
+        val blockEntityWrites = placeBlockEntities(
+            bridge, structure, originX, originY, originZ, dimension
+        )
+        writes.addAll(blockEntityWrites.first)
+
+        // One atomic LevelDB batch keeps terrain, actors, digests, and block entities
+        // from being left half-written if serialization/validation succeeds.
         bridge.writeBatch(writes)
 
         // Count the actual actor records we queued, not the number of LevelDB keys.
         val entitiesPlaced = entityWrites.count { EntityKeys.isActorPrefixKey(it.first) }
+        val blockEntitiesPlaced = blockEntityWrites.second
 
         // Verify that every actor record and its digest are readable from the same DB
         // immediately after the atomic commit. A successful verification means the app
@@ -90,7 +102,7 @@ object McStructurePlacer {
             chunksChanged = grouped.size,
             subchunksChanged = subchunksChanged,
             entitiesPlaced = entitiesPlaced,
-            blockEntitiesPending = structure.blockPositionData?.entries?.size ?: 0,
+            blockEntitiesPending = blockEntitiesPlaced,
             backupPath = backupPath
         )
     }
@@ -130,7 +142,6 @@ object McStructurePlacer {
             if (storage == null) {
                 throw IllegalStateException("Entity verification failed: StorageKey component is missing.")
             }
-
             // Recover chunk association from the entity position so the digest check
             // is tied to the same placement chunk that Minecraft will load.
             val pos = root.entries["Pos"] as? NbtTag.ListTag
@@ -151,7 +162,11 @@ object McStructurePlacer {
             if (digest.size % 8 != 0) {
                 throw IllegalStateException("Entity verification failed: malformed digp for chunk ${chunk.first},${chunk.second}.")
             }
-            val digestHex = EntityKeys.splitActorIds(digest).map { EntityKeys.actorIdBytesHex(it) }.toSet()
+            val digestIds = EntityKeys.splitActorIds(digest)
+            val digestHex = digestIds.map { EntityKeys.actorIdBytesHex(it) }
+            if (digestHex.size != digestHex.toSet().size) {
+                throw IllegalStateException("Entity verification failed: digp for chunk ${chunk.first},${chunk.second} contains duplicate actor IDs.")
+            }
             for (id in actorIds) {
                 if (EntityKeys.actorIdBytesHex(id) !in digestHex) {
                     throw IllegalStateException("Entity verification failed: actorprefix ID is missing from digp for chunk ${chunk.first},${chunk.second}.")
@@ -162,6 +177,88 @@ object McStructurePlacer {
         if (digestCount != expectedEntities) {
             throw IllegalStateException("Entity verification failed: digest contains $digestCount placed actors, expected $expectedEntities.")
         }
+    }
+
+    private fun placeBlockEntities(
+        bridge: LevelDbBridge,
+        structure: com.spaimic.nbttool.ui.McStructureAnalysis,
+        ox: Int, oy: Int, oz: Int,
+        dimension: Int
+    ): Pair<List<Pair<ByteArray, ByteArray>>, Int> {
+        val data = structure.blockPositionData ?: return emptyList<Pair<ByteArray, ByteArray>>() to 0
+        if (data.entries.isEmpty()) return emptyList<Pair<ByteArray, ByteArray>>() to 0
+
+        val sx = structure.sizeX
+        val sy = structure.sizeY
+        val sz = structure.sizeZ
+        require(sx > 0 && sy > 0 && sz > 0) { "MCStructure dimensions are invalid for block-entity placement." }
+        val sourceOrigin = structure.origin ?: intArrayOf(0, 0, 0)
+        require(sourceOrigin.size >= 3) { "MCStructure world-origin must contain X/Y/Z." }
+
+        val byChunk = LinkedHashMap<Pair<Int, Int>, MutableList<NbtTag.Compound>>()
+        var placed = 0
+        for ((indexText, rawData) in data.entries) {
+            val index = indexText.toIntOrNull()
+                ?: throw IllegalStateException("Invalid block_position_data index '$indexText'.")
+            if (index < 0 || index >= sx * sy * sz) {
+                throw IllegalStateException("block_position_data index $index is outside the structure volume.")
+            }
+            val wrapper = rawData as? NbtTag.Compound
+                ?: throw IllegalStateException("block_position_data[$indexText] is not a compound.")
+            val sourceEntity = wrapper.entries["block_entity_data"] as? NbtTag.Compound
+                ?: continue
+
+            val x = index / (sy * sz)
+            val rem = index % (sy * sz)
+            val y = rem / sz
+            val z = rem % sz
+            val worldX = ox + x - sourceOrigin[0]
+            val worldY = oy + y - sourceOrigin[1]
+            val worldZ = oz + z - sourceOrigin[2]
+            val chunk = Math.floorDiv(worldX, 16) to Math.floorDiv(worldZ, 16)
+
+            val entity = deepCopyCompound(sourceEntity)
+            entity.entries["x"] = NbtTag.Int(worldX)
+            entity.entries["y"] = NbtTag.Int(worldY)
+            entity.entries["z"] = NbtTag.Int(worldZ)
+            byChunk.getOrPut(chunk) { ArrayList() }.add(entity)
+            placed++
+        }
+
+        if (byChunk.isEmpty()) return emptyList<Pair<ByteArray, ByteArray>>() to 0
+        val writes = ArrayList<Pair<ByteArray, ByteArray>>()
+        for ((chunk, additions) in byChunk) {
+            val key = ChunkKeys.blockEntityKey(chunk.first, chunk.second, dimension)
+            val existingBytes = bridge.read(key)
+            val existing = if (existingBytes == null || existingBytes.isEmpty()) {
+                ArrayList()
+            } else {
+                try {
+                    ArrayList(NbtIO.readConcatenatedCompounds(existingBytes))
+                } catch (e: Throwable) {
+                    throw IllegalStateException(
+                        "Existing BlockEntity key for chunk (${chunk.first},${chunk.second}) is malformed; placement was aborted.",
+                        e
+                    )
+                }
+            }
+
+            // Replace an existing block entity at the same absolute coordinate rather
+            // than creating duplicate block actors for one block.
+            for (addition in additions) {
+                val ax = (addition.entries["x"] as? NbtTag.Int)?.value
+                val ay = (addition.entries["y"] as? NbtTag.Int)?.value
+                val az = (addition.entries["z"] as? NbtTag.Int)?.value
+                existing.removeAll { old ->
+                    (old.entries["x"] as? NbtTag.Int)?.value == ax &&
+                        (old.entries["y"] as? NbtTag.Int)?.value == ay &&
+                        (old.entries["z"] as? NbtTag.Int)?.value == az
+                }
+                existing.add(addition)
+            }
+            writes += key to NbtIO.writeConcatenatedCompounds(existing)
+        }
+        return writes to placed
     }
 
     private fun paletteCompound(a: com.spaimic.nbttool.ui.McStructureAnalysis, index: Int): NbtTag.Compound =
