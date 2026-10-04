@@ -123,6 +123,7 @@ object SubChunkParser {
 
     private fun decodeLayer(stream: DataInputStream): Array<Array<Array<String>>> {
         val flag = stream.readUnsignedByte()
+        val isRuntimePalette = (flag and 1) != 0
         val bitsPerBlock = flag ushr 1
         if (bitsPerBlock > 32) throw IOException("implausible bitsPerBlock=$bitsPerBlock (flag=$flag)")
         val indices = IntArray(4096)
@@ -146,7 +147,7 @@ object SubChunkParser {
         }
         // bitsPerBlock == 0 means every index stays 0 — the whole layer is palette[0]
 
-        val paletteSize = readIntLE(stream)
+        val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
         if (paletteSize < 0 || paletteSize > 65536) {
             throw IOException("implausible paletteSize=$paletteSize (bitsPerBlock=$bitsPerBlock)")
         }
@@ -264,6 +265,7 @@ object SubChunkParser {
 
     private fun decodeCompactLayer(stream: DataInputStream): LegacyCompactLayer? {
         val flag = stream.readUnsignedByte()
+        val isRuntimePalette = (flag and 1) != 0
         val bitsPerBlock = flag ushr 1
         if (bitsPerBlock > 32) return null
         val indices = IntArray(4096)
@@ -280,7 +282,7 @@ object SubChunkParser {
                 }
             }
         }
-        val paletteSize = readIntLE(stream)
+        val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
         if (paletteSize !in 1..65536) return null
         val palette = ArrayList<String>(paletteSize)
         repeat(paletteSize) {
@@ -294,13 +296,14 @@ object SubChunkParser {
 
     private fun decodeCompactLayerStrict(stream: DataInputStream): CompactLayer? {
         val flag = stream.readUnsignedByte()
+        val isRuntimePalette = (flag and 1) != 0
         val bitsPerBlock = flag ushr 1
         if (bitsPerBlock > 32) return null
         val perWord = if (bitsPerBlock == 0) 0 else 32 / bitsPerBlock
         val wordCount = if (bitsPerBlock == 0) 0 else (4096 + perWord - 1) / perWord
         val words = IntArray(wordCount)
         for (i in 0 until wordCount) words[i] = readIntLE(stream)
-        val paletteSize = readIntLE(stream)
+        val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
         if (paletteSize !in 1..65536) return null
         val palette = Array(paletteSize) {
             val compound = NbtIO.readCompoundFromStream(stream)
@@ -312,6 +315,20 @@ object SubChunkParser {
     fun isAirForSearch(name: String): Boolean = name == "minecraft:air" || name == "air"
 
     private fun isAirName(name: String): Boolean = isAirForSearch(name)
+
+    private fun readZigZagVarInt(stream: DataInputStream): Int {
+        var result = 0
+        var shift = 0
+        while (shift < 35) {
+            val b = stream.readUnsignedByte()
+            result = result or ((b and 0x7f) shl shift)
+            if ((b and 0x80) == 0) {
+                return (result ushr 1) xor -(result and 1)
+            }
+            shift += 7
+        }
+        throw IOException("Invalid palette count varint")
+    }
 
     private fun readIntLE(stream: DataInputStream): Int {
         val a = stream.readUnsignedByte(); val b = stream.readUnsignedByte()

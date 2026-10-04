@@ -14,7 +14,11 @@ import java.io.DataInputStream
 object McStructureSubChunkPlacer {
     data class Placement(val x: Int, val localY: Int, val z: Int, val subChunkY: Int, val palette: NbtTag.Compound)
 
-    private data class Layer(val palette: MutableList<NbtTag.Compound>, val indices: IntArray)
+    private data class Layer(
+        val palette: MutableList<NbtTag.Compound>,
+        val indices: IntArray,
+        val isRuntimePalette: Boolean
+    )
     private data class Decoded(val version: Int, val indexByte: Int?, val layers: MutableList<Layer>)
 
     fun apply(bytes: ByteArray, placements: List<Placement>): ByteArray {
@@ -37,7 +41,7 @@ object McStructureSubChunkPlacer {
             require(p.x in 0..15 && p.localY in 0..15 && p.z in 0..15)
             indices[(p.x shl 8) or (p.z shl 4) or p.localY] = findOrAddExact(palette, p.palette)
         }
-        return encode(Decoded(8, null, mutableListOf(Layer(palette, indices))))
+        return encode(Decoded(8, null, mutableListOf(Layer(palette, indices, false))))
     }
 
     private fun findOrAddExact(palette: MutableList<NbtTag.Compound>, wanted: NbtTag.Compound): Int {
@@ -61,6 +65,7 @@ object McStructureSubChunkPlacer {
         val layers = ArrayList<Layer>(layerCount)
         repeat(layerCount) {
             val flag = s.readUnsignedByte()
+            val isRuntimePalette = (flag and 1) != 0
             val bits = flag ushr 1
             require(bits <= 32)
             val indices = IntArray(4096)
@@ -77,11 +82,11 @@ object McStructureSubChunkPlacer {
                     }
                 }
             }
-            val paletteSize = readIntLE(s)
+            val paletteSize = if (isRuntimePalette) readZigZagVarInt(s) else readIntLE(s)
             require(paletteSize in 1..65536) { "Invalid palette size $paletteSize" }
             val palette = ArrayList<NbtTag.Compound>(paletteSize)
             repeat(paletteSize) { palette += NbtIO.readCompoundFromStream(s) }
-            layers += Layer(palette, indices)
+            layers += Layer(palette, indices, isRuntimePalette)
         }
         return Decoded(version, indexByte, layers)
     }
@@ -93,7 +98,9 @@ object McStructureSubChunkPlacer {
         if (decoded.version == 9) out.write(decoded.indexByte ?: 0)
         for (layer in decoded.layers) {
             val bits = bitsForPalette(layer.palette.size)
-            out.write(bits shl 1)
+            // Preserve the original storage type. Runtime palettes use a ZigZag
+            // signed-varint palette count; persistent palettes use int32 LE.
+            out.write((bits shl 1) or if (layer.isRuntimePalette) 1 else 0)
             if (bits > 0) {
                 val perWord = 32 / bits
                 val wordCount = (4096 + perWord - 1) / perWord
@@ -108,7 +115,8 @@ object McStructureSubChunkPlacer {
                     writeIntLE(out, word)
                 }
             }
-            writeIntLE(out, layer.palette.size)
+            if (layer.isRuntimePalette) writeZigZagVarInt(out, layer.palette.size)
+            else writeIntLE(out, layer.palette.size)
             for (compound in layer.palette) out.write(NbtIO.writeRootCompoundNoHeader(compound))
         }
         return out.toByteArray()
@@ -130,6 +138,29 @@ object McStructureSubChunkPlacer {
     private fun readIntLE(s: DataInputStream): Int =
         s.readUnsignedByte() or (s.readUnsignedByte() shl 8) or
             (s.readUnsignedByte() shl 16) or (s.readUnsignedByte() shl 24)
+
+    private fun readZigZagVarInt(s: DataInputStream): Int {
+        var result = 0
+        var shift = 0
+        while (shift < 35) {
+            val b = s.readUnsignedByte()
+            result = result or ((b and 0x7f) shl shift)
+            if ((b and 0x80) == 0) {
+                return (result ushr 1) xor -(result and 1)
+            }
+            shift += 7
+        }
+        throw IllegalArgumentException("Invalid palette count varint")
+    }
+
+    private fun writeZigZagVarInt(out: ByteArrayOutputStream, value: Int) {
+        var v = (value shl 1) xor (value shr 31)
+        while ((v and 0xFFFFFF80.toInt()) != 0) {
+            out.write((v and 0x7f) or 0x80)
+            v = v ushr 7
+        }
+        out.write(v and 0x7f)
+    }
 
     private fun writeIntLE(out: ByteArrayOutputStream, v: Int) {
         out.write(v and 255); out.write((v ushr 8) and 255)
