@@ -145,16 +145,22 @@ object SubChunkParser {
                 }
             }
         }
-        // bitsPerBlock == 0 means every index stays 0 — the whole layer is palette[0]
-
-        val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
-        if (paletteSize < 0 || paletteSize > 65536) {
-            throw IOException("implausible paletteSize=$paletteSize (bitsPerBlock=$bitsPerBlock)")
-        }
-        val palette = ArrayList<String>(paletteSize)
-        repeat(paletteSize) {
+        // bitsPerBlock == 0 is a single-value persistent layer. Its one NBT
+        // compound follows immediately; there is no palette-count integer.
+        val palette = ArrayList<String>(1)
+        if (bitsPerBlock == 0) {
+            if (isRuntimePalette) throw IOException("Unsupported runtime single-value disk palette")
             val compound = NbtIO.readCompoundFromStream(stream)
             palette.add((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
+        } else {
+            val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
+            if (paletteSize < 1 || paletteSize > 65536) {
+                throw IOException("implausible paletteSize=$paletteSize (bitsPerBlock=$bitsPerBlock)")
+            }
+            repeat(paletteSize) {
+                val compound = NbtIO.readCompoundFromStream(stream)
+                palette.add((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
+            }
         }
 
         val out = Array(16) { Array(16) { Array(16) { "minecraft:air" } } }
@@ -282,12 +288,18 @@ object SubChunkParser {
                 }
             }
         }
-        val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
-        if (paletteSize !in 1..65536) return null
-        val palette = ArrayList<String>(paletteSize)
-        repeat(paletteSize) {
+        val palette = ArrayList<String>(1)
+        if (bitsPerBlock == 0) {
+            if (isRuntimePalette) return null
             val compound = NbtIO.readCompoundFromStream(stream)
             palette.add((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
+        } else {
+            val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
+            if (paletteSize !in 1..65536) return null
+            repeat(paletteSize) {
+                val compound = NbtIO.readCompoundFromStream(stream)
+                palette.add((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
+            }
         }
         return LegacyCompactLayer(indices, palette)
     }
@@ -303,11 +315,18 @@ object SubChunkParser {
         val wordCount = if (bitsPerBlock == 0) 0 else (4096 + perWord - 1) / perWord
         val words = IntArray(wordCount)
         for (i in 0 until wordCount) words[i] = readIntLE(stream)
-        val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
-        if (paletteSize !in 1..65536) return null
-        val palette = Array(paletteSize) {
+        val palette: Array<String>
+        if (bitsPerBlock == 0) {
+            if (isRuntimePalette) return null
             val compound = NbtIO.readCompoundFromStream(stream)
-            (compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown"
+            palette = arrayOf((compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown")
+        } else {
+            val paletteSize = if (isRuntimePalette) readZigZagVarInt(stream) else readIntLE(stream)
+            if (paletteSize !in 1..65536) return null
+            palette = Array(paletteSize) {
+                val compound = NbtIO.readCompoundFromStream(stream)
+                (compound.entries["name"] as? NbtTag.Str)?.value ?: "minecraft:unknown"
+            }
         }
         return CompactLayer(bitsPerBlock, words, palette)
     }

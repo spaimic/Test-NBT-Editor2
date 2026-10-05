@@ -61,9 +61,8 @@ object ChunkDeleter {
         out.write(9)          // subchunk format version
         out.write(1)          // one storage layer
         out.write(subChunkY)  // embedded Y index — version 9 stores this here, right after the layer count
-        out.write(0)          // flag byte: bitsPerBlock = 0 -> whole layer is a single block, no packed indices
-        // paletteSize = 1, little-endian int32
-        out.write(1); out.write(0); out.write(0); out.write(0)
+        out.write(0)          // bitsPerBlock = 0: single-value persistent layer
+        // No palette-size field is present for bitsPerBlock == 0.
         out.write(paletteEntryBytes)
         return out.toByteArray()
     }

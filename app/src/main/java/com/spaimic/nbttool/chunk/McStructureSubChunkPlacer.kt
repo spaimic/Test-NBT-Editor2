@@ -82,11 +82,22 @@ object McStructureSubChunkPlacer {
                     }
                 }
             }
-            val paletteSize = if (isRuntimePalette) readZigZagVarInt(s) else readIntLE(s)
-            require(paletteSize in 1..65536) { "Invalid palette size $paletteSize" }
-            val palette = ArrayList<NbtTag.Compound>(paletteSize)
-            repeat(paletteSize) { palette += NbtIO.readCompoundFromStream(s) }
-            layers += Layer(palette, indices, isRuntimePalette)
+            // A persistent disk layer with bitsPerBlock == 0 is a single-value
+            // palette: the one NBT block state follows immediately. There is no
+            // 4-byte palette-count field. Reading one here would consume the
+            // first four bytes of the NBT compound (0A 00 00 08), producing the
+            // misleading palette size 0x0800000A / 134217738.
+            if (bits == 0) {
+                require(!isRuntimePalette) { "Runtime single-value subchunk palettes are not supported in disk data" }
+                val palette = arrayListOf(NbtIO.readCompoundFromStream(s))
+                layers += Layer(palette, indices, false)
+            } else {
+                val paletteSize = if (isRuntimePalette) readZigZagVarInt(s) else readIntLE(s)
+                require(paletteSize in 1..65536) { "Invalid palette size $paletteSize" }
+                val palette = ArrayList<NbtTag.Compound>(paletteSize)
+                repeat(paletteSize) { palette += NbtIO.readCompoundFromStream(s) }
+                layers += Layer(palette, indices, isRuntimePalette)
+            }
         }
         return Decoded(version, indexByte, layers)
     }
@@ -115,8 +126,14 @@ object McStructureSubChunkPlacer {
                     writeIntLE(out, word)
                 }
             }
-            if (layer.isRuntimePalette) writeZigZagVarInt(out, layer.palette.size)
-            else writeIntLE(out, layer.palette.size)
+            if (bits == 0) {
+                // Single-value persistent layers have no palette-count field.
+                require(!layer.isRuntimePalette) { "Cannot encode runtime single-value disk layer" }
+                require(layer.palette.size == 1) { "bitsPerBlock=0 requires exactly one palette entry" }
+            } else {
+                if (layer.isRuntimePalette) writeZigZagVarInt(out, layer.palette.size)
+                else writeIntLE(out, layer.palette.size)
+            }
             for (compound in layer.palette) out.write(NbtIO.writeRootCompoundNoHeader(compound))
         }
         return out.toByteArray()

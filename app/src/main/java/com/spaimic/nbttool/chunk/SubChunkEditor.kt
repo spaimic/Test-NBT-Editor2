@@ -84,10 +84,15 @@ object SubChunkEditor {
                     }
                 }
             }
-            val paletteSize = readIntLE(s)
-            require(paletteSize in 1..65536)
-            val palette = ArrayList<NbtTag.Compound>(paletteSize)
-            repeat(paletteSize) { palette += NbtIO.readCompoundFromStream(s) }
+            val palette = if (bits == 0) {
+                arrayListOf(NbtIO.readCompoundFromStream(s))
+            } else {
+                val paletteSize = readIntLE(s)
+                require(paletteSize in 1..65536)
+                ArrayList<NbtTag.Compound>(paletteSize).also { list ->
+                    repeat(paletteSize) { list += NbtIO.readCompoundFromStream(s) }
+                }
+            }
             layers += Layer(palette, indices)
         }
         return Decoded(version, indexByte, layers)
@@ -115,7 +120,8 @@ object SubChunkEditor {
                     writeIntLE(out, word)
                 }
             }
-            writeIntLE(out, layer.palette.size)
+            if (bits > 0) writeIntLE(out, layer.palette.size)
+            else require(layer.palette.size == 1) { "bitsPerBlock=0 requires exactly one palette entry" }
             for (compound in layer.palette) out.write(NbtIO.writeRootCompoundNoHeader(compound))
         }
         return out.toByteArray()
