@@ -5,16 +5,20 @@ import com.spaimic.nbttool.nbt.NbtTag
 import com.spaimic.nbttool.shizuku.LevelDbBridge
 import java.util.concurrent.ThreadLocalRandom
 
-/** MCStructure placement. Blocks are written to terrain and structure entities are
- * converted into modern Bedrock actorprefix/digp records. Block-position-data is
- * still reported but not written yet. */
+/** MCStructure placement. Blocks are written to terrain, structure entities are
+ * converted into modern Bedrock actorprefix/digp records, and block-position-data
+ * block entities are materialized into destination BlockEntity records. */
 object McStructurePlacer {
+    private const val MCSTRUCTURE_BATCH_MAX_BYTES = 64 * 1024
+
     data class Result(
         val blocksPlaced: Int,
         val chunksChanged: Int,
         val subchunksChanged: Int,
         val entitiesPlaced: Int,
         val blockEntitiesPending: Int,
+        val writeBatchCount: Long,
+        val estimatedWriteBytes: Long,
         val backupPath: String
     )
 
@@ -83,9 +87,10 @@ object McStructurePlacer {
         )
         writes.addAll(blockEntityWrites.first)
 
-        // One atomic LevelDB batch keeps terrain, actors, digests, and block entities
-        // from being left half-written if serialization/validation succeeds.
-        bridge.writeBatch(writes)
+        // Large MCStructure placements can expand into many actor, digest, terrain, and
+        // block-entity records. Keep entries ordered, but commit them in small 64 KiB
+        // WriteBatch operations instead of one multi-hundred-KiB/megabyte batch.
+        val writeStats = bridge.writeBatchChunked(writes, MCSTRUCTURE_BATCH_MAX_BYTES)
 
         // Count the actual actor records we queued, not the number of LevelDB keys.
         val entitiesPlaced = entityWrites.count { EntityKeys.isActorPrefixKey(it.first) }
@@ -103,6 +108,8 @@ object McStructurePlacer {
             subchunksChanged = subchunksChanged,
             entitiesPlaced = entitiesPlaced,
             blockEntitiesPending = blockEntitiesPlaced,
+            writeBatchCount = writeStats.batchCount,
+            estimatedWriteBytes = writeStats.estimatedBytes,
             backupPath = backupPath
         )
     }

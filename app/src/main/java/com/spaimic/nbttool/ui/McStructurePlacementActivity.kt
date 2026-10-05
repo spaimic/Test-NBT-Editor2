@@ -238,7 +238,7 @@ class McStructurePlacementActivity : AppCompatActivity() {
                         append("• Blocks preserve the full palette compounds, including states and version.\n")
                         append("• Structure entities are copied to modern actor storage with fresh IDs.\n")
                         append("• Existing terrain chunks are edited; entirely new terrain chunks are not created.\n")
-                        append("• Block-position-data/block entities are not written yet.\n")
+                        append("• Block-position-data block entities are written into destination BlockEntity keys.\n")
                     }
                     refreshPlacementPreview(forceTerrainReload = true)
                 }
@@ -390,7 +390,9 @@ class McStructurePlacementActivity : AppCompatActivity() {
                             append("Chunks changed: ${result.chunksChanged}\n")
                             append("Subchunks changed: ${result.subchunksChanged}\n")
                             append("Entities placed: ${result.entitiesPlaced}\n")
-                            append("Block entities placed: ${result.blockEntitiesPending}\n\n")
+                            append("Block entities placed: ${result.blockEntitiesPending}\n")
+                            append("LevelDB write batches: ${result.writeBatchCount} (64 KiB max)\n")
+                            append("Estimated write payload: ${result.estimatedWriteBytes} bytes\n\n")
                             append("Backup:\n${result.backupPath}")
                         })
                         .setPositiveButton("OK") { _, _ -> finish() }

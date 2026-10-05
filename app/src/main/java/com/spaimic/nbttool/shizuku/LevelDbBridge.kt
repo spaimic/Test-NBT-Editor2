@@ -130,6 +130,67 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
         }
     }
 
+    /**
+     * Writes entries in ordered, bounded-size WriteBatch operations. The limit is
+     * based on key + value bytes plus a small per-entry allowance for LevelDB's
+     * batch record framing. Individual entries are never split across batches.
+     *
+     * This is intentionally separate from [writeBatch] so existing editor flows
+     * keep their current atomic-batch behavior while large MCStructure placement
+     * can avoid constructing one multi-megabyte WriteBatch.
+     */
+    fun writeBatchChunked(
+        entries: Collection<Pair<ByteArray, ByteArray>>,
+        maxBytes: Int = 64 * 1024
+    ): BatchWriteStats {
+        require(maxBytes > 0) { "maxBytes must be greater than zero." }
+        if (entries.isEmpty()) return BatchWriteStats(0, 0L, 0L)
+
+        val perEntryOverhead = 16L
+        var batchCount = 0L
+        var totalBytes = 0L
+        var currentBytes = 0L
+        var currentCount = 0
+        var batch = db.createWriteBatch()
+
+        fun flush() {
+            if (currentCount == 0) return
+            db.write(batch)
+            batch.close()
+            batchCount++
+            currentBytes = 0L
+            currentCount = 0
+            batch = db.createWriteBatch()
+        }
+
+        try {
+            for ((key, value) in entries) {
+                val entryBytes = key.size.toLong() + value.size.toLong() + perEntryOverhead
+                if (currentCount > 0 && currentBytes + entryBytes > maxBytes.toLong()) {
+                    flush()
+                }
+
+                // Never split an individual LevelDB entry. A record larger than
+                // maxBytes is committed as its own batch.
+                batch.put(key, value)
+                currentBytes += entryBytes
+                currentCount++
+                totalBytes += entryBytes
+            }
+            flush()
+        } finally {
+            batch.close()
+        }
+
+        return BatchWriteStats(batchCount, totalBytes, entries.size.toLong())
+    }
+
+    data class BatchWriteStats(
+        val batchCount: Long,
+        val estimatedBytes: Long,
+        val entryCount: Long
+    )
+
     fun delete(rawKey: ByteArray) = db.delete(rawKey)
 
     /** Full raw scan of every key/value pair. Kept for advanced/raw tooling. */
