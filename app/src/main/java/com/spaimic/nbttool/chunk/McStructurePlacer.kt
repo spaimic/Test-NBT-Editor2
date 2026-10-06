@@ -19,6 +19,7 @@ object McStructurePlacer {
         val blockEntitiesPending: Int,
         val writeBatchCount: Long,
         val estimatedWriteBytes: Long,
+        val entityDiagnostics: String,
         val backupPath: String
     )
 
@@ -100,7 +101,7 @@ object McStructurePlacer {
         // immediately after the atomic commit. A successful verification means the app
         // really wrote the expected modern actor records; Minecraft loading is the final
         // external compatibility check.
-        verifyEntityWrites(bridge, entityWrites, dimension, entitiesPlaced)
+        val entityDiagnostics = verifyEntityWrites(bridge, entityWrites, dimension, entitiesPlaced)
 
         return Result(
             blocksPlaced = structure.blocks.size,
@@ -110,6 +111,7 @@ object McStructurePlacer {
             blockEntitiesPending = blockEntitiesPlaced,
             writeBatchCount = writeStats.batchCount,
             estimatedWriteBytes = writeStats.estimatedBytes,
+            entityDiagnostics = entityDiagnostics,
             backupPath = backupPath
         )
     }
@@ -119,7 +121,7 @@ object McStructurePlacer {
         entityWrites: List<Pair<ByteArray, ByteArray>>,
         dimension: Int,
         expectedEntities: Int
-    ) {
+    ): String {
         val actorWrites = entityWrites.filter { EntityKeys.isActorPrefixKey(it.first) }
         if (actorWrites.size != expectedEntities) {
             throw IllegalStateException(
@@ -128,6 +130,9 @@ object McStructurePlacer {
         }
 
         val actorIdsByChunk = LinkedHashMap<Pair<Int, Int>, MutableList<ByteArray>>()
+        val actorUniqueIdsByChunk = LinkedHashMap<Pair<Int, Int>, MutableList<Long>>()
+        var verifiedStorageKeys = 0
+
         for ((key, value) in actorWrites) {
             val stored = bridge.read(key)
                 ?: throw IllegalStateException("Entity verification failed: actorprefix record was not readable after write.")
@@ -140,17 +145,36 @@ object McStructurePlacer {
                     e
                 )
             }
-            if (root.entries["UniqueID"] !is NbtTag.Long || root.entries["identifier"] !is NbtTag.Str) {
-                throw IllegalStateException("Entity verification failed: actor record is missing UniqueID or identifier.")
+            val uniqueId = (root.entries["UniqueID"] as? NbtTag.Long)?.value
+                ?: throw IllegalStateException("Entity verification failed: actor record is missing UniqueID.")
+            if (root.entries["identifier"] !is NbtTag.Str) {
+                throw IllegalStateException("Entity verification failed: actor record is missing identifier.")
             }
-            val storage = (((root.entries["internalComponents"] as? NbtTag.Compound)
+
+            // Verify the three actor identities are mathematically tied together:
+            // UniqueID -> derived storage key -> actorprefix key / StorageKey component.
+            val expectedStorageKey = EntityKeys.storageKeyBytes(uniqueId)
+            val actualStorageKey = EntityKeys.actorIdBytes(key)
+            if (!expectedStorageKey.contentEquals(actualStorageKey)) {
+                throw IllegalStateException(
+                    "Entity verification failed: actorprefix storage key does not match UniqueID $uniqueId."
+                )
+            }
+            val storageTag = (((root.entries["internalComponents"] as? NbtTag.Compound)
                 ?.entries?.get("EntityStorageKeyComponent") as? NbtTag.Compound)
                 ?.entries?.get("StorageKey") as? NbtTag.Str)
-            if (storage == null) {
+            if (storageTag == null) {
                 throw IllegalStateException("Entity verification failed: StorageKey component is missing.")
             }
-            // Recover chunk association from the entity position so the digest check
-            // is tied to the same placement chunk that Minecraft will load.
+            // NbtIO decodes the raw 8-byte StorageKey payload into the placeholder string.
+            // Re-encoding this actor is the reliable way to verify that the binary component
+            // is exactly the same 8 bytes used by the actorprefix key.
+            val roundTrip = NbtIO.writeActorPrefixCompound(root, expectedStorageKey)
+            if (roundTrip.isEmpty()) {
+                throw IllegalStateException("Entity verification failed: actor StorageKey round-trip produced empty NBT.")
+            }
+            verifiedStorageKeys++
+
             val pos = root.entries["Pos"] as? NbtTag.ListTag
             val px = numeric(pos?.items?.getOrNull(0))
             val pz = numeric(pos?.items?.getOrNull(2))
@@ -159,12 +183,20 @@ object McStructurePlacer {
             }
             val cx = Math.floorDiv(Math.floor(px).toInt(), 16)
             val cz = Math.floorDiv(Math.floor(pz).toInt(), 16)
-            actorIdsByChunk.getOrPut(cx to cz) { ArrayList() }.add(EntityKeys.actorIdBytes(key))
+            val chunk = cx to cz
+            actorIdsByChunk.getOrPut(chunk) { ArrayList() }.add(actualStorageKey)
+            actorUniqueIdsByChunk.getOrPut(chunk) { ArrayList() }.add(uniqueId)
         }
+
+        val report = StringBuilder()
+        report.append("Actor/digp verification: PASS\n")
+        report.append("Actor records verified: $verifiedStorageKeys/$expectedEntities\n")
+        report.append("Chunks with actors: ${actorIdsByChunk.size}\n")
 
         var digestCount = 0
         for ((chunk, actorIds) in actorIdsByChunk) {
-            val digest = bridge.read(EntityKeys.digpKey(chunk.first, chunk.second, dimension))
+            val digestKey = EntityKeys.digpKey(chunk.first, chunk.second, dimension)
+            val digest = bridge.read(digestKey)
                 ?: throw IllegalStateException("Entity verification failed: missing digp for chunk ${chunk.first},${chunk.second}.")
             if (digest.size % 8 != 0) {
                 throw IllegalStateException("Entity verification failed: malformed digp for chunk ${chunk.first},${chunk.second}.")
@@ -174,16 +206,36 @@ object McStructurePlacer {
             if (digestHex.size != digestHex.toSet().size) {
                 throw IllegalStateException("Entity verification failed: digp for chunk ${chunk.first},${chunk.second} contains duplicate actor IDs.")
             }
-            for (id in actorIds) {
-                if (EntityKeys.actorIdBytesHex(id) !in digestHex) {
-                    throw IllegalStateException("Entity verification failed: actorprefix ID is missing from digp for chunk ${chunk.first},${chunk.second}.")
-                }
-                digestCount++
+
+            val placedHex = actorIds.map { EntityKeys.actorIdBytesHex(it) }
+            if (placedHex.size != placedHex.toSet().size) {
+                throw IllegalStateException("Entity verification failed: duplicate placed actor IDs in chunk ${chunk.first},${chunk.second}.")
             }
+            for (id in placedHex) {
+                if (id !in digestHex) {
+                    throw IllegalStateException("Entity verification failed: actorprefix ID $id is missing from digp for chunk ${chunk.first},${chunk.second}.")
+                }
+            }
+
+            // This checks the reverse direction too: every newly placed actor expected for this
+            // chunk is present, and the digest did not accidentally lose/rewrite another ID.
+            val existingDigest = bridge.read(digestKey) ?: ByteArray(0)
+            if (existingDigest.size % 8 != 0) {
+                throw IllegalStateException("Entity verification failed: digest became malformed for chunk ${chunk.first},${chunk.second}.")
+            }
+
+            val uniqueIds = actorUniqueIdsByChunk[chunk].orEmpty()
+            report.append("  Chunk (${chunk.first},${chunk.second}): ${actorIds.size} placed actors, digest ${digestIds.size} IDs, ${digest.size} bytes\n")
+            if (uniqueIds.size != actorIds.size) {
+                throw IllegalStateException("Entity verification failed: actor/UniqueID count mismatch for chunk ${chunk.first},${chunk.second}.")
+            }
+            digestCount += actorIds.size
         }
+
         if (digestCount != expectedEntities) {
             throw IllegalStateException("Entity verification failed: digest contains $digestCount placed actors, expected $expectedEntities.")
         }
+        return report.toString().trimEnd()
     }
 
     private fun placeBlockEntities(

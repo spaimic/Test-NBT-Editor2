@@ -393,7 +393,8 @@ class McStructurePlacementActivity : AppCompatActivity() {
                             append("Block entities placed: ${result.blockEntitiesPending}\n")
                             append("LevelDB write batches: ${result.writeBatchCount} (64 KiB max)\n")
                             append("Estimated write payload: ${result.estimatedWriteBytes} bytes\n\n")
-                            append("Backup:\n${result.backupPath}")
+                            append(result.entityDiagnostics)
+                            append("\n\nBackup:\n${result.backupPath}")
                         })
                         .setPositiveButton("OK") { _, _ -> finish() }
                         .show()
