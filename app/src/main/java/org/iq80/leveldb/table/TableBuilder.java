@@ -106,6 +106,12 @@ public class TableBuilder
     public long getFileSize()
             throws IOException
     {
+        // Once finish() has run, `position` is the exact number of bytes written.
+        // Adding the (empty) data block's size estimate here used to over-report the
+        // file size by 4 bytes, which compaction then recorded in the MANIFEST.
+        if (closed) {
+            return position;
+        }
         return position + dataBlockBuilder.currentSizeEstimate();
     }
 
