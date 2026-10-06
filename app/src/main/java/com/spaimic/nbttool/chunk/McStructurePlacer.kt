@@ -567,6 +567,12 @@ object McStructurePlacer {
             "Sitting"
         ).forEach(::byteField)
 
+        // Build 235: structures whose actors carry IsAutonomous = 1 (all 144 wolves in the
+        // colored-wolf test structure) never loaded in Minecraft. Bisecting every odd flag
+        // in that structure showed IsAutonomous alone was the cause, so placed actors are
+        // always written with it cleared (the normal saved value).
+        root.entries["IsAutonomous"] = NbtTag.Byte(0)
+
         floatField("FallDistance")
         intField("MarkVariant")
         intField("PortalCooldown")
