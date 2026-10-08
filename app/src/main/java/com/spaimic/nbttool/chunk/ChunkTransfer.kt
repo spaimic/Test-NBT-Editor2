@@ -35,18 +35,15 @@ object ChunkTransfer {
         val records = ArrayList<ChunkClipboard.Record>()
         val actorIds = LinkedHashMap<String, ByteArray>()
 
-        bridge.forEachRawEntry { key, value ->
-            val info = ChunkKeys.parse(key)
-            if (info != null && info.chunkX == chunkX && info.chunkZ == chunkZ && info.dimension == dimension) {
-                records += ChunkClipboard.Record(key.copyOf(), value.copyOf())
-            } else if (EntityKeys.isDigpKeyForDimension(key, dimension)) {
-                val (kx, kz) = EntityKeys.digpChunkXZ(key)
-                if (kx == chunkX && kz == chunkZ) {
-                    records += ChunkClipboard.Record(key.copyOf(), value.copyOf())
-                    for (id in EntityKeys.splitActorIds(value)) {
-                        actorIds[EntityKeys.actorIdBytesHex(id)] = id
-                    }
-                }
+        for ((key, value) in bridge.listChunkRawEntries(chunkX, chunkZ, dimension)) {
+            records += ChunkClipboard.Record(key, value)
+        }
+        val digpKey = EntityKeys.digpKey(chunkX, chunkZ, dimension)
+        val digpValue = bridge.read(digpKey)
+        if (digpValue != null) {
+            records += ChunkClipboard.Record(digpKey, digpValue.copyOf())
+            for (id in EntityKeys.splitActorIds(digpValue)) {
+                actorIds[EntityKeys.actorIdBytesHex(id)] = id
             }
         }
 
@@ -79,18 +76,15 @@ object ChunkTransfer {
 
         // Remove every chunk-local record in the selected dimension. Also remove
         // actor records referenced by the destination digp list.
-        bridge.forEachRawEntry { key, value ->
-            val info = ChunkKeys.parse(key)
-            if (info != null && info.chunkX == targetX && info.chunkZ == targetZ && info.dimension == dimension) {
-                destinationKeys += key.copyOf()
-            } else if (EntityKeys.isDigpKeyForDimension(key, dimension)) {
-                val (kx, kz) = EntityKeys.digpChunkXZ(key)
-                if (kx == targetX && kz == targetZ) {
-                    destinationKeys += key.copyOf()
-                    for (id in EntityKeys.splitActorIds(value)) {
-                        destinationActorIds[EntityKeys.actorIdHex(id)] = id
-                    }
-                }
+        for ((key, _) in bridge.listChunkRawEntries(targetX, targetZ, dimension)) {
+            destinationKeys += key
+        }
+        val destinationDigpKey = EntityKeys.digpKey(targetX, targetZ, dimension)
+        val destinationDigp = bridge.read(destinationDigpKey)
+        if (destinationDigp != null) {
+            destinationKeys += destinationDigpKey
+            for (id in EntityKeys.splitActorIds(destinationDigp)) {
+                destinationActorIds[EntityKeys.actorIdHex(id)] = id
             }
         }
 

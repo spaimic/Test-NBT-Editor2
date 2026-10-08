@@ -30,15 +30,14 @@ object ChunkDeleter {
     private const val BLOCKSTATE_VERSION = (1 shl 24) or (21 shl 16) or (100 shl 8) or 0
 
     fun clearChunkToAir(bridge: LevelDbBridge, chunkX: Int, chunkZ: Int, dimension: Int = 0) {
-        // overwrite every subchunk in the full height range with all-air
-        for (subY in MIN_SUBCHUNK_Y..MAX_SUBCHUNK_Y) {
-            bridge.write(ChunkKeys.subChunkKey(chunkX, chunkZ, subY, dimension), buildAirSubChunkBytes(subY))
+        // Commit all 24 air subchunks together instead of issuing 24 independent writes.
+        val airWrites = (MIN_SUBCHUNK_Y..MAX_SUBCHUNK_Y).map { subY ->
+            ChunkKeys.subChunkKey(chunkX, chunkZ, subY, dimension) to buildAirSubChunkBytes(subY)
         }
+        bridge.writeBatch(airWrites)
 
-        // remove block entities (chests, furnaces, etc. — meaningless once their block is air)
+        // Remove chunk-local block entities and actor records referenced by this chunk's digest.
         bridge.delete(ChunkKeys.blockEntityKey(chunkX, chunkZ, dimension))
-
-        // remove every entity actually living in this chunk, found via its digp record
         val digpKey = EntityKeys.digpKey(chunkX, chunkZ, dimension)
         val digpValue = bridge.read(digpKey)
         if (digpValue != null) {

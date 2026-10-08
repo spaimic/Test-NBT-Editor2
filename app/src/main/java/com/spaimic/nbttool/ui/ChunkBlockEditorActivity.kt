@@ -328,7 +328,7 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         container.addView(from); container.addView(to)
         AlertDialog.Builder(this)
             .setTitle("Replace blocks")
-            .setMessage("Replace a block in this BlockChunk, or replace every matching block in this BlockChunk.")
+            .setMessage("Replace the selected block, or replace every matching block across the entire 16×16 chunk (Y -64 to 320).")
             .setView(container)
             .setPositiveButton("Replace Selected") { _, _ ->
                 replaceSelected(from.text.toString().trim(), to.text.toString().trim())
@@ -364,10 +364,18 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
             return
         }
         val changesNow = ArrayList<BlockChange>()
-        for (y in 320 downTo -64) {
-            val current = currentBlock(selectedX, selectedZ, y)
-            if (current.equals(from, ignoreCase = true)) {
-                changesNow += BlockChange(Triple(selectedX, selectedZ, y), current, to)
+        // Search the entire 16×16 chunk, not just the currently selected X/Z column.
+        // Decode one column at a time to avoid materializing a huge 16×16×385 string cube.
+        for (z in 0..15) for (x in 0..15) {
+            for ((subY, bytes) in original) {
+                for ((worldY, blockName) in SubChunkParser.readColumn(bytes, x, z, subY)) {
+                    if (worldY !in -64..320 || !blockName.equals(from, ignoreCase = true)) continue
+                    val position = Triple(x, z, worldY)
+                    val current = changes[position]?.after ?: blockName
+                    if (current.equals(from, ignoreCase = true)) {
+                        changesNow += BlockChange(position, current, to)
+                    }
+                }
             }
         }
         if (changesNow.isEmpty()) {

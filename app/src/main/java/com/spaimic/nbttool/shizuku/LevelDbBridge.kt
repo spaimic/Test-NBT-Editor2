@@ -214,6 +214,33 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
         }
     }
 
+    /** Reads chunk-local records by seeking to the binary X/Z prefix instead of scanning the world. */
+    fun listChunkRawEntries(chunkX: Int, chunkZ: Int, dimension: Int = 0): List<Pair<ByteArray, ByteArray>> {
+        val prefix = ByteArray(8)
+        fun putI32LE(offset: Int, v: Int) {
+            prefix[offset] = (v and 0xFF).toByte()
+            prefix[offset + 1] = ((v ushr 8) and 0xFF).toByte()
+            prefix[offset + 2] = ((v ushr 16) and 0xFF).toByte()
+            prefix[offset + 3] = ((v ushr 24) and 0xFF).toByte()
+        }
+        putI32LE(0, chunkX)
+        putI32LE(4, chunkZ)
+        val result = ArrayList<Pair<ByteArray, ByteArray>>()
+        db.iterator().use { iterator ->
+            iterator.seek(prefix)
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                val key = entry.key
+                if (key.size < prefix.size || (0 until prefix.size).any { key[it] != prefix[it] }) break
+                val info = ChunkKeys.parse(key) ?: continue
+                if (info.chunkX == chunkX && info.chunkZ == chunkZ && info.dimension == dimension) {
+                    result += key.copyOf() to entry.value.copyOf()
+                }
+            }
+        }
+        return result
+    }
+
     /** Reads all subchunk records for one chunk in the selected dimension using one LevelDB seek. */
     fun readSubchunks(chunkX: Int, chunkZ: Int, dimension: Int = 0): List<Pair<Int, ByteArray>> {
         val prefix = if (dimension == 0) ByteArray(9) else ByteArray(13)

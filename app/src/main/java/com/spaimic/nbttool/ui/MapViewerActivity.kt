@@ -706,7 +706,9 @@ class MapViewerActivity : AppCompatActivity() {
         val input = EditText(this).apply {
             hint = "Example: 1,3,5"
             setSingleLine(true)
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            // Number-only keyboards often omit the comma key needed by this input.
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            setTextIsSelectable(false)
         }
         AlertDialog.Builder(this)
             .setTitle("Copy Group Coordinates")
@@ -875,16 +877,32 @@ class MapViewerActivity : AppCompatActivity() {
                     dialog.dismiss()
                     val image = ImageView(this).apply {
                         setImageBitmap(preview)
-                        adjustViewBounds=true
-                        scaleType=ImageView.ScaleType.FIT_CENTER
+                        adjustViewBounds = true
+                        scaleType = ImageView.ScaleType.FIT_CENTER
                     }
-                    AlertDialog.Builder(this)
+                    val previewContent = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(24, 4, 24, 4)
+                        addView(TextView(this@MapViewerActivity).apply {
+                            text = "${s.width} × ${s.height} blocks • ${ppb} px/block"
+                            setPadding(0, 0, 0, 8)
+                        })
+                        addView(image, LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            (resources.displayMetrics.heightPixels * 0.58f).toInt().coerceAtLeast(240)
+                        ))
+                    }
+                    val previewDialog = AlertDialog.Builder(this)
                         .setTitle("Map Picture Preview")
-                        .setMessage("${s.width} × ${s.height} blocks • ${ppb} px/block")
-                        .setView(image)
+                        .setView(previewContent)
                         .setPositiveButton("Save PNG") { _, _ -> saveSelectionPicture(s,ppb) }
                         .setNegativeButton("Cancel", null)
-                        .show()
+                        .create()
+                    previewDialog.show()
+                    previewDialog.window?.setLayout(
+                        (resources.displayMetrics.widthPixels * 0.94f).toInt(),
+                        (resources.displayMetrics.heightPixels * 0.82f).toInt()
+                    )
                 }
             } catch (e: Throwable) {
                 runOnUiThread { dialog.dismiss(); showErrorDialog(this,"Failed to render selection preview",e) }
@@ -1378,23 +1396,18 @@ class MapViewerActivity : AppCompatActivity() {
         }
         Thread {
             try {
-                var rawRecords = 0
+                val records = bridge.listChunkRawEntries(chunkX, chunkZ, selectedDbDimension())
+                val rawRecords = records.size
                 var subchunks = 0
                 var entities = 0
                 var blockEntities = 0
-                bridge.forEachRawEntry { key, value ->
+                for ((key, _) in records) {
                     val info = com.spaimic.nbttool.chunk.ChunkKeys.parse(key)
-                    if (info != null && info.chunkX == chunkX && info.chunkZ == chunkZ && info.dimension == selectedDbDimension()) {
-                        rawRecords++
-                        if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX) subchunks++
-                        if (info.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_BLOCK_ENTITY) blockEntities++
-                    } else if (com.spaimic.nbttool.chunk.EntityKeys.isDigpKeyForDimension(key, selectedDbDimension())) {
-                        val (x, z) = com.spaimic.nbttool.chunk.EntityKeys.digpChunkXZ(key)
-                        if (x == chunkX && z == chunkZ) {
-                            entities += com.spaimic.nbttool.chunk.EntityKeys.splitActorIds(value).size
-                        }
-                    }
+                    if (info?.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_SUBCHUNK_PREFIX) subchunks++
+                    if (info?.tag == com.spaimic.nbttool.chunk.ChunkKeys.TAG_BLOCK_ENTITY) blockEntities++
                 }
+                val digpValue = bridge.read(com.spaimic.nbttool.chunk.EntityKeys.digpKey(chunkX, chunkZ, selectedDbDimension()))
+                if (digpValue != null) entities = com.spaimic.nbttool.chunk.EntityKeys.splitActorIds(digpValue).size
                 val message = "Chunk: ($chunkX, $chunkZ)\n" +
                     "Block range: X ${chunkX * 16}..${chunkX * 16 + 15}, Z ${chunkZ * 16}..${chunkZ * 16 + 15}\n" +
                     "Raw chunk records: $rawRecords\n" +
@@ -1550,7 +1563,7 @@ class MapViewerActivity : AppCompatActivity() {
         val bridge = LevelDbSession.bridge ?: return
         Thread {
             try {
-                com.spaimic.nbttool.chunk.ChunkDeleter.clearChunkToAir(bridge, chunkX, chunkZ)
+                com.spaimic.nbttool.chunk.ChunkDeleter.clearChunkToAir(bridge, chunkX, chunkZ, selectedDbDimension())
                 runOnUiThread { Toast.makeText(this, "Chunk cleared to air.", Toast.LENGTH_SHORT).show() }
                 rescanMap()
             } catch (e: Exception) {
