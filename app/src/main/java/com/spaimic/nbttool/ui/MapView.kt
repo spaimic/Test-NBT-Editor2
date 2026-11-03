@@ -64,7 +64,31 @@ class MapView(context: Context) : View(context) {
         set(value) { field = value; centered = false; requestVisible() }
 
     private val chunks = ConcurrentHashMap<Pair<Int, Int>, Array<Array<ColumnInfo>>>()
+    // Full non-air vertical stacks, sorted from highest Y downward, are retained
+    // for the optional underground layer view.
+    // Each entry packs ARGB color (upper 32 bits) and signed world Y (lower 16
+    // bits, biased by 32768) to keep the vertical cache compact on mobile.
+    private val chunkLayers = ConcurrentHashMap<Pair<Int, Int>, Array<Array<LongArray>>>()
     private val chunkBitmaps = ConcurrentHashMap<Pair<Int, Int>, Bitmap>()
+    private var layerDepth = 0
+
+    fun stepDownLayer() { layerDepth++; invalidateAllChunkBitmaps(); invalidate() }
+    fun resetToSurface() { layerDepth = 0; invalidateAllChunkBitmaps(); invalidate() }
+    fun currentLayerDepth(): Int = layerDepth
+
+    private fun invalidateAllChunkBitmaps() {
+        renderGeneration.incrementAndGet()
+        chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
+        chunkBitmaps.clear()
+        bitmapAccessOrder.clear()
+    }
+
+    fun setChunkLayerData(pos: Pair<Int, Int>, layers: Array<Array<LongArray>>) {
+        chunkLayers[pos] = layers
+        chunkBitmaps.remove(pos)?.let { if (!it.isRecycled) it.recycle() }
+        bitmapAccessOrder.remove(pos)
+        invalidate()
+    }
     // Build 108: LevelDB loading state belongs to MapViewerActivity.
     // This view tracks only background bitmap renders, so database loading
     // can never block a render request.
@@ -208,7 +232,9 @@ class MapView(context: Context) : View(context) {
 
     fun clearChunkData() {
         renderGeneration.incrementAndGet()
+        layerDepth = 0
         chunks.clear()
+        chunkLayers.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
         invalidate()
@@ -324,35 +350,31 @@ class MapView(context: Context) : View(context) {
             return existing
         }
 
-        val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.RGB_565)
-        val pixels = IntArray(chunkPixels * chunkPixels)
+        val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(chunkPixels * chunkPixels) { Color.TRANSPARENT }
+        val layers = chunkLayers[pos]
+        fun infoAt(x: Int, z: Int): ColumnInfo? {
+            if (layerDepth == 0 || layers == null) return grid[x][z]
+            val packed = layers[x][z].getOrNull(layerDepth) ?: return null
+            val color = (packed shr 16).toInt()
+            val y = (packed and 0xffffL).toInt() - 32768
+            return ColumnInfo(color, y)
+        }
         val westGrid = chunks[pos.first - 1 to pos.second]
         val eastGrid = chunks[pos.first + 1 to pos.second]
         val northGrid = chunks[pos.first to pos.second - 1]
         val southGrid = chunks[pos.first to pos.second + 1]
 
         for (x in 0 until 16) for (z in 0 until 16) {
-            val info = grid[x][z]
-            val west = when {
-                x > 0 -> grid[x - 1][z].surfaceY
-                westGrid != null -> westGrid[15][z].surfaceY
-                else -> info.surfaceY
-            }
-            val east = when {
-                x < 15 -> grid[x + 1][z].surfaceY
-                eastGrid != null -> eastGrid[0][z].surfaceY
-                else -> info.surfaceY
-            }
-            val north = when {
-                z > 0 -> grid[x][z - 1].surfaceY
-                northGrid != null -> northGrid[x][15].surfaceY
-                else -> info.surfaceY
-            }
-            val south = when {
-                z < 15 -> grid[x][z + 1].surfaceY
-                southGrid != null -> southGrid[x][0].surfaceY
-                else -> info.surfaceY
-            }
+            val info = infoAt(x, z) ?: continue
+            val westInfo = if (x > 0) infoAt(x - 1, z) else westGrid?.get(15)?.get(z)
+            val eastInfo = if (x < 15) infoAt(x + 1, z) else eastGrid?.get(0)?.get(z)
+            val northInfo = if (z > 0) infoAt(x, z - 1) else northGrid?.get(x)?.get(15)
+            val southInfo = if (z < 15) infoAt(x, z + 1) else southGrid?.get(x)?.get(0)
+            val west = westInfo?.surfaceY ?: info.surfaceY
+            val east = eastInfo?.surfaceY ?: info.surfaceY
+            val north = northInfo?.surfaceY ?: info.surfaceY
+            val south = southInfo?.surfaceY ?: info.surfaceY
 
             // Keep the on-screen map and exported map pixels on one renderer.
             // This must stay the exact same shading function used by the export
@@ -402,6 +424,9 @@ class MapView(context: Context) : View(context) {
                 rendered?.let { if (!it.isRecycled) it.recycle() }
             } finally {
                 rendering.remove(pos)
+                // A layer-depth change can invalidate a render already in flight.
+                // Schedule another frame after that stale task releases its slot.
+                if (generation != renderGeneration.get()) postInvalidate()
             }
         }
     }

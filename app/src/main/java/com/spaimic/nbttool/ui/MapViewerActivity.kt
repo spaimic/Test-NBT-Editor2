@@ -89,6 +89,7 @@ class MapViewerActivity : AppCompatActivity() {
             }
         )
 
+        var layerButton: Button? = null
         val zoomControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(8, 8, 8, 8)
@@ -105,6 +106,18 @@ class MapViewerActivity : AppCompatActivity() {
             }
             addView(out, LinearLayout.LayoutParams(76, 72))
             addView(`in`, LinearLayout.LayoutParams(76, 72))
+            val layerControl = Button(this@MapViewerActivity).apply {
+                text = "↓ Layer"
+                textSize = 12f
+                setOnClickListener { mapView.stepDownLayer(); text = "↓ ${mapView.currentLayerDepth()}" }
+            }
+            layerButton = layerControl
+            addView(layerControl, LinearLayout.LayoutParams(88, 72))
+            addView(Button(this@MapViewerActivity).apply {
+                text = "Surface"
+                textSize = 12f
+                setOnClickListener { mapView.resetToSurface(); layerButton?.text = "↓ Layer" }
+            }, LinearLayout.LayoutParams(88, 72))
         }
         contentRoot.addView(
             zoomControls,
@@ -361,6 +374,34 @@ class MapViewerActivity : AppCompatActivity() {
                     val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
                         bridge, pos.first, pos.second, unknown, reasons, examples, dimensionForRequest, includeMarkers = false
                     )
+                    // Retain the vertical non-air block stack for each map column.
+                    // This is decoded off the UI thread and lets the layer-down
+                    // control reveal the next real block without reopening the world.
+                    val layerData = if (loaded != null) {
+                        val stacks = Array(16) { Array(16) { ArrayList<Long>() } }
+                        val subchunks = bridge.readSubchunks(pos.first, pos.second, dimensionForRequest)
+                        for ((subY, raw) in subchunks) {
+                            val parsed = com.spaimic.nbttool.chunk.SubChunkParser.parse(raw)
+                            if (parsed is com.spaimic.nbttool.chunk.SubChunkParser.ParseResult.Success) {
+                                for (x in 0..15) for (z in 0..15) for (y in 15 downTo 0) {
+                                    val name = parsed.blocks[x][z][y]
+                                    if (name == "minecraft:air" || name == "air" || name.endsWith(":air")) continue
+                                    val worldY = subY * 16 + y
+                                    // The map's surface is the first non-transparent block.
+                                    // Keep that block and everything below it so each tap
+                                    // moves down exactly one stored non-air block per column.
+                                    if (worldY in -64..320 && worldY <= loaded.grid[x][z].surfaceY) {
+                                        val color = com.spaimic.nbttool.chunk.BlockColors.colorForDimension(name, dimensionForRequest)
+                                        val packed = (color.toLong() shl 16) or ((worldY + 32768).toLong() and 0xffffL)
+                                        stacks[x][z].add(packed)
+                                    }
+                                }
+                            }
+                        }
+                        Array(16) { x -> Array(16) { z ->
+                            stacks[x][z].sortedByDescending { it and 0xffffL }.toLongArray()
+                        } }
+                    } else null
                     runOnUiThread {
                         if (currentDimension != dimensionForRequest) {
                             synchronized(loadingChunks) { loadingChunks.remove(pos) }
@@ -378,6 +419,7 @@ class MapViewerActivity : AppCompatActivity() {
                             // Terrain is available immediately; marker records are
                             // intentionally loaded on a separate tiny executor.
                             mapView.setChunkData(mapOf(pos to loaded.grid))
+                            if (layerData != null) mapView.setChunkLayerData(pos, layerData)
 
                             markerExecutor.execute {
                                 val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(

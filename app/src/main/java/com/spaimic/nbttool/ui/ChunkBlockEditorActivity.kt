@@ -255,7 +255,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         undoStack.addLast(EditAction(real))
         redoStack.clear()
         dirty = true
-        openColumn(selectedX, selectedZ, columnScrollY)
+        if (selectedX in 0..15 && selectedZ in 0..15) openColumn(selectedX, selectedZ, columnScrollY)
+        else showGrid()
     }
 
     private fun undo() {
@@ -267,7 +268,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         }
         redoStack.addLast(action)
         dirty = true
-        openColumn(selectedX, selectedZ, columnScrollY)
+        if (selectedX in 0..15 && selectedZ in 0..15) openColumn(selectedX, selectedZ, columnScrollY)
+        else showGrid()
     }
 
     private fun redo() {
@@ -276,45 +278,58 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
         for (c in action.changes) changes[c.pos] = c
         undoStack.addLast(action)
         dirty = true
-        openColumn(selectedX, selectedZ, columnScrollY)
+        if (selectedX in 0..15 && selectedZ in 0..15) openColumn(selectedX, selectedZ, columnScrollY)
+        else showGrid()
     }
+
+    private data class SearchMatch(val x: Int, val z: Int, val y: Int, val name: String)
 
     private fun showSearchDialog() {
         val input = EditText(this).apply { hint = "minecraft:stone"; setSingleLine(true) }
         AlertDialog.Builder(this)
-            .setTitle("Search blocks")
-            .setMessage("Searches this BlockChunk only (Y=320 to Y=-64).")
+            .setTitle("Search entire chunk")
+            .setMessage("Searches all 256 X/Z columns and every stored Y level (-64 to 320).")
             .setView(input)
-            .setPositiveButton("Search") { _, _ ->
-                showSearchResults(input.text.toString().trim())
-            }
+            .setPositiveButton("Search") { _, _ -> showSearchResults(input.text.toString().trim()) }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
     private fun showSearchResults(query: String) {
         if (query.isBlank()) return
-        val matches = ArrayList<Int>()
-        for (y in 320 downTo -64) {
-            val name = currentBlock(selectedX, selectedZ, y)
-            if (name.contains(query, ignoreCase = true)) matches += y
+        val matches = ArrayList<SearchMatch>()
+        for (z in 0..15) for (x in 0..15) {
+            val column = HashMap<Int, String>()
+            for ((sy, bytes) in original) {
+                for ((y, name) in SubChunkParser.readColumn(bytes, x, z, sy)) {
+                    if (y in -64..320) column[y] = name
+                }
+            }
+            for ((pos, change) in changes) {
+                if (pos.first == x && pos.second == z) column[pos.third] = change.after
+            }
+            for ((y, name) in column) {
+                if (name.contains(query, ignoreCase = true)) matches += SearchMatch(x, z, y, name)
+            }
         }
-        val message = if (matches.isEmpty())
-            "No blocks found for \"$query\"."
-        else "Found ${matches.size} block(s) in BlockChunk X=$selectedX Z=$selectedZ."
+        matches.sortWith(compareByDescending<SearchMatch> { it.y }.thenBy { it.z }.thenBy { it.x })
+        val shown = matches.take(300)
+        val message = if (matches.isEmpty()) "No blocks found for \"$query\"."
+            else "Found ${matches.size} block(s) across the entire chunk." +
+                if (matches.size > shown.size) " Showing the first ${shown.size}." else ""
         val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 8, 24, 8) }
-        matches.forEach { y ->
+        shown.forEach { match ->
             list.addView(TextView(this).apply {
-                text = "Y=$y   ${currentBlock(selectedX, selectedZ, y)}"
+                text = "X=${match.x}  Y=${match.y}  Z=${match.z}   ${match.name}"
                 setPadding(8, 10, 8, 10)
                 setOnClickListener {
-                    selectedY = y
-                    columnScrollY = if (hideAir) 0 else ((320 - y) * 44).coerceAtLeast(0)
-                    openColumn(selectedX, selectedZ, columnScrollY)
+                    selectedY = match.y
+                    columnScrollY = if (hideAir) 0 else ((320 - match.y) * 44).coerceAtLeast(0)
+                    openColumn(match.x, match.z, columnScrollY)
                 }
             })
         }
-        AlertDialog.Builder(this).setTitle("Search BlockChunk").setMessage(message)
+        AlertDialog.Builder(this).setTitle("Chunk Search Results").setMessage(message)
             .setView(ScrollView(this).apply { addView(list) })
             .setPositiveButton("Close", null).show()
     }
@@ -364,17 +379,21 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
             return
         }
         val changesNow = ArrayList<BlockChange>()
-        // Search the entire 16×16 chunk, not just the currently selected X/Z column.
-        // Decode one column at a time to avoid materializing a huge 16×16×385 string cube.
+        // Scan every stored subchunk and every X/Z column. Overlay pending edits
+        // first so Replace All operates on the effective in-memory block state.
         for (z in 0..15) for (x in 0..15) {
+            val column = HashMap<Int, String>()
             for ((subY, bytes) in original) {
                 for ((worldY, blockName) in SubChunkParser.readColumn(bytes, x, z, subY)) {
-                    if (worldY !in -64..320 || !blockName.equals(from, ignoreCase = true)) continue
-                    val position = Triple(x, z, worldY)
-                    val current = changes[position]?.after ?: blockName
-                    if (current.equals(from, ignoreCase = true)) {
-                        changesNow += BlockChange(position, current, to)
-                    }
+                    if (worldY in -64..320) column[worldY] = blockName
+                }
+            }
+            for ((pos, change) in changes) {
+                if (pos.first == x && pos.second == z) column[pos.third] = change.after
+            }
+            for ((worldY, current) in column) {
+                if (current.equals(from, ignoreCase = true)) {
+                    changesNow += BlockChange(Triple(x, z, worldY), current, to)
                 }
             }
         }
@@ -448,8 +467,8 @@ class ChunkBlockEditorActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: android.view.MenuItem): Boolean {
         when (item.itemId) {
-            MENU_SEARCH -> { if (selectedX >= 0) showSearchDialog() else Toast.makeText(this, "Open a BlockChunk first.", Toast.LENGTH_SHORT).show(); return true }
-            MENU_REPLACE -> { if (selectedX >= 0) showReplaceDialog() else Toast.makeText(this, "Open a BlockChunk first.", Toast.LENGTH_SHORT).show(); return true }
+            MENU_SEARCH -> { showSearchDialog(); return true }
+            MENU_REPLACE -> { showReplaceDialog(); return true }
             MENU_HIDE_AIR -> { hideAir = !hideAir; if (selectedX >= 0) openColumn(selectedX, selectedZ, columnScrollY) else showGrid(); invalidateOptionsMenu(); return true }
             MENU_UNDO -> { undo(); return true }
             MENU_REDO -> { redo(); return true }

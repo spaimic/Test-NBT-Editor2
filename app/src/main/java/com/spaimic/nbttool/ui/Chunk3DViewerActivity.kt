@@ -96,6 +96,27 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         return name == "minecraft:air" || name == "air" || name.endsWith(":air")
     }
 
+    // Only known full, opaque cubes may hide a neighboring face. Glass, leaves,
+    // fluids, plants, and partial blocks remain non-occluding in the mesh.
+    private fun isOpaqueFullCube(name: String): Boolean {
+        val n = name.lowercase()
+        val nonCubes = arrayOf(
+            "glass", "leaves", "water", "lava", "ice", "plant", "flower", "sapling",
+            "torch", "pane", "fence", "wall", "stairs", "slab", "door", "trapdoor",
+            "carpet", "rail", "ladder", "vine", "chain", "bars", "button",
+            "pressure_plate", "sign", "skull", "head", "banner", "bed", "chest",
+            "hopper", "portal", "fire", "coral", "kelp", "seagrass", "bamboo",
+            "cactus", "sugar_cane", "mushroom", "web", "snow_layer", "farmland",
+            "path", "repeater", "comparator", "lever", "tripwire", "scaffolding",
+            "short_grass", "tall_grass", "fern", "dead_bush", "azalea", "moss",
+            "crop", "wheat", "carrots", "potatoes", "beetroot", "sweet_berry",
+            "bush", "lichen", "dripleaf", "spore_blossom", "lily_pad", "turtle_egg",
+            "frogspawn", "dripstone", "amethyst_cluster", "end_rod", "flower_pot",
+            "candle", "cake", "composter", "hanging_roots", "glow_lichen"
+        )
+        return nonCubes.none { n.contains(it) }
+    }
+
     /**
      * Finds air reachable from outside the solid volume, then builds only faces
      * touching that reachable air. This intentionally does not expose enclosed
@@ -113,7 +134,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
         fun ix(x: Int, y: Int, z: Int): Int = ((y - (minY - 1)) * w + (z + 1)) * w + (x + 1)
         fun inside(x: Int, y: Int, z: Int): Boolean = x in -1..16 && z in -1..16 && y in (minY - 1)..(maxY + 1)
         fun setOccupied(x: Int, y: Int, z: Int) { if (x in 0..15 && z in 0..15 && y in minY..maxY) occupied[ix(x, y, z)] = true }
-        for (p in blocks.keys) setOccupied(p.x, p.y, p.z)
+        for ((p, name) in blocks) if (isOpaqueFullCube(name)) setOccupied(p.x, p.y, p.z)
 
         val reachable = BooleanArray(occupied.size)
         val q = ArrayDeque<Pos>()
@@ -161,14 +182,15 @@ class Chunk3DViewerActivity : AppCompatActivity() {
 
         for ((p, name) in blocks) {
             val color = BlockColors.colorForDimension(name, dimension)
-            // +X, -X, +Y, -Y, +Z, -Z. u/v coordinates are chosen so each face
-            // lies on a fixed plane and can be greedily merged in integer cells.
-            if (airReachable(reachable, ix(p.x + 1, p.y, p.z), p.x + 1, p.y, p.z, minY, maxY)) addCell(0, p.x + 1, p.y, p.z, color)
-            if (airReachable(reachable, ix(p.x - 1, p.y, p.z), p.x - 1, p.y, p.z, minY, maxY)) addCell(1, p.x, p.y, p.z, color)
-            if (airReachable(reachable, ix(p.x, p.y + 1, p.z), p.x, p.y + 1, p.z, minY, maxY)) addCell(2, p.y + 1, p.x, p.z, color)
-            if (airReachable(reachable, ix(p.x, p.y - 1, p.z), p.x, p.y - 1, p.z, minY, maxY)) addCell(3, p.y, p.x, p.z, color)
-            if (airReachable(reachable, ix(p.x, p.y, p.z + 1), p.x, p.y, p.z + 1, minY, maxY)) addCell(4, p.z + 1, p.x, p.y, color)
-            if (airReachable(reachable, ix(p.x, p.y, p.z - 1), p.x, p.y, p.z - 1, minY, maxY)) addCell(5, p.z, p.x, p.y, color)
+            val opaque = isOpaqueFullCube(name)
+            // +X, -X, +Y, -Y, +Z, -Z. Greedy merging is retained for opaque
+            // cubes; transparent/special blocks never occlude neighboring faces.
+            if (!opaque || airReachable(reachable, ix(p.x + 1, p.y, p.z), p.x + 1, p.y, p.z, minY, maxY)) addCell(0, p.x + 1, p.y, p.z, color)
+            if (!opaque || airReachable(reachable, ix(p.x - 1, p.y, p.z), p.x - 1, p.y, p.z, minY, maxY)) addCell(1, p.x, p.y, p.z, color)
+            if (!opaque || airReachable(reachable, ix(p.x, p.y + 1, p.z), p.x, p.y + 1, p.z, minY, maxY)) addCell(2, p.y + 1, p.x, p.z, color)
+            if (!opaque || airReachable(reachable, ix(p.x, p.y - 1, p.z), p.x, p.y - 1, p.z, minY, maxY)) addCell(3, p.y, p.x, p.z, color)
+            if (!opaque || airReachable(reachable, ix(p.x, p.y, p.z + 1), p.x, p.y, p.z + 1, minY, maxY)) addCell(4, p.z + 1, p.x, p.y, color)
+            if (!opaque || airReachable(reachable, ix(p.x, p.y, p.z - 1), p.x, p.y, p.z - 1, minY, maxY)) addCell(5, p.z, p.x, p.y, color)
         }
 
         val result = ArrayList<MeshQuad>()
