@@ -73,6 +73,8 @@ class MapView(context: Context) : View(context) {
     private var layerDepth = 0
 
     fun stepDownLayer() { layerDepth++; invalidateAllChunkBitmaps(); invalidate() }
+    fun stepUpLayer() { if (layerDepth > 0) { layerDepth--; invalidateAllChunkBitmaps(); invalidate() } }
+    fun loadedChunkGrids(): Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> = HashMap(chunks)
     fun resetToSurface() { layerDepth = 0; invalidateAllChunkBitmaps(); invalidate() }
     fun currentLayerDepth(): Int = layerDepth
 
