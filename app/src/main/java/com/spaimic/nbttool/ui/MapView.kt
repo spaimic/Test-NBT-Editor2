@@ -72,10 +72,26 @@ class MapView(context: Context) : View(context) {
     private val chunkBitmaps = ConcurrentHashMap<Pair<Int, Int>, Bitmap>()
     private var layerDepth = 0
 
-    fun stepDownLayer() { layerDepth++; invalidateAllChunkBitmaps(); invalidate() }
-    fun stepUpLayer() { if (layerDepth > 0) { layerDepth--; invalidateAllChunkBitmaps(); invalidate() } }
-    fun loadedChunkGrids(): Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> = HashMap(chunks)
-    fun resetToSurface() { layerDepth = 0; invalidateAllChunkBitmaps(); invalidate() }
+    private var viewY: Int? = null
+
+    fun stepDownLayer() {
+        val vy = viewY
+        if (vy != null) viewY = (vy - 1).coerceAtLeast(-64) else layerDepth++
+        invalidateAllChunkBitmaps(); invalidate()
+    }
+    fun stepUpLayer() {
+        val vy = viewY
+        if (vy != null) viewY = (vy + 1).coerceAtMost(320) else if (layerDepth > 0) layerDepth--
+        invalidateAllChunkBitmaps(); invalidate()
+    }
+    fun resetToSurface() { layerDepth = 0; viewY = null; invalidateAllChunkBitmaps(); invalidate() }
+    /** Show, for every column, the highest block at or below [y]. Null returns to the surface view. */
+    fun setViewY(y: Int?) {
+        viewY = y?.coerceIn(-64, 320); layerDepth = 0
+        invalidateAllChunkBitmaps(); invalidate()
+    }
+    fun currentViewY(): Int? = viewY
+    fun layerModeActive(): Boolean = layerDepth > 0 || viewY != null
     fun currentLayerDepth(): Int = layerDepth
 
     private fun invalidateAllChunkBitmaps() {
@@ -110,6 +126,10 @@ class MapView(context: Context) : View(context) {
         set(value) { field = value; invalidate() }
     var showTileEntityIcons = true
         set(value) { field = value; invalidate() }
+    var locators: List<Locator> = emptyList()
+        set(value) { field = value; invalidate() }
+    var onLocatorTap: ((Locator) -> Unit)? = null
+    private val locatorPaint = Paint().apply { isFilterBitmap = true; isAntiAlias = true }
     var showGrid = true
         set(value) { field = value; invalidate() }
 
@@ -235,6 +255,7 @@ class MapView(context: Context) : View(context) {
     fun clearChunkData() {
         renderGeneration.incrementAndGet()
         layerDepth = 0
+        viewY = null
         chunks.clear()
         chunkLayers.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
@@ -356,6 +377,14 @@ class MapView(context: Context) : View(context) {
         val pixels = IntArray(chunkPixels * chunkPixels) { Color.TRANSPARENT }
         val layers = chunkLayers[pos]
         fun infoAt(x: Int, z: Int): ColumnInfo? {
+            val vy = viewY
+            if (vy != null && layers != null) {
+                for (packed in layers[x][z]) {
+                    val y = (packed and 0xffffL).toInt() - 32768
+                    if (y <= vy) return ColumnInfo((packed shr 16).toInt(), y)
+                }
+                return null
+            }
             if (layerDepth == 0 || layers == null) return grid[x][z]
             val packed = layers[x][z].getOrNull(layerDepth) ?: return null
             val color = (packed shr 16).toInt()
@@ -527,6 +556,14 @@ class MapView(context: Context) : View(context) {
         if (showTileEntityIcons) blockEntityMarkers.forEach { drawMarker(it, 32) }
         if (showEntityIcons) entityMarkers.forEach { drawMarker(it, 32) }
 
+        for (l in locators) {
+            val lx = screenX(l.x + 0.5f)
+            val lz = screenZ(l.z + 0.5f)
+            if (lx < -48f || lx > width + 48f || lz < -48f || lz > height + 48f) continue
+            canvas.drawBitmap(bitmapFor(Locators.iconFor(l.color)), null,
+                RectF(lx - 22f, lz - 44f, lx + 22f, lz), locatorPaint)
+        }
+
         preferredCenterBlock?.let { (px, pz) ->
             val sx = screenX(px + 0.5f)
             val sz = screenZ(pz + 0.5f)
@@ -669,6 +706,13 @@ class MapView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun centerOnBlock(x: Int, z: Int) {
+        centered = true
+        cameraX = x + 0.5f
+        cameraZ = z + 0.5f
+        requestVisible()
+    }
+
     fun currentCameraBlockX(): Int = floor(cameraX).toInt()
     fun currentCameraBlockZ(): Int = floor(cameraZ).toInt()
 
@@ -695,9 +739,15 @@ class MapView(context: Context) : View(context) {
         requestVisible()
     }
 
-    private fun handleTap(screenX: Float, screenY: Float) {
-        val worldX = floor(cameraX + (screenX - width / 2f) / zoom).toInt()
-        val worldZ = floor(cameraZ + (screenY - height / 2f) / zoom).toInt()
+    private fun handleTap(tapX: Float, tapY: Float) {
+        val hit = locators.lastOrNull { l ->
+            val lx = screenX(l.x + 0.5f)
+            val lz = screenZ(l.z + 0.5f)
+            tapX in (lx - 30f)..(lx + 30f) && tapY in (lz - 52f)..(lz + 8f)
+        }
+        if (hit != null && onLocatorTap != null) { onLocatorTap?.invoke(hit); return }
+        val worldX = floor(cameraX + (tapX - width / 2f) / zoom).toInt()
+        val worldZ = floor(cameraZ + (tapY - height / 2f) / zoom).toInt()
         onTap?.invoke(worldX, 0, worldZ)
     }
 

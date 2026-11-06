@@ -89,7 +89,6 @@ class MapViewerActivity : AppCompatActivity() {
             }
         )
 
-        var layerButton: Button? = null
         val zoomControls = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(8, 8, 8, 8)
@@ -110,26 +109,33 @@ class MapViewerActivity : AppCompatActivity() {
                 text = "↓ Layer"
                 textSize = 12f
                 setOnClickListener {
-                    if (mapView.currentLayerDepth() == 0) ensureLayerDataForLoadedChunks()
+                    if (!mapView.layerModeActive()) ensureLayerDataForLoadedChunks()
                     mapView.stepDownLayer()
-                    text = "↓ ${mapView.currentLayerDepth()}"
+                    updateLayerLabels()
                 }
             }
-            layerButton = layerControl
+            layerButtonRef = layerControl
             val upControl = Button(this@MapViewerActivity).apply {
                 text = "↑ Layer"
                 textSize = 12f
                 setOnClickListener {
                     mapView.stepUpLayer()
-                    layerButton?.text = if (mapView.currentLayerDepth() == 0) "↓ Layer" else "↓ ${mapView.currentLayerDepth()}"
+                    updateLayerLabels()
                 }
             }
+            val yControl = Button(this@MapViewerActivity).apply {
+                text = "Y…"
+                textSize = 12f
+                setOnClickListener { showYLevelDialog() }
+            }
+            yButtonRef = yControl
             addView(upControl, LinearLayout.LayoutParams(88, 72))
             addView(layerControl, LinearLayout.LayoutParams(88, 72))
+            addView(yControl, LinearLayout.LayoutParams(88, 72))
             addView(Button(this@MapViewerActivity).apply {
                 text = "Surface"
                 textSize = 12f
-                setOnClickListener { mapView.resetToSurface(); layerButton?.text = "↓ Layer" }
+                setOnClickListener { mapView.resetToSurface(); updateLayerLabels() }
             }, LinearLayout.LayoutParams(88, 72))
         }
         contentRoot.addView(
@@ -203,6 +209,9 @@ class MapViewerActivity : AppCompatActivity() {
             return row
         }
 
+        mapOptionsPanel.addView(mapActionRow(R.drawable.map, "Go to X / Z") { showGoToDialog() })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.locator_6, "Locators") { showLocatorList() })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "View at Y Level") { showYLevelDialog() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.camera, "Take Entire Map Picture") { promptWholeMapPicture() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.search_diamond, "Find Diamonds Near Player") { findDiamondsNearPlayer() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.search_ancient_debris, "Find Ancient Debris Near Player") { findAncientDebrisNearPlayer() })
@@ -246,6 +255,10 @@ class MapViewerActivity : AppCompatActivity() {
             coordText.text = "X: $x\nY: $y\nZ: $z"
             showChunkDialog(x, z)
         }
+        mapView.onLocatorTap = { showLocatorInfo(it) }
+        locatorsList.clear()
+        locatorsList.addAll(Locators.load(this, worldDir.name))
+        refreshLocatorsOnMap()
         mapView.onSelectionChanged = { s ->
             coordText.text = if (s == null) "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
                 else "${dimensionName()} • Selection ${s.width}×${s.height} • X ${s.minX}..${s.maxX} • Z ${s.minZ}..${s.maxZ}"
@@ -264,6 +277,9 @@ class MapViewerActivity : AppCompatActivity() {
     private val markerExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
     private val layerExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
     private val layerRequested = HashSet<Pair<Int, Int>>()
+    private var layerButtonRef: Button? = null
+    private var yButtonRef: Button? = null
+    private val locatorsList = mutableListOf<Locator>()
     private val markerLock = Any()
     private val loadedEntityMarkers = ArrayList<MapView.MarkerDraw>()
     private val loadedBlockEntityMarkers = ArrayList<MapView.MarkerDraw>()
@@ -445,7 +461,7 @@ class MapViewerActivity : AppCompatActivity() {
                             mapView.setChunkData(mapOf(pos to loaded.grid))
                             // Vertical stacks are decoded lazily, only once the user starts
                             // using layer view, so normal map loading stays fast in big worlds.
-                            if (mapView.currentLayerDepth() > 0) requestLayerData(pos, loaded.grid, dimensionForRequest)
+                            if (mapView.layerModeActive()) requestLayerData(pos, loaded.grid, dimensionForRequest)
 
                             markerExecutor.execute {
                                 val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
@@ -845,6 +861,7 @@ class MapViewerActivity : AppCompatActivity() {
         val options = arrayListOf(
             "Chunk Information",
             "🟦 Start Selection",
+            "📍 Add Locator Here",
         )
         options.addAll(listOf(
             "Show Entities",
@@ -871,6 +888,7 @@ class MapViewerActivity : AppCompatActivity() {
                 when (options[which]) {
                     "Chunk Information" -> showChunkInformation(chunkX, chunkZ)
                     "🟦 Start Selection" -> startSelection(worldX, worldZ)
+                    "📍 Add Locator Here" -> showLocatorEditor(null, worldX, worldZ)
                     "Show Entities" -> {
                         val i = Intent(this, EntityListActivity::class.java)
                         i.putExtra(EntityListActivity.EXTRA_CHUNK_X, chunkX)
@@ -1747,6 +1765,8 @@ class MapViewerActivity : AppCompatActivity() {
             loadedBlockEntityMarkers.clear()
         }
         mapView.clearChunkData()
+        updateLayerLabels()
+        refreshLocatorsOnMap()
         mapView.entityMarkers = emptyList()
         mapView.blockEntityMarkers = emptyList()
         // Bedrock's Nether portal coordinate relationship is 8:1. When entering
@@ -1763,6 +1783,198 @@ class MapViewerActivity : AppCompatActivity() {
         title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
         coordText.text = "${dimensionName()} • Loading visible chunks…"
         mapView.refreshVisibleChunks()
+    }
+
+    private fun updateLayerLabels() {
+        val d = mapView.currentLayerDepth()
+        val vy = mapView.currentViewY()
+        layerButtonRef?.text = if (d > 0) "↓ $d" else "↓ Layer"
+        yButtonRef?.text = if (vy != null) "Y $vy" else "Y…"
+    }
+
+    private fun refreshLocatorsOnMap() {
+        mapView.locators = locatorsList.filter { it.dimension == selectedDbDimension() }
+    }
+
+    private fun saveLocators() {
+        Locators.save(this, worldDir.name, locatorsList)
+        refreshLocatorsOnMap()
+    }
+
+    private fun numberInput(hint: String, value: Int?): EditText = EditText(this).apply {
+        this.hint = hint
+        inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+        setSingleLine()
+        if (value != null) setText(value.toString())
+    }
+
+    private fun showYLevelDialog() {
+        val input = numberInput("Y level (-64 to 320)", mapView.currentViewY() ?: 64)
+        val box = LinearLayout(this).apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input, LinearLayout.LayoutParams(-1, -2))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("View map at Y level")
+            .setMessage("Shows the highest block at or below this Y in every column. After this, ↑ / ↓ move the level by 1.")
+            .setView(box)
+            .setPositiveButton("View") { _, _ ->
+                val y = input.text.toString().trim().toIntOrNull()
+                if (y == null) {
+                    Toast.makeText(this, "Enter a number", Toast.LENGTH_SHORT).show()
+                } else {
+                    ensureLayerDataForLoadedChunks()
+                    mapView.setViewY(y)
+                    updateLayerLabels()
+                }
+            }
+            .setNeutralButton("Surface") { _, _ -> mapView.resetToSurface(); updateLayerLabels() }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showGoToDialog() {
+        val xi = numberInput("X", mapView.currentCameraBlockX())
+        val zi = numberInput("Z", mapView.currentCameraBlockZ())
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(xi, LinearLayout.LayoutParams(-1, -2))
+            addView(zi, LinearLayout.LayoutParams(-1, -2))
+        }
+        fun parse(): Pair<Int, Int>? {
+            val x = xi.text.toString().trim().toIntOrNull()
+            val z = zi.text.toString().trim().toIntOrNull()
+            if (x == null || z == null) {
+                Toast.makeText(this, "Enter both X and Z", Toast.LENGTH_SHORT).show()
+                return null
+            }
+            return x to z
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Go to X / Z")
+            .setView(box)
+            .setPositiveButton("Go") { _, _ -> parse()?.let { mapView.centerOnBlock(it.first, it.second) } }
+            .setNeutralButton("Save as Locator") { _, _ ->
+                parse()?.let { showLocatorEditor(null, it.first, it.second) }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showLocatorEditor(existing: Locator?, defX: Int, defZ: Int) {
+        var selected = existing?.color ?: 0
+        val nameInput = EditText(this).apply {
+            hint = "Name"
+            setSingleLine()
+            setText(existing?.name ?: "")
+        }
+        val xi = numberInput("X", existing?.x ?: defX)
+        val zi = numberInput("Z", existing?.z ?: defZ)
+        val swatches = ArrayList<ImageView>()
+        fun refreshSwatches() {
+            swatches.forEachIndexed { i, v ->
+                v.setBackgroundColor(if (i == selected) Color.argb(70, 0, 0, 0) else Color.TRANSPARENT)
+            }
+        }
+        val colorRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (i in Locators.ICONS.indices) {
+            val v = ImageView(this).apply {
+                setImageResource(Locators.ICONS[i])
+                contentDescription = Locators.COLOR_NAMES[i]
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+                setOnClickListener { selected = i; refreshSwatches() }
+            }
+            swatches.add(v)
+            colorRow.addView(v, LinearLayout.LayoutParams(0, dp(44), 1f))
+        }
+        refreshSwatches()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(nameInput, LinearLayout.LayoutParams(-1, -2))
+            addView(xi, LinearLayout.LayoutParams(-1, -2))
+            addView(zi, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(context).apply { text = "Color"; setPadding(0, dp(10), 0, dp(4)) })
+            addView(colorRow, LinearLayout.LayoutParams(-1, -2))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "New Locator • ${dimensionName()}" else "Edit Locator")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val x = xi.text.toString().trim().toIntOrNull()
+                val z = zi.text.toString().trim().toIntOrNull()
+                if (x == null || z == null) {
+                    Toast.makeText(this, "Enter both X and Z", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                val name = nameInput.text.toString().trim().ifEmpty { "Locator ${locatorsList.size + 1}" }
+                if (existing == null) {
+                    locatorsList.add(Locator(System.currentTimeMillis(), name, x, z, selectedDbDimension(), selected))
+                } else {
+                    val idx = locatorsList.indexOfFirst { it.id == existing.id }
+                    val updated = existing.copy(name = name, x = x, z = z, color = selected)
+                    if (idx >= 0) locatorsList[idx] = updated else locatorsList.add(updated)
+                }
+                saveLocators()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showLocatorInfo(l: Locator) {
+        val options = arrayOf("Edit", "Copy Coordinates", "Delete")
+        AlertDialog.Builder(this)
+            .setTitle("${l.name}  (${l.x}, ${l.z})")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> showLocatorEditor(l, l.x, l.z)
+                    1 -> {
+                        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("Coordinates", "${l.x} ${l.z}"))
+                        Toast.makeText(this, "Copied", Toast.LENGTH_SHORT).show()
+                    }
+                    2 -> AlertDialog.Builder(this)
+                        .setTitle("Delete \"${l.name}\"?")
+                        .setPositiveButton("Delete") { _, _ ->
+                            locatorsList.removeAll { it.id == l.id }
+                            saveLocators()
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                }
+            }
+            .show()
+    }
+
+    private fun goToLocator(l: Locator) {
+        if (l.dimension != selectedDbDimension()) {
+            currentDimension = l.dimension
+            switchMapDimension()
+        }
+        mapView.centerOnBlock(l.x, l.z)
+    }
+
+    private fun showLocatorList() {
+        if (locatorsList.isEmpty()) {
+            Toast.makeText(this, "No locators yet. Tap the map and choose “Add Locator Here”.", Toast.LENGTH_LONG).show()
+            return
+        }
+        val sorted = locatorsList.sortedWith(compareBy({ it.dimension }, { it.name.lowercase() }))
+        val dimNames = arrayOf("Overworld", "Nether", "The End")
+        val labels = sorted.map { "${it.name}  (${it.x}, ${it.z}) • ${dimNames.getOrElse(it.dimension) { "?" }}" }.toTypedArray()
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Locators (long-press to edit)")
+            .setItems(labels) { _, which -> goToLocator(sorted[which]) }
+            .setNegativeButton("Close", null)
+            .create()
+        dialog.show()
+        dialog.listView.setOnItemLongClickListener { _, _, pos, _ ->
+            dialog.dismiss()
+            showLocatorInfo(sorted[pos])
+            true
+        }
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
