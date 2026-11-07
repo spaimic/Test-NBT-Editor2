@@ -179,6 +179,13 @@ class MapView(context: Context) : View(context) {
         style = Paint.Style.STROKE
         strokeWidth = 1f
     }
+    private val blockGridPaint = Paint().apply {
+        color = Color.argb(110, 0, 0, 0)
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+    }
+    private var blockGridLines = FloatArray(0)
+    fun isBlockGridZoom(): Boolean = zoom >= blockGridZoom
     private val readoutBgPaint = Paint().apply { color = Color.argb(190, 255, 255, 255) }
     var dimensionLabel: String = ""
         set(value) { field = value; invalidate() }
@@ -220,8 +227,10 @@ class MapView(context: Context) : View(context) {
     // measured MineTuner viewport on the target tablet: roughly 235x350 blocks
     // at the widest view and roughly 46x70 blocks at the closest view.
     private var zoom = 3.85f
-    private val minZoom = 2f
-    private val maxZoom = 32f
+    private val minZoom = 1f
+    private val maxZoom = 38f
+    /** From this zoom on every block gets its own grid cell (tap a cell to edit it). */
+    private val blockGridZoom = 34f
 
     // Build 111: use a 12x12 source-pixel footprint per world block. This keeps
     // the Blocktopograph-style visual detail while cutting per-chunk pixel work
@@ -229,7 +238,7 @@ class MapView(context: Context) : View(context) {
     // the camera transform; the source resolution stays fixed at every zoom.
     // Source resolution now depends on zoom tier: far zoom-outs show thousands of
     // chunks, so their tiles use fewer pixels per block to keep memory bounded.
-    private fun tierFor(z: Float): Int = if (z < 3.2f) 4 else if (z < 6f) 8 else 12
+    private fun tierFor(z: Float): Int = if (z < 2f) 2 else if (z < 3.2f) 4 else if (z < 6f) 8 else 12
     private var blockPixels = tierFor(3.85f)
     private val chunkPixels: Int get() = 16 * blockPixels
 
@@ -383,8 +392,35 @@ class MapView(context: Context) : View(context) {
 
         // A small one-chunk border makes fast panning feel continuous without
         // turning a 7,000-chunk world into a startup scan.
-        onVisibleChunksChanged?.invoke(requested)
+        // At 1x thousands of chunks fit on screen. Only the nearest ones are loaded so
+        // memory and CPU stay bounded; the rest stay as empty tiles.
+        val maxRequested = 6000
+        val toRequest = if (requested.size > maxRequested) {
+            val cxF = cameraX / 16f
+            val czF = cameraZ / 16f
+            requested.sortedBy {
+                val dx = it.first - cxF
+                val dz = it.second - czF
+                dx * dx + dz * dz
+            }.take(maxRequested).toHashSet()
+        } else {
+            requested
+        }
+        onVisibleChunksChanged?.invoke(toRequest)
         invalidate()
+    }
+
+    /** Forget one chunk's data (after an edit) and load it again; its old tile stays visible meanwhile. */
+    fun dropChunkData(pos: Pair<Int, Int>) {
+        chunks.remove(pos)
+        chunkLayers.remove(pos)
+        chunkBiomes.remove(pos)
+        chunkBitmaps.remove(pos)?.let { old ->
+            val prev = staleBitmaps.put(pos, old)
+            if (prev != null && prev !== old && !prev.isRecycled) prev.recycle()
+        }
+        bitmapAccessOrder.remove(pos)
+        requestVisible(force = true)
     }
 
     private fun screenX(worldX: Float): Float = width / 2f + (worldX - cameraX) * zoom
@@ -667,7 +703,12 @@ class MapView(context: Context) : View(context) {
                         canvas.drawRect(left, top, right, bottom, gridPaint)
                     }
                 } else {
-                    canvas.drawRect(left, top, right, bottom, unloadedPaint)
+                    val stale = staleBitmaps[pos]
+                    if (stale != null && !stale.isRecycled) {
+                        canvas.drawBitmap(stale, null, RectF(left, top, right, bottom), tilePaint)
+                    } else {
+                        canvas.drawRect(left, top, right, bottom, unloadedPaint)
+                    }
                 }
             }
         }
@@ -691,6 +732,31 @@ class MapView(context: Context) : View(context) {
                 val sz = screenZ(wz.toFloat())
                 if (sz >= -1f && sz <= height + 1f) canvas.drawLine(0f, sz, width.toFloat(), sz, gridPaint)
             }
+        }
+
+        // Per-block grid once zoomed in far enough to edit single blocks.
+        if (zoom >= blockGridZoom && !slimeMode) {
+            val gl = floor(cameraX - width / 2f / zoom).toInt()
+            val gr = floor(cameraX + width / 2f / zoom).toInt() + 1
+            val gt = floor(cameraZ - height / 2f / zoom).toInt()
+            val gb = floor(cameraZ + height / 2f / zoom).toInt() + 1
+            val needed = ((gr - gl + 1) + (gb - gt + 1)) * 4
+            if (blockGridLines.size < needed) blockGridLines = FloatArray(needed)
+            val lines = blockGridLines
+            var li = 0
+            val y0 = screenZ(gt.toFloat())
+            val y1 = screenZ(gb.toFloat())
+            val x0 = screenX(gl.toFloat())
+            val x1 = screenX(gr.toFloat())
+            for (bx in gl..gr) {
+                val sx = screenX(bx.toFloat())
+                lines[li++] = sx; lines[li++] = y0; lines[li++] = sx; lines[li++] = y1
+            }
+            for (bz in gt..gb) {
+                val sz = screenZ(bz.toFloat())
+                lines[li++] = x0; lines[li++] = sz; lines[li++] = x1; lines[li++] = sz
+            }
+            canvas.drawLines(lines, 0, li, blockGridPaint)
         }
 
         fun drawMarker(m: MarkerDraw, size: Int) {

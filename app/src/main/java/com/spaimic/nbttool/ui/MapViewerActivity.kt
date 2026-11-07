@@ -256,7 +256,8 @@ class MapViewerActivity : AppCompatActivity() {
         mapView.onTap = { x, y, z ->
             infoIsLoading = false
             showInfo("X: $x\nY: $y\nZ: $z\nBiome: ${biomeNameAt(x, z)}")
-            showChunkDialog(x, z)
+            // Zoomed in far enough for the per-block grid: tapping a cell edits that block.
+            if (mapView.isBlockGridZoom()) showBlockDialog(x, z) else showChunkDialog(x, z)
         }
         mapView.onLocatorTap = { showLocatorInfo(it) }
         locatorsList.clear()
@@ -972,6 +973,222 @@ class MapViewerActivity : AppCompatActivity() {
         } catch (_: Throwable) {
             return "Unknown"
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Block editor: terrain editing straight from the 2D map (per-block grid zoom)
+    // ------------------------------------------------------------------
+
+    private fun isAirBlockName(n: String): Boolean =
+        n == "minecraft:air" || n == "air" || n == "minecraft:cave_air" || n == "minecraft:void_air"
+
+    private fun showBlockDialog(worldX: Int, worldZ: Int) {
+        val bridge = LevelDbSession.bridge ?: return
+        val dim = selectedDbDimension()
+        val chunkX = Math.floorDiv(worldX, 16)
+        val chunkZ = Math.floorDiv(worldZ, 16)
+        Thread({
+            try {
+                val subs = HashMap<Int, ByteArray>()
+                for ((sy, bytes) in bridge.readSubchunks(chunkX, chunkZ, dim)) subs[sy] = bytes
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) openBlockDialog(bridge, dim, worldX, worldZ, subs)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) showErrorDialog(this, "Could not read this chunk", e)
+                }
+            }
+        }, "BlockDialogLoad").start()
+    }
+
+    /** Press = one step; hold = repeats, getting faster. */
+    private fun attachHoldRepeat(button: Button, handler: android.os.Handler, step: () -> Unit) {
+        var count = 0
+        val repeater = object : Runnable {
+            override fun run() {
+                step()
+                count++
+                handler.postDelayed(this, if (count > 12) 25L else 70L)
+            }
+        }
+        button.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true
+                    count = 0
+                    step()
+                    handler.postDelayed(repeater, 350L)
+                }
+                android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false
+                    handler.removeCallbacks(repeater)
+                }
+            }
+            true
+        }
+    }
+
+    private fun openBlockDialog(
+        bridge: LevelDbBridge, dim: Int, worldX: Int, worldZ: Int, subs: HashMap<Int, ByteArray>
+    ) {
+        val chunkX = Math.floorDiv(worldX, 16)
+        val chunkZ = Math.floorDiv(worldZ, 16)
+        val lx = Math.floorMod(worldX, 16)
+        val lz = Math.floorMod(worldZ, 16)
+        val minY = if (dim == 0) -64 else 0
+        val maxY = when (dim) { 0 -> 319; 1 -> 127; else -> 255 }
+
+        val column = HashMap<Int, String>()
+        var solidYs = IntArray(0)
+        fun reloadColumn() {
+            column.clear()
+            for ((sy, bytes) in subs) {
+                try {
+                    column.putAll(com.spaimic.nbttool.chunk.SubChunkParser.readColumn(bytes, lx, lz, sy))
+                } catch (_: Throwable) {
+                }
+            }
+            solidYs = column.filter { (yy, n) -> yy in minY..maxY && !isAirBlockName(n) }
+                .keys.sorted().toIntArray()
+        }
+        reloadColumn()
+        fun nameAt(yy: Int): String = column[yy] ?: "minecraft:air"
+        // Start at the highest block of the column.
+        var y = solidYs.lastOrNull() ?: minY
+
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val info = TextView(this).apply { setPadding(0, 0, 0, dp(8)) }
+        val yInput = EditText(this).apply {
+            hint = "Y ($minY to $maxY)"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+            setSingleLine()
+            gravity = Gravity.CENTER
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+        }
+        val nameInput = EditText(this).apply {
+            hint = "Block name, e.g. minecraft:stone"
+            setSingleLine()
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        val hideAir = CheckBox(this).apply { text = "Hide air blocks"; isChecked = true }
+
+        fun refreshUi() {
+            yInput.setText(y.toString())
+            nameInput.setText(nameAt(y))
+            nameInput.setSelection(nameInput.text.length)
+            info.text = "Chunk ($chunkX, $chunkZ) • local ($lx, $lz) • subchunk ${Math.floorDiv(y, 16)}" +
+                if (subs.containsKey(Math.floorDiv(y, 16))) "" else " (empty)"
+        }
+
+        fun step(delta: Int) {
+            if (hideAir.isChecked) {
+                val target = if (delta > 0) solidYs.firstOrNull { it > y } else solidYs.lastOrNull { it < y }
+                if (target != null) y = target
+            } else {
+                y = (y + delta).coerceIn(minY, maxY)
+            }
+            refreshUi()
+        }
+
+        val minus = Button(this).apply { text = "−1" }
+        val plus = Button(this).apply { text = "+1" }
+        attachHoldRepeat(minus, handler) { step(-1) }
+        attachHoldRepeat(plus, handler) { step(+1) }
+
+        yInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                yInput.text.toString().trim().toIntOrNull()?.let { y = it.coerceIn(minY, maxY) }
+                refreshUi()
+                true
+            } else false
+        }
+        hideAir.setOnCheckedChangeListener { _, checked ->
+            if (checked && isAirBlockName(nameAt(y)) && solidYs.isNotEmpty()) {
+                y = solidYs.lastOrNull { it <= y } ?: solidYs.first()
+                refreshUi()
+            }
+        }
+
+        val yRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(minus, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(yInput, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(plus, LinearLayout.LayoutParams(dp(72), LinearLayout.LayoutParams.WRAP_CONTENT))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(info)
+            addView(yRow, LinearLayout.LayoutParams(-1, -2))
+            addView(TextView(context).apply { text = "Block name"; setPadding(0, dp(10), 0, 0) })
+            addView(nameInput, LinearLayout.LayoutParams(-1, -2))
+            addView(hideAir)
+        }
+        refreshUi()
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Block at X $worldX, Z $worldZ")
+            .setView(box)
+            .setPositiveButton("Apply", null)
+            .setNeutralButton("Chunk Menu", null)
+            .setNegativeButton("Close", null)
+            .create()
+        dialog.setOnDismissListener { handler.removeCallbacksAndMessages(null) }
+        dialog.show()
+
+        dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            dialog.dismiss()
+            showChunkDialog(worldX, worldZ)
+        }
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            // Use whatever Y is typed in the box, and the name currently in the name box.
+            val yy = yInput.text.toString().trim().toIntOrNull()?.coerceIn(minY, maxY) ?: y
+            y = yy
+            var newName = nameInput.text.toString().trim()
+            if (newName.isEmpty()) {
+                Toast.makeText(this, "Enter a block name", Toast.LENGTH_SHORT).show()
+            } else {
+                if (!newName.contains(':')) newName = "minecraft:$newName"
+                if (newName == nameAt(yy)) {
+                    Toast.makeText(this, "Block is already $newName", Toast.LENGTH_SHORT).show()
+                } else {
+                    val finalName = newName
+                    Thread({
+                        try {
+                            val sy = Math.floorDiv(yy, 16)
+                            val base = subs[sy]?.copyOf()
+                                ?: com.spaimic.nbttool.chunk.SubChunkEditor.emptySubChunk(sy)
+                            val updated = com.spaimic.nbttool.chunk.SubChunkEditor.replaceBlock(
+                                base, lx, lz, Math.floorMod(yy, 16), finalName
+                            )
+                            bridge.writeBatch(
+                                listOf(com.spaimic.nbttool.chunk.ChunkKeys.subChunkKey(chunkX, chunkZ, sy, dim) to updated)
+                            )
+                            subs[sy] = updated
+                            runOnUiThread {
+                                reloadColumn()
+                                refreshUi()
+                                Toast.makeText(this, "Set Y $yy to $finalName", Toast.LENGTH_SHORT).show()
+                                reloadChunkOnMap(chunkX, chunkZ)
+                            }
+                        } catch (e: Throwable) {
+                            runOnUiThread { showErrorDialog(this, "Could not edit block", e) }
+                        }
+                    }, "BlockEdit").start()
+                }
+            }
+        }
+    }
+
+    /** Re-reads one chunk after an edit so the map shows the change. */
+    private fun reloadChunkOnMap(chunkX: Int, chunkZ: Int) {
+        val pos = chunkX to chunkZ
+        synchronized(loadingChunks) { loadedChunks.remove(pos) }
+        synchronized(layerRequested) { layerRequested.remove(pos) }
+        synchronized(biomeRequested) { biomeRequested.remove(pos) }
+        mapView.dropChunkData(pos)
     }
 
     private fun showChunkDialog(worldX: Int, worldZ: Int) {

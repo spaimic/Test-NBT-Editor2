@@ -33,6 +33,13 @@ object SubChunkEditor {
 
 
 
+    /** A brand-new all-air subchunk (version 9, one layer), used when editing above existing terrain. */
+    fun emptySubChunk(subY: Int): ByteArray {
+        val air = NbtTag.Compound(linkedMapOf("name" to NbtTag.Str("minecraft:air")))
+        val layer = Layer(arrayListOf(air), IntArray(4096))
+        return encode(Decoded(9, subY and 0xFF, arrayListOf(layer)))
+    }
+
     fun clearColumnsToAir(bytes: ByteArray, minX: Int, maxX: Int, minZ: Int, maxZ: Int): ByteArray {
         require(minX in 0..15 && maxX in 0..15 && minX <= maxX)
         require(minZ in 0..15 && maxZ in 0..15 && minZ <= maxZ)
