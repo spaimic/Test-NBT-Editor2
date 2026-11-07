@@ -39,14 +39,16 @@ object Biomes {
         163 to B("Windswept Savanna", 0xE5DA87), 164 to B("Shattered Savanna Plateau", 0xCFC58C),
         165 to B("Eroded Badlands", 0xFF6D3D), 166 to B("Modified Wooded Badlands Plateau", 0xD8BF8D),
         167 to B("Modified Badlands Plateau", 0xF2B48D),
-        170 to B("Soul Sand Valley", 0x5E3830), 171 to B("Crimson Forest", 0xDD0808),
-        172 to B("Warped Forest", 0x49907B), 173 to B("Basalt Deltas", 0x403636),
-        174 to B("Jagged Peaks", 0xDCE4EC), 175 to B("Frozen Peaks", 0xB0C8E0),
-        176 to B("Snowy Slopes", 0xE8F0F8), 177 to B("Grove", 0x9DBBAA), 178 to B("Meadow", 0x60A445),
-        179 to B("Lush Caves", 0x8FBF3A), 180 to B("Dripstone Caves", 0x7B5F3A),
-        181 to B("Stony Peaks", 0x888888), 182 to B("Deep Dark", 0x0A2A30),
-        183 to B("Mangrove Swamp", 0x67B63A), 184 to B("Cherry Grove", 0xF4B8D4),
-        185 to B("Pale Garden", 0x9AA39A)
+        // 1.16+ / 1.18+ biomes. Bedrock numbers the Nether biomes from 178 and the
+        // cave/mountain/new overworld biomes after them (verified against Blocktopograph).
+        178 to B("Soul Sand Valley", 0x5E3830), 179 to B("Crimson Forest", 0xDD0808),
+        180 to B("Warped Forest", 0x49907B), 181 to B("Basalt Deltas", 0x403636),
+        182 to B("Jagged Peaks", 0xDCE4EC), 183 to B("Frozen Peaks", 0xB0C8E0),
+        184 to B("Snowy Slopes", 0xE8F0F8), 185 to B("Grove", 0x9DBBAA), 186 to B("Meadow", 0x60A445),
+        187 to B("Lush Caves", 0x8FBF3A), 188 to B("Dripstone Caves", 0x7B5F3A),
+        189 to B("Stony Peaks", 0x888888), 190 to B("Deep Dark", 0x0A2A30),
+        191 to B("Mangrove Swamp", 0x67B63A), 192 to B("Cherry Grove", 0xF4B8D4),
+        193 to B("Pale Garden", 0x9AA39A)
     )
 
     fun name(id: Int): String = table[id]?.name ?: "Biome #$id"
