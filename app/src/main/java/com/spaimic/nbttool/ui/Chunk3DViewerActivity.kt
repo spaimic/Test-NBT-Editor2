@@ -37,6 +37,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
     private lateinit var view: Chunk3DView
     private lateinit var infoText: TextView
     private var openButton: Button? = null
+    private var hideCheck: CheckBox? = null
 
     data class Pos(val x: Int, val y: Int, val z: Int)
 
@@ -276,6 +277,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             isChecked = hideUnselected
             setOnCheckedChangeListener { _, checked -> hideUnselected = checked; view.hideUnselected = checked; view.invalidate() }
         }
+        hideCheck = hide
         controls.addView(hide)
         val reset = Button(this).apply { text = "Reset View"; setOnClickListener { view.resetView() } }
         controls.addView(reset)
@@ -462,7 +464,7 @@ class Chunk3DViewerActivity : AppCompatActivity() {
             }
             if (bestX in 0..15 && bestZ in 0..15 && bestD < max(55f, min(width, height) * 0.10f)) {
                 selectedX = bestX; selectedZ = bestZ
-                updateInfoText(); openButton?.isEnabled = true; invalidate()
+                updateInfoText(); openButton?.isEnabled = true; hideCheck?.isEnabled = true; invalidate()
             }
         }
 

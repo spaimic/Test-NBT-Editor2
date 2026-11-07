@@ -19,10 +19,18 @@ object BiomeMapParser {
             val input = DataInputStream(ByteArrayInputStream(raw, 512, raw.size - 512))
             val layers = arrayOfNulls<IntArray>(24)
             for (layer in 0 until 24) {
-                if (input.available() <= 0) break
+                if (input.available() <= 0) {
+                    // Record ended early: the remaining sections repeat the last one.
+                    layers[layer] = if (layer > 0) layers[layer - 1] else null
+                    continue
+                }
                 val flags = input.readUnsignedByte()
-                // 0xff is the empty-storage sentinel used by Bedrock's paletted storage.
-                if (flags == 0xff) break
+                // 0xff means "identical to the previous section" (Bedrock omits repeated
+                // biome storages). It is NOT an end marker: sections above it still apply.
+                if (flags == 0xff) {
+                    layers[layer] = if (layer > 0) layers[layer - 1] else null
+                    continue
+                }
                 val bits = flags ushr 1
                 val values = IntArray(4096)
                 if (bits == 0) {
@@ -71,66 +79,55 @@ object BiomeMapParser {
     ) {
         if (raw == null || raw.size <= 512 || out.size < 256) return
         try {
-            val input = DataInputStream(ByteArrayInputStream(raw, 512, raw.size - 512))
-            val requestedLayer = IntArray(24) { -1 }
+            var maxLayer = -1
             for (column in 0 until 256) {
-                val layer = subChunkYForColumn[column] + 4
-                if (layer in requestedLayer.indices) requestedLayer[layer] = 1
+                maxLayer = maxOf(maxLayer, subChunkYForColumn[column] + 4)
             }
+            if (maxLayer < 0) return
+            val layerCount = minOf(maxLayer + 1, 64)
+            val input = DataInputStream(ByteArrayInputStream(raw, 512, raw.size - 512))
 
-            for (layerIndex in 0 until 24) {
-                if (input.available() <= 0) break
+            // Packed storage of each section: bits per entry, packed words, palette.
+            // A 0xff header means "same as the previous section", so those layers share
+            // the previous section object instead of ending the scan (the old code
+            // stopped at the first 0xff, which left most columns without a biome).
+            class Section(val bits: Int, val words: IntArray, val palette: IntArray)
+            val sections = arrayOfNulls<Section>(layerCount)
+            var last: Section? = null
+            for (layer in 0 until layerCount) {
+                if (input.available() <= 0) { sections[layer] = last; continue }
                 val flags = input.readUnsignedByte()
-                if (flags == 0xff) break
+                if (flags == 0xff) { sections[layer] = last; continue }
                 val bits = flags ushr 1
                 if (bits > 32) return
                 val perWord = if (bits == 0) 0 else 32 / bits
                 val wordCount = if (bits == 0) 0 else (4096 + perWord - 1) / perWord
-
-                // Only capture packed indices for the 256 cells that actually
-                // belong to this biome layer. Everything else is discarded while
-                // streaming through the record.
-                val requestedByWord = if (requestedLayer[layerIndex] >= 0 && bits > 0) {
-                    arrayOfNulls<MutableList<Pair<Int, Int>>>(wordCount).also { buckets ->
-                        for (column in 0 until 256) {
-                            val targetLayer = subChunkYForColumn[column] + 4
-                            if (targetLayer != layerIndex) continue
-                            val localY = localYForColumn[column].coerceIn(0, 15)
-                            val x = column and 15
-                            val z = column ushr 4
-                            val linear = (x shl 8) or (z shl 4) or localY
-                            val word = linear / perWord
-                            buckets[word] = (buckets[word] ?: ArrayList()).also { it.add(column to (linear % perWord)) }
-                        }
-                    }
-                } else null
-
-                val paletteIndices = IntArray(256) { -1 }
-                for (wordIndex in 0 until wordCount) {
-                    val word = readIntLE(input)
-                    if (bits == 0) continue
-                    val bucket = requestedByWord?.getOrNull(wordIndex) ?: continue
-                    val mask = if (bits == 32) -1 else (1 shl bits) - 1
-                    for ((column, local) in bucket) {
-                        paletteIndices[column] = (word ushr (local * bits)) and mask
-                    }
-                }
-
+                val words = IntArray(wordCount)
+                for (i in 0 until wordCount) words[i] = readIntLE(input)
                 val paletteCount = readIntLE(input)
                 if (paletteCount <= 0 || paletteCount > 65536) return
-                val palette = IntArray(paletteCount)
-                for (i in 0 until paletteCount) palette[i] = readIntLE(input)
+                val palette = IntArray(paletteCount) { readIntLE(input) }
+                val section = Section(bits, words, palette)
+                sections[layer] = section
+                last = section
+            }
 
-                if (bits == 0) {
-                    for (column in 0 until 256) {
-                        if (subChunkYForColumn[column] + 4 == layerIndex) out[column] = palette[0]
-                    }
-                } else {
-                    for (column in 0 until 256) {
-                        val index = paletteIndices[column]
-                        if (index >= 0 && index < palette.size) out[column] = palette[index]
-                    }
+            for (column in 0 until 256) {
+                val layer = subChunkYForColumn[column] + 4
+                if (layer !in sections.indices) continue
+                val section = sections[layer] ?: continue
+                if (section.bits == 0) {
+                    out[column] = section.palette[0]
+                    continue
                 }
+                val x = column and 15
+                val z = column ushr 4
+                val linear = (x shl 8) or (z shl 4) or localYForColumn[column].coerceIn(0, 15)
+                val perWord = 32 / section.bits
+                val word = section.words.getOrElse(linear / perWord) { 0 }
+                val mask = if (section.bits == 32) -1 else (1 shl section.bits) - 1
+                val index = (word ushr ((linear % perWord) * section.bits)) and mask
+                out[column] = section.palette.getOrElse(index) { section.palette[0] }
             }
         } catch (_: Exception) {
             // Keep the renderer's existing null/default biome behavior on bad data.

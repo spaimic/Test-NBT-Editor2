@@ -255,7 +255,7 @@ class MapViewerActivity : AppCompatActivity() {
 
         mapView.onTap = { x, y, z ->
             infoIsLoading = false
-            showInfo("X: $x\nY: $y\nZ: $z")
+            showInfo("X: $x\nY: $y\nZ: $z\nBiome: ${biomeNameAt(x, z)}")
             showChunkDialog(x, z)
         }
         mapView.onLocatorTap = { showLocatorInfo(it) }
@@ -950,6 +950,30 @@ class MapViewerActivity : AppCompatActivity() {
         return dx * dx + dy * dy + dz * dz
     }
 
+    /** Biome name at a world column; reads it on demand if the background load has not reached it yet. */
+    private fun biomeNameAt(worldX: Int, worldZ: Int): String {
+        try {
+            var id = mapView.biomeIdAt(worldX, worldZ)
+            if (id == null) {
+                val pos = Math.floorDiv(worldX, 16) to Math.floorDiv(worldZ, 16)
+                val grid = mapView.gridAt(pos)
+                val bridge = LevelDbSession.bridge
+                if (grid != null && bridge != null) {
+                    val ids = com.spaimic.nbttool.chunk.ChunkScanner.loadBiomeIds(
+                        bridge, pos.first, pos.second, selectedDbDimension(), grid
+                    )
+                    if (ids != null) {
+                        mapView.setChunkBiomes(pos, ids)
+                        id = mapView.biomeIdAt(worldX, worldZ)
+                    }
+                }
+            }
+            return if (id != null) com.spaimic.nbttool.chunk.Biomes.name(id) else "Unknown"
+        } catch (_: Throwable) {
+            return "Unknown"
+        }
+    }
+
     private fun showChunkDialog(worldX: Int, worldZ: Int) {
         val chunkX = Math.floorDiv(worldX, 16)
         val chunkZ = Math.floorDiv(worldZ, 16)
@@ -979,7 +1003,7 @@ class MapViewerActivity : AppCompatActivity() {
             options.add("❌ Clear Selection")
         }
         AlertDialog.Builder(this)
-            .setTitle("Chunk ($chunkX, $chunkZ)")
+            .setTitle("Chunk ($chunkX, $chunkZ) • ${biomeNameAt(worldX, worldZ)}")
             .setItems(options.toTypedArray()) { _, which ->
                 when (options[which]) {
                     "Chunk Information" -> showChunkInformation(chunkX, chunkZ)

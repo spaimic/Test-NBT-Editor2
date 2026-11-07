@@ -4,7 +4,7 @@ A Minecraft Bedrock Edition world and NBT editor for Android. It opens worlds
 through [Shizuku](https://shizuku.rikka.app/), so it can read and write the
 sandboxed `Android/data` world folders without root.
 
-Package: `com.spaimic.nbttool` · Current build: **244**
+Package: `com.spaimic.nbttool` · Current build: **245**
 
 > ⚠️ **Back up your worlds.** This app edits LevelDB data directly. Use the
 > built-in **Backup Worlds** feature before any edit, and avoid heavy bulk
@@ -43,7 +43,7 @@ home screen several times to enable it.
   - 🎚️ View at a specific Y level (the highest block at or below Y)
   - 🧭 Go to X / Z
   - 📍 Locators: saved per-world bookmarks with 8 selectable colors
-  - 🌿 Biome overlay: color the map by biome; the biome under the map centre is shown at the bottom
+  - 🌿 Biome overlay: color the map by biome; the biome under the map centre is shown at the bottom, and tapping the map shows the biome there
   - 🟩 Slime chunk view (Overworld): slime chunks green, everything else black
 - 🌍 3D Chunk Viewer across all dimensions (face culling + greedy meshing)
 - 📷 Take a picture of the entire map
