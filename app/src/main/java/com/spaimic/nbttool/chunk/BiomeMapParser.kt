@@ -13,63 +13,101 @@ import java.io.IOException
 object BiomeMapParser {
     data class Result(val layers: Array<IntArray?>)
 
-    fun parse(raw: ByteArray): Result? {
-        if (raw.size <= 512) return null
+    /** One decoded biome storage: bits per entry, packed words and the palette of biome ids. */
+    private class Section(val bits: Int, val words: IntArray, val palette: IntArray)
+
+    /**
+     * Decodes every biome storage that follows the 512-byte heightmap.
+     *
+     * Two details make this easy to get wrong:
+     *  - a 0xff header means "identical to the previous section" (it is not an end marker);
+     *  - a 0-bit storage (a section with a single biome, which is what nearly every
+     *    uniform chunk has) carries NO palette-size field, just the one biome id.
+     *    Reading a size there shifted everything after it, so uniform chunks failed
+     *    to decode and only chunks near biome boundaries showed a biome.
+     * The record is decoded strictly (it must be consumed exactly), trying the
+     * no-size layout first and the sized layout as a fallback.
+     */
+    private fun decodeSections(raw: ByteArray, zeroBitHasCount: Boolean): List<Section?>? {
         return try {
             val input = DataInputStream(ByteArrayInputStream(raw, 512, raw.size - 512))
-            val layers = arrayOfNulls<IntArray>(24)
-            for (layer in 0 until 24) {
-                if (input.available() <= 0) {
-                    // Record ended early: the remaining sections repeat the last one.
-                    layers[layer] = if (layer > 0) layers[layer - 1] else null
-                    continue
-                }
+            val out = ArrayList<Section?>()
+            var last: Section? = null
+            while (input.available() > 0 && out.size < 64) {
                 val flags = input.readUnsignedByte()
-                // 0xff means "identical to the previous section" (Bedrock omits repeated
-                // biome storages). It is NOT an end marker: sections above it still apply.
-                if (flags == 0xff) {
-                    layers[layer] = if (layer > 0) layers[layer - 1] else null
-                    continue
-                }
+                if (flags == 0xff) { out.add(last); continue }
                 val bits = flags ushr 1
-                val values = IntArray(4096)
+                if (bits > 32) return null
+                val section: Section
                 if (bits == 0) {
-                    // palette is still present; all 4096 entries use palette[0]
+                    val palette = if (zeroBitHasCount) {
+                        val count = readIntLE(input)
+                        if (count !in 1..65536) return null
+                        IntArray(count) { readIntLE(input) }
+                    } else {
+                        intArrayOf(readIntLE(input))
+                    }
+                    section = Section(0, IntArray(0), palette)
                 } else {
-                    if (bits > 32) throw IOException("invalid biome bits=$bits")
                     val perWord = 32 / bits
                     val wordCount = (4096 + perWord - 1) / perWord
-                    val mask = if (bits == 32) -1 else (1 shl bits) - 1
-                    var at = 0
-                    repeat(wordCount) {
-                        val word = readIntLE(input)
-                        repeat(perWord) {
-                            if (at < 4096) {
-                                values[at++] = (word ushr (it * bits)) and mask
-                            }
-                        }
-                    }
+                    val words = IntArray(wordCount) { readIntLE(input) }
+                    val count = readIntLE(input)
+                    if (count !in 1..65536) return null
+                    val palette = IntArray(count) { readIntLE(input) }
+                    section = Section(bits, words, palette)
                 }
-                val paletteCount = readIntLE(input)
-                if (paletteCount <= 0 || paletteCount > 65536) throw IOException("invalid biome palette=$paletteCount")
-                val palette = IntArray(paletteCount) { readIntLE(input) }
-                for (i in values.indices) values[i] = palette.getOrElse(values[i]) { palette[0] }
-                layers[layer] = values
+                out.add(section)
+                last = section
             }
-            Result(layers)
+            out
         } catch (_: Exception) {
             null
         }
     }
 
+    private fun sectionsFor(raw: ByteArray): List<Section?>? {
+        if (raw.size <= 512) return null
+        val plain = decodeSections(raw, false)
+        if (plain != null && plain.isNotEmpty()) return plain
+        return decodeSections(raw, true)?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun sectionAt(sections: List<Section?>, layer: Int): Section? =
+        sections.getOrNull(layer) ?: sections.lastOrNull()
+
+    private fun expand(s: Section): IntArray {
+        val values = IntArray(4096)
+        if (s.bits == 0) {
+            java.util.Arrays.fill(values, s.palette[0])
+            return values
+        }
+        val perWord = 32 / s.bits
+        val mask = if (s.bits == 32) -1 else (1 shl s.bits) - 1
+        for (i in 0 until 4096) {
+            val word = s.words.getOrElse(i / perWord) { 0 }
+            val index = (word ushr ((i % perWord) * s.bits)) and mask
+            values[i] = s.palette.getOrElse(index) { s.palette[0] }
+        }
+        return values
+    }
+
+    fun parse(raw: ByteArray): Result? {
+        val sections = sectionsFor(raw) ?: return null
+        val expanded = java.util.IdentityHashMap<Section, IntArray>()
+        val layers = arrayOfNulls<IntArray>(24)
+        for (layer in 0 until 24) {
+            val s = sectionAt(sections, layer) ?: continue
+            layers[layer] = expanded.getOrPut(s) { expand(s) }
+        }
+        return Result(layers)
+    }
+
     /**
-     * Build-180 hot path. Reads only the biome cells requested by a renderer.
-     * The previous parse() expanded every biome subchunk to 4096 Ints even
-     * though the map renderer ultimately needs at most 256 biome values.
-     *
-     * [subChunkYForColumn] is indexed as z*16+x and identifies the subchunk
-     * containing the selected surface block for that column. [localYForColumn]
-     * is that block's Y within the subchunk.
+     * Hot path used by the map renderer: reads only the biome cells of the 256 surface
+     * columns. [subChunkYForColumn] / [localYForColumn] are indexed as z*16+x and give
+     * the subchunk and local Y of each column's surface block; layer = subChunkY + 4
+     * (the Overworld's lowest subchunk is -4).
      */
     fun biomeAtColumnsFast(
         raw: ByteArray?,
@@ -79,43 +117,11 @@ object BiomeMapParser {
     ) {
         if (raw == null || raw.size <= 512 || out.size < 256) return
         try {
-            var maxLayer = -1
-            for (column in 0 until 256) {
-                maxLayer = maxOf(maxLayer, subChunkYForColumn[column] + 4)
-            }
-            if (maxLayer < 0) return
-            val layerCount = minOf(maxLayer + 1, 64)
-            val input = DataInputStream(ByteArrayInputStream(raw, 512, raw.size - 512))
-
-            // Packed storage of each section: bits per entry, packed words, palette.
-            // A 0xff header means "same as the previous section", so those layers share
-            // the previous section object instead of ending the scan (the old code
-            // stopped at the first 0xff, which left most columns without a biome).
-            class Section(val bits: Int, val words: IntArray, val palette: IntArray)
-            val sections = arrayOfNulls<Section>(layerCount)
-            var last: Section? = null
-            for (layer in 0 until layerCount) {
-                if (input.available() <= 0) { sections[layer] = last; continue }
-                val flags = input.readUnsignedByte()
-                if (flags == 0xff) { sections[layer] = last; continue }
-                val bits = flags ushr 1
-                if (bits > 32) return
-                val perWord = if (bits == 0) 0 else 32 / bits
-                val wordCount = if (bits == 0) 0 else (4096 + perWord - 1) / perWord
-                val words = IntArray(wordCount)
-                for (i in 0 until wordCount) words[i] = readIntLE(input)
-                val paletteCount = readIntLE(input)
-                if (paletteCount <= 0 || paletteCount > 65536) return
-                val palette = IntArray(paletteCount) { readIntLE(input) }
-                val section = Section(bits, words, palette)
-                sections[layer] = section
-                last = section
-            }
-
+            val sections = sectionsFor(raw) ?: return
             for (column in 0 until 256) {
                 val layer = subChunkYForColumn[column] + 4
-                if (layer !in sections.indices) continue
-                val section = sections[layer] ?: continue
+                if (layer < 0) continue
+                val section = sectionAt(sections, layer) ?: continue
                 if (section.bits == 0) {
                     out[column] = section.palette[0]
                     continue
