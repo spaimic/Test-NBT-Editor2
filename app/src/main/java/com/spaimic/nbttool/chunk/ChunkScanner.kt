@@ -860,6 +860,34 @@ object ChunkScanner {
         } }
     }
 
+    /**
+     * Surface biome id for each column of a chunk (index = z*16+x), or null when the
+     * chunk has no modern Data3D biome record. -1 marks a column whose biome could not
+     * be read. [grid] supplies the surface Y of every column.
+     */
+    fun loadBiomeIds(
+        bridge: LevelDbBridge, chunkX: Int, chunkZ: Int, dimension: Int,
+        grid: Array<Array<ColumnInfo>>
+    ): ShortArray? {
+        val raw = bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, dimension)) ?: return null
+        if (raw.size <= 512) return null
+        // BiomeMapParser addresses biome storages from the Overworld minimum subchunk (-4);
+        // the Nether and End start at subchunk 0.
+        val shift = if (dimension == 0) 0 else 4
+        val subY = IntArray(256)
+        val localY = IntArray(256)
+        val ids = IntArray(256) { -1 }
+        for (z in 0 until 16) for (x in 0 until 16) {
+            val column = (z shl 4) or x
+            val y = grid[x][z].surfaceY
+            val sy = Math.floorDiv(y, 16)
+            subY[column] = sy - shift
+            localY[column] = y - sy * 16
+        }
+        BiomeMapParser.biomeAtColumnsFast(raw, subY, localY, ids)
+        return ShortArray(256) { ids[it].let { v -> if (v in 0..32767) v.toShort() else (-1).toShort() } }
+    }
+
     fun loadChunkDirect(
         bridge: LevelDbBridge,
         chunkX: Int,

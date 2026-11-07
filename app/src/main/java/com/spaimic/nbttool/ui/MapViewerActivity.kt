@@ -296,6 +296,9 @@ class MapViewerActivity : AppCompatActivity() {
     private var markerPublishPending = false
     private var infoIsLoading = false
     private val layerRequested = HashSet<Pair<Int, Int>>()
+    private val biomeRequested = HashSet<Pair<Int, Int>>()
+    private lateinit var biomeToggleText: TextView
+    private lateinit var slimeToggleText: TextView
     private var layerButtonRef: Button? = null
     private var yButtonRef: Button? = null
     private val locatorsList = mutableListOf<Locator>()
@@ -418,6 +421,35 @@ class MapViewerActivity : AppCompatActivity() {
         })
     }
 
+    /** Loads the surface biome of one chunk (tiny: one LevelDB read) on a background thread. */
+    private fun scheduleBiomeLoad(pos: Pair<Int, Int>, grid: Array<Array<com.spaimic.nbttool.chunk.ColumnInfo>>, dim: Int) {
+        if (mapView.hasBiomeData(pos)) return
+        synchronized(biomeRequested) { if (!biomeRequested.add(pos)) return }
+        layerExecutor.execute(PriorityTask(distanceToCamera(pos), taskSeq.incrementAndGet()) {
+            try {
+                val bridge = LevelDbSession.bridge
+                if (bridge != null && currentDimension == dim) {
+                    val ids = com.spaimic.nbttool.chunk.ChunkScanner.loadBiomeIds(bridge, pos.first, pos.second, dim, grid)
+                    // A null result (no biome record) stays in biomeRequested so it is not retried forever.
+                    if (ids != null) runOnUiThread { if (currentDimension == dim) mapView.setChunkBiomes(pos, ids) }
+                }
+            } catch (_: Throwable) {
+                synchronized(biomeRequested) { biomeRequested.remove(pos) }
+            }
+        })
+    }
+
+    private fun ensureBiomeDataForLoadedChunks() {
+        val dim = selectedDbDimension()
+        for (pos in wantedChunks) mapView.gridAt(pos)?.let { scheduleBiomeLoad(pos, it, dim) }
+    }
+
+    private fun updateOverlayToggleTexts() {
+        if (!::biomeToggleText.isInitialized || !::slimeToggleText.isInitialized) return
+        biomeToggleText.text = if (mapView.biomeMode) "Hide Biome Overlay" else "Show Biome Overlay"
+        slimeToggleText.text = if (mapView.slimeMode) "Hide Slime Chunks" else "Show Slime Chunks"
+    }
+
     /** Called when the user enters layer/Y view: make sure on-screen chunks have layer data. */
     private fun ensureLayerDataForLoadedChunks() {
         val dim = selectedDbDimension()
@@ -469,6 +501,9 @@ class MapViewerActivity : AppCompatActivity() {
             }
         }
         for (pos in needLayers) scheduleLayerBuild(pos, null, dimensionForRequest)
+        if (mapView.biomeMode) {
+            for (pos in positions) mapView.gridAt(pos)?.let { scheduleBiomeLoad(pos, it, dimensionForRequest) }
+        }
         if (todo.isEmpty()) return
 
         for (pos in todo) {
@@ -526,6 +561,7 @@ class MapViewerActivity : AppCompatActivity() {
                     if (builtLayers == null && prefetchRaw != null && mapView.currentZoom() >= 3f) {
                         scheduleLayerBuild(pos, prefetchRaw, dim)
                     }
+                    scheduleBiomeLoad(pos, loaded.grid, dim)
 
                     markerExecutor.execute {
                         val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
@@ -1818,6 +1854,7 @@ class MapViewerActivity : AppCompatActivity() {
         synchronized(loadingChunks) {
             loadedChunks.clear()
             synchronized(layerRequested) { layerRequested.clear() }
+            synchronized(biomeRequested) { biomeRequested.clear() }
             loadingChunks.clear()
         }
         synchronized(markerLock) {
@@ -1827,6 +1864,11 @@ class MapViewerActivity : AppCompatActivity() {
         mapView.clearChunkData()
         updateLayerLabels()
         refreshLocatorsOnMap()
+        if (mapView.slimeMode && selectedDbDimension() != 0) {
+            mapView.slimeMode = false
+            Toast.makeText(this, "Slime chunk view is Overworld-only, so it was turned off", Toast.LENGTH_SHORT).show()
+        }
+        updateOverlayToggleTexts()
         mapView.entityMarkers = emptyList()
         mapView.blockEntityMarkers = emptyList()
         // Bedrock's Nether portal coordinate relationship is 8:1. When entering
@@ -2127,6 +2169,28 @@ class MapViewerActivity : AppCompatActivity() {
             tileEntityToggleText.text = if (mapView.showTileEntityIcons) "Hide Tile Entities on the Map" else "Show Tile Entities on the Map"
         })
 
+        biomeToggleText = drawerText(if (mapView.biomeMode) "Hide Biome Overlay" else "Show Biome Overlay")
+        panel.addView(drawerOptionRow(R.drawable.toggle, biomeToggleText) {
+            val on = !mapView.biomeMode
+            if (on) {
+                mapView.slimeMode = false
+                ensureBiomeDataForLoadedChunks()
+            }
+            mapView.biomeMode = on
+            updateOverlayToggleTexts()
+        })
+        slimeToggleText = drawerText(if (mapView.slimeMode) "Hide Slime Chunks" else "Show Slime Chunks")
+        panel.addView(drawerOptionRow(R.drawable.toggle, slimeToggleText) {
+            if (!mapView.slimeMode && selectedDbDimension() != 0) {
+                Toast.makeText(this, "Slime chunks only exist in the Overworld", Toast.LENGTH_SHORT).show()
+            } else {
+                val on = !mapView.slimeMode
+                if (on) mapView.biomeMode = false
+                mapView.slimeMode = on
+                updateOverlayToggleTexts()
+            }
+        })
+
         panel.addView(drawerCategory("Clipboard"))
         panel.addView(drawerRow(R.drawable.clipboard, "NBT Clipboard") { startActivity(Intent(this, ClipboardActivity::class.java)) })
         panel.addView(drawerRow(R.drawable.clipboard, "Chunk Clipboard") { startActivity(Intent(this, ChunkClipboardActivity::class.java)) })
@@ -2389,6 +2453,7 @@ class MapViewerActivity : AppCompatActivity() {
         synchronized(loadingChunks) {
             loadedChunks.clear()
             synchronized(layerRequested) { layerRequested.clear() }
+            synchronized(biomeRequested) { biomeRequested.clear() }
             loadingChunks.clear()
         }
         synchronized(markerLock) {

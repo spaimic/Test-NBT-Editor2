@@ -13,6 +13,8 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import com.spaimic.nbttool.R
 import com.spaimic.nbttool.chunk.BlockColors
+import com.spaimic.nbttool.chunk.Biomes
+import com.spaimic.nbttool.chunk.SlimeChunks
 import com.spaimic.nbttool.chunk.ColumnInfo
 import com.spaimic.nbttool.chunk.MapViewerRenderStyle
 import kotlin.math.floor
@@ -98,6 +100,27 @@ class MapView(context: Context) : View(context) {
     private fun invalidateAllChunkBitmaps() = refreshAllChunkBitmaps()
 
     fun hasLayerData(pos: Pair<Int, Int>): Boolean = chunkLayers.containsKey(pos)
+    fun hasBiomeData(pos: Pair<Int, Int>): Boolean = chunkBiomes.containsKey(pos)
+    fun gridAt(pos: Pair<Int, Int>): Array<Array<ColumnInfo>>? = chunks[pos]
+
+    fun setChunkBiomes(pos: Pair<Int, Int>, ids: ShortArray) {
+        chunkBiomes[pos] = ids
+        if (biomeMode) {
+            chunkBitmaps.remove(pos)?.let { old ->
+                val prev = staleBitmaps.put(pos, old)
+                if (prev != null && prev !== old && !prev.isRecycled) prev.recycle()
+            }
+            bitmapAccessOrder.remove(pos)
+        }
+        invalidate()
+    }
+
+    /** Biome id at a world column, or null when that chunk's biome data is not loaded. */
+    fun biomeIdAt(worldX: Int, worldZ: Int): Int? {
+        val ids = chunkBiomes[Math.floorDiv(worldX, 16) to Math.floorDiv(worldZ, 16)] ?: return null
+        val v = ids[((worldZ and 15) shl 4) or (worldX and 15)].toInt()
+        return if (v >= 0) v else null
+    }
     fun currentZoom(): Float = zoom
 
     private val maxLayerChunks = 2800
@@ -142,6 +165,21 @@ class MapView(context: Context) : View(context) {
         set(value) { field = value; invalidate() }
     var showTileEntityIcons = true
         set(value) { field = value; invalidate() }
+    /** Colors every column by its biome (when biome data has loaded for the chunk). */
+    var biomeMode: Boolean = false
+        set(value) { if (field != value) { field = value; refreshAllChunkBitmaps(); invalidate() } }
+    /** Overworld slime chunks: slime chunks green, everything else black. */
+    var slimeMode: Boolean = false
+        set(value) { if (field != value) { field = value; invalidate() } }
+    private val chunkBiomes = ConcurrentHashMap<Pair<Int, Int>, ShortArray>()
+    private val slimePaint = Paint().apply { color = Color.rgb(50, 200, 50) }
+    private val slimeOffPaint = Paint().apply { color = Color.BLACK }
+    private val slimeGridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(70, 255, 255, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 1f
+    }
+    private val readoutBgPaint = Paint().apply { color = Color.argb(190, 255, 255, 255) }
     var dimensionLabel: String = ""
         set(value) { field = value; invalidate() }
     var locators: List<Locator> = emptyList()
@@ -277,6 +315,7 @@ class MapView(context: Context) : View(context) {
         renderGeneration.incrementAndGet()
         layerDepth = 0
         viewY = null
+        chunkBiomes.clear()
         chunks.clear()
         chunkLayers.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
@@ -442,6 +481,7 @@ class MapView(context: Context) : View(context) {
         val bitmap = Bitmap.createBitmap(chunkPixels, chunkPixels, Bitmap.Config.ARGB_8888)
         val pixels = IntArray(chunkPixels * chunkPixels) { Color.TRANSPARENT }
         val layers = chunkLayers[pos]
+        val biomes = if (biomeMode) chunkBiomes[pos] else null
         fun infoAt(x: Int, z: Int): ColumnInfo? {
             if (layers == null) return grid[x][z]
             val vy = viewY
@@ -455,7 +495,11 @@ class MapView(context: Context) : View(context) {
         val southGrid = chunks[pos.first to pos.second + 1]
 
         for (x in 0 until 16) for (z in 0 until 16) {
-            val info = infoAt(x, z) ?: continue
+            var info = infoAt(x, z) ?: continue
+            if (biomes != null) {
+                val biomeId = biomes[(z shl 4) or x].toInt()
+                if (biomeId >= 0) info = info.copy(color = Biomes.color(biomeId))
+            }
             val westInfo = if (x > 0) infoAt(x - 1, z) else westGrid?.get(15)?.get(z)
             val eastInfo = if (x < 15) infoAt(x + 1, z) else eastGrid?.get(0)?.get(z)
             val northInfo = if (z > 0) infoAt(x, z - 1) else northGrid?.get(x)?.get(15)
@@ -596,6 +640,12 @@ class MapView(context: Context) : View(context) {
                 val bottom = screenZ((cz + 1) * 16f)
                 if (right < 0 || left > width || bottom < 0 || top > height) continue
 
+                if (slimeMode) {
+                    canvas.drawRect(left, top, right, bottom,
+                        if (SlimeChunks.isSlime(cx, cz)) slimePaint else slimeOffPaint)
+                    if (showGrid && zoom >= 6f) canvas.drawRect(left, top, right, bottom, slimeGridPaint)
+                    continue
+                }
                 val pos = cx to cz
                 val grid = chunks[pos]
                 if (grid != null) {
@@ -694,7 +744,20 @@ class MapView(context: Context) : View(context) {
         val cx = floor(cameraX).toInt()
         val cz = floor(cameraZ).toInt()
         val prefix = if (dimensionLabel.isEmpty()) "" else "$dimensionLabel • "
-        canvas.drawText("${prefix}X: $cx  Z: $cz   Zoom: ${"%.2f".format(zoom)}×", 20f, height - 24f, coordinatePaint)
+        val line1 = "${prefix}X: $cx  Z: $cz   Zoom: ${"%.2f".format(zoom)}×"
+        // Second line: the biome (or slime status) under the map centre, updated as you pan.
+        val line2: String? = when {
+            slimeMode -> if (SlimeChunks.isSlime(Math.floorDiv(cx, 16), Math.floorDiv(cz, 16))) "Slime chunk" else "Not a slime chunk"
+            biomeMode -> biomeIdAt(cx, cz)?.let { Biomes.name(it) } ?: "Biome: …"
+            else -> null
+        }
+        val baseY = height - 24f
+        var textWidth = coordinatePaint.measureText(line1)
+        if (line2 != null) textWidth = maxOf(textWidth, coordinatePaint.measureText(line2))
+        val boxTop = (if (line2 != null) baseY - 32f else baseY) - 26f
+        canvas.drawRect(10f, boxTop, 30f + textWidth, baseY + 10f, readoutBgPaint)
+        canvas.drawText(line1, 20f, baseY, coordinatePaint)
+        if (line2 != null) canvas.drawText(line2, 20f, baseY - 32f, coordinatePaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
