@@ -72,7 +72,9 @@ class MapViewerActivity : AppCompatActivity() {
         contentRoot.addView(mapView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
 
         coordText = TextView(this).apply {
-            text = "Tap the map for coordinates"
+            // Only shown for tap info, selections and loading; the live
+            // "<dimension> • X/Z • Zoom" readout is the single bottom-left line.
+            visibility = View.GONE
             setBackgroundColor(Color.WHITE)
             setTextColor(Color.BLACK)
             setPadding(20, 12, 20, 12)
@@ -252,7 +254,8 @@ class MapViewerActivity : AppCompatActivity() {
         setContentView(drawerLayout)
 
         mapView.onTap = { x, y, z ->
-            coordText.text = "X: $x\nY: $y\nZ: $z"
+            infoIsLoading = false
+            showInfo("X: $x\nY: $y\nZ: $z")
             showChunkDialog(x, z)
         }
         mapView.onLocatorTap = { showLocatorInfo(it) }
@@ -260,8 +263,9 @@ class MapViewerActivity : AppCompatActivity() {
         locatorsList.addAll(Locators.load(this, worldDir.name))
         refreshLocatorsOnMap()
         mapView.onSelectionChanged = { s ->
-            coordText.text = if (s == null) "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
-                else "${dimensionName()} • Selection ${s.width}×${s.height} • X ${s.minX}..${s.maxX} • Z ${s.minZ}..${s.maxZ}"
+            infoIsLoading = false
+            showInfo(if (s == null) null
+                else "${dimensionName()} • Selection ${s.width}×${s.height} • X ${s.minX}..${s.maxX} • Z ${s.minZ}..${s.maxZ}")
         }
 
         loadAndScan()
@@ -271,11 +275,26 @@ class MapViewerActivity : AppCompatActivity() {
     private val requestedChunks = HashSet<Pair<Int, Int>>()
     private val loadedChunks = HashSet<Pair<Int, Int>>()
     private val loadingChunks = HashSet<Pair<Int, Int>>()
-    private val mapExecutor = java.util.concurrent.Executors.newFixedThreadPool(6)
+    // Nearest-to-camera chunks first. Tasks re-check the wanted set when they start,
+    // so chunks that scrolled away (or were jumped away from) are skipped, not decoded.
+    private val mapExecutor = java.util.concurrent.ThreadPoolExecutor(
+        6, 6, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.PriorityBlockingQueue<Runnable>()
+    )
     // Marker reads can be slower than terrain decoding; keep them off the terrain
     // pipeline so icons never delay the first visible map pixels.
     private val markerExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
-    private val layerExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
+    private val layerExecutor = java.util.concurrent.ThreadPoolExecutor(
+        3, 3, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.PriorityBlockingQueue<Runnable>(),
+        java.util.concurrent.ThreadFactory { r ->
+            Thread(r).apply { priority = Thread.NORM_PRIORITY - 1; isDaemon = true }
+        }
+    )
+    @Volatile private var wantedChunks: Set<Pair<Int, Int>> = emptySet()
+    private val taskSeq = java.util.concurrent.atomic.AtomicLong()
+    private var markerPublishPending = false
+    private var infoIsLoading = false
     private val layerRequested = HashSet<Pair<Int, Int>>()
     private var layerButtonRef: Button? = null
     private var yButtonRef: Button? = null
@@ -353,7 +372,9 @@ class MapViewerActivity : AppCompatActivity() {
                     mapView.clearChunkData()
                     mapView.onVisibleChunksChanged = { positions -> requestVisibleChunks(positions) }
                     title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
-                    coordText.text = "${dimensionName()} • Loading visible chunks…"
+                    mapView.dimensionLabel = dimensionName()
+                    infoIsLoading = true
+                    showInfo("Loading visible chunks…")
                     // IMPORTANT: do not enumerate LevelDB here. The database can contain
                     // thousands of chunk records plus map_*, village, player, structure,
                     // entity and other records. Every non-map feature discovers/reads its
@@ -368,129 +389,168 @@ class MapViewerActivity : AppCompatActivity() {
         }.start()
     }
 
-    private fun requestLayerData(pos: Pair<Int, Int>, grid: Array<Array<com.spaimic.nbttool.chunk.ColumnInfo>>, dim: Int) {
-        val bridge = LevelDbSession.bridge ?: return
+    private fun distanceToCamera(pos: Pair<Int, Int>): Float {
+        val dx = pos.first - mapView.currentCameraBlockX() / 16f
+        val dz = pos.second - mapView.currentCameraBlockZ() / 16f
+        return dx * dx + dz * dz
+    }
+
+    /**
+     * Builds the compact Y-level data for one chunk on a background thread. [raw] is the
+     * subchunk bytes already read for the surface pass (no second LevelDB read); when it is
+     * null the chunk is read again.
+     */
+    private fun scheduleLayerBuild(pos: Pair<Int, Int>, raw: List<Pair<Int, ByteArray>>?, dim: Int) {
+        if (mapView.hasLayerData(pos)) return
         synchronized(layerRequested) { if (!layerRequested.add(pos)) return }
-        layerExecutor.execute {
+        layerExecutor.execute(PriorityTask(distanceToCamera(pos), taskSeq.incrementAndGet()) {
             try {
-                val stacks = Array(16) { Array(16) { ArrayList<Long>() } }
-                val subchunks = bridge.readSubchunks(pos.first, pos.second, dim)
-                for ((subY, raw) in subchunks) {
-                    val parsed = com.spaimic.nbttool.chunk.SubChunkParser.parse(raw)
-                    if (parsed is com.spaimic.nbttool.chunk.SubChunkParser.ParseResult.Success) {
-                        for (x in 0..15) for (z in 0..15) for (y in 15 downTo 0) {
-                            val name = parsed.blocks[x][z][y]
-                            if (name == "minecraft:air" || name == "air" || name.endsWith(":air")) continue
-                            val worldY = subY * 16 + y
-                            if (worldY in -64..320 && worldY <= grid[x][z].surfaceY) {
-                                val color = com.spaimic.nbttool.chunk.BlockColors.colorForDimension(name, dim)
-                                stacks[x][z].add((color.toLong() shl 16) or ((worldY + 32768).toLong() and 0xffffL))
-                            }
-                        }
-                    }
+                val bridge = LevelDbSession.bridge
+                if (bridge != null && currentDimension == dim && wantedChunks.contains(pos)) {
+                    val subs = raw ?: bridge.readSubchunks(pos.first, pos.second, dim)
+                    val layers = com.spaimic.nbttool.chunk.ChunkScanner.buildLayerRuns(subs, dim)
+                    runOnUiThread { if (currentDimension == dim) mapView.setChunkLayerData(pos, layers) }
                 }
-                val layerData = Array(16) { x -> Array(16) { z ->
-                    stacks[x][z].sortedByDescending { it and 0xffffL }.toLongArray()
-                } }
-                runOnUiThread { if (currentDimension == dim) mapView.setChunkLayerData(pos, layerData) }
-            } catch (e: Throwable) {
+            } catch (_: Throwable) {
+            } finally {
                 synchronized(layerRequested) { layerRequested.remove(pos) }
             }
+        })
+    }
+
+    /** Called when the user enters layer/Y view: make sure on-screen chunks have layer data. */
+    private fun ensureLayerDataForLoadedChunks() {
+        val dim = selectedDbDimension()
+        val wanted = wantedChunks
+        for (pos in mapView.loadedChunkGrids().keys) {
+            if (wanted.contains(pos)) scheduleLayerBuild(pos, null, dim)
         }
     }
 
-    /** Called when the user enters layer view: decode stacks for chunks already on screen. */
-    private fun ensureLayerDataForLoadedChunks() {
-        val dim = selectedDbDimension()
-        for ((pos, grid) in mapView.loadedChunkGrids()) requestLayerData(pos, grid, dim)
+    private fun scheduleMarkerPublish() {
+        if (markerPublishPending) return
+        markerPublishPending = true
+        mapView.postDelayed({
+            markerPublishPending = false
+            synchronized(markerLock) {
+                mapView.entityMarkers = loadedEntityMarkers.toList()
+                mapView.blockEntityMarkers = loadedBlockEntityMarkers.toList()
+            }
+        }, 200)
+    }
+
+    private fun showInfo(text: String?) {
+        if (text == null) {
+            coordText.visibility = View.GONE
+        } else {
+            coordText.text = text
+            coordText.visibility = View.VISIBLE
+        }
     }
 
     private fun requestVisibleChunks(positions: Set<Pair<Int, Int>>) {
         val bridge = LevelDbSession.bridge ?: return
+        wantedChunks = positions
         val dimensionForRequest = selectedDbDimension()
+        val layerMode = mapView.layerModeActive()
         val todo = ArrayList<Pair<Int, Int>>()
+        val needLayers = ArrayList<Pair<Int, Int>>()
 
         synchronized(loadingChunks) {
             for (pos in positions) {
                 // Do not require a global chunk index here: visible chunks are queried directly from LevelDB.
-                if (loadedChunks.contains(pos) || loadingChunks.contains(pos)) continue
+                if (loadedChunks.contains(pos)) {
+                    if (layerMode) needLayers.add(pos)
+                    continue
+                }
+                if (loadingChunks.contains(pos)) continue
                 loadingChunks.add(pos)
                 todo.add(pos)
             }
         }
+        for (pos in needLayers) scheduleLayerBuild(pos, null, dimensionForRequest)
         if (todo.isEmpty()) return
 
-        // Prioritize chunks closest to the camera. This makes the map look
-        // effectively instant because the center appears first while outer
-        // chunks continue loading in the background.
-        val centerX = mapView.currentCameraBlockX() / 16f
-        val centerZ = mapView.currentCameraBlockZ() / 16f
-        todo.sortBy {
-            val dx = it.first - centerX
-            val dz = it.second - centerZ
-            dx * dx + dz * dz
-        }
-
         for (pos in todo) {
-            mapExecutor.execute {
-                try {
-                    val unknown = HashSet<String>()
-                    val reasons = HashMap<String, Int>()
-                    val examples = HashMap<String, String>()
-                    // Viewport loading deliberately uses direct LevelDB seeks.
-                    // We never need a complete chunk index just to draw what is on screen.
-                    val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
-                        bridge, pos.first, pos.second, unknown, reasons, examples, dimensionForRequest, includeMarkers = false
-                    )
-                    runOnUiThread {
-                        if (currentDimension != dimensionForRequest) {
-                            synchronized(loadingChunks) { loadingChunks.remove(pos) }
-                            return@runOnUiThread
-                        }
-                        synchronized(loadingChunks) {
-                            loadingChunks.remove(pos)
-                            // A null result means the direct LevelDB seek/parser
-                            // did not produce terrain. Do not permanently mark the
-                            // chunk as loaded, otherwise one failed read becomes a
-                            // permanent gray square on the map.
-                            if (loaded != null) loadedChunks.add(pos) else loadedChunks.remove(pos)
-                        }
-                        if (loaded != null) {
-                            // Terrain is available immediately; marker records are
-                            // intentionally loaded on a separate tiny executor.
-                            mapView.setChunkData(mapOf(pos to loaded.grid))
-                            // Vertical stacks are decoded lazily, only once the user starts
-                            // using layer view, so normal map loading stays fast in big worlds.
-                            if (mapView.layerModeActive()) requestLayerData(pos, loaded.grid, dimensionForRequest)
+            mapExecutor.execute(PriorityTask(distanceToCamera(pos), taskSeq.incrementAndGet()) {
+                loadOneChunk(pos, bridge, dimensionForRequest)
+            })
+        }
+    }
 
-                            markerExecutor.execute {
-                                val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
-                                    bridge, pos.first, pos.second, dimensionForRequest
-                                )
-                                runOnUiThread {
-                                    if (currentDimension != dimensionForRequest) return@runOnUiThread
-                                    synchronized(markerLock) {
-                                        loadedEntityMarkers.addAll(markers.entityMarkers.map {
-                                            MapView.MarkerDraw(it.worldX, it.worldZ,
-                                                com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
-                                        })
-                                        loadedBlockEntityMarkers.addAll(markers.blockEntityMarkers.map {
-                                            MapView.MarkerDraw(it.worldX, it.worldZ,
-                                                com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
-                                        })
-                                        mapView.entityMarkers = loadedEntityMarkers.toList()
-                                        mapView.blockEntityMarkers = loadedBlockEntityMarkers.toList()
-                                    }
-                                }
-                            }
-                        }
-                        coordText.text = "${dimensionName()} • X: ${mapView.currentCameraBlockX()}  Z: ${mapView.currentCameraBlockZ()}"
+    private fun loadOneChunk(pos: Pair<Int, Int>, bridge: LevelDbBridge, dim: Int) {
+        // Skip work for chunks that are no longer on screen (fast panning, Go to X/Z jumps).
+        if (currentDimension != dim || !wantedChunks.contains(pos)) {
+            synchronized(loadingChunks) { loadingChunks.remove(pos) }
+            return
+        }
+        try {
+            val unknown = HashSet<String>()
+            val reasons = HashMap<String, Int>()
+            val examples = HashMap<String, String>()
+            var raw: List<Pair<Int, ByteArray>>? = null
+            // Viewport loading deliberately uses direct LevelDB seeks.
+            val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
+                bridge, pos.first, pos.second, unknown, reasons, examples, dim,
+                includeMarkers = false, onSubchunks = { raw = it }
+            )
+            // In Y/layer view build the layers in the same pass and publish them together
+            // with the surface tile, so the chunk never flashes its surface first.
+            var layers: Array<Array<LongArray>>? = null
+            val rawSubs = raw
+            if (loaded != null && rawSubs != null && mapView.layerModeActive()) {
+                layers = try {
+                    com.spaimic.nbttool.chunk.ChunkScanner.buildLayerRuns(rawSubs, dim)
+                } catch (_: Throwable) { null }
+            }
+            val prefetchRaw = if (loaded != null && layers == null) rawSubs else null
+            val builtLayers = layers
+            runOnUiThread {
+                if (currentDimension != dim) {
+                    synchronized(loadingChunks) { loadingChunks.remove(pos) }
+                    return@runOnUiThread
+                }
+                synchronized(loadingChunks) {
+                    loadingChunks.remove(pos)
+                    // A null result means the direct LevelDB seek/parser did not produce
+                    // terrain; do not permanently mark it as loaded.
+                    if (loaded != null) loadedChunks.add(pos) else loadedChunks.remove(pos)
+                }
+                if (loaded != null) {
+                    if (infoIsLoading) { infoIsLoading = false; showInfo(null) }
+                    // Layers first, so the very first render of this tile already uses them.
+                    if (builtLayers != null) mapView.setChunkLayerData(pos, builtLayers)
+                    mapView.setChunkData(mapOf(pos to loaded.grid))
+                    // Surface view: decode Y-level data quietly in the background so the
+                    // first Y switch is instant. Skipped when zoomed far out (memory).
+                    if (builtLayers == null && prefetchRaw != null && mapView.currentZoom() >= 3f) {
+                        scheduleLayerBuild(pos, prefetchRaw, dim)
                     }
-                } catch (e: Throwable) {
-                    runOnUiThread {
-                        synchronized(loadingChunks) { loadingChunks.remove(pos) }
+
+                    markerExecutor.execute {
+                        val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
+                            bridge, pos.first, pos.second, dim
+                        )
+                        runOnUiThread {
+                            if (currentDimension != dim) return@runOnUiThread
+                            synchronized(markerLock) {
+                                loadedEntityMarkers.addAll(markers.entityMarkers.map {
+                                    MapView.MarkerDraw(it.worldX, it.worldZ,
+                                        com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                                })
+                                loadedBlockEntityMarkers.addAll(markers.blockEntityMarkers.map {
+                                    MapView.MarkerDraw(it.worldX, it.worldZ,
+                                        com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                                })
+                            }
+                            scheduleMarkerPublish()
+                        }
                     }
                 }
+            }
+        } catch (e: Throwable) {
+            runOnUiThread {
+                synchronized(loadingChunks) { loadingChunks.remove(pos) }
             }
         }
     }
@@ -1781,7 +1841,9 @@ class MapViewerActivity : AppCompatActivity() {
             current
         }
         title = "${LocalWorldStore.levelName(worldDir)} — ${dimensionName()}"
-        coordText.text = "${dimensionName()} • Loading visible chunks…"
+        mapView.dimensionLabel = dimensionName()
+        infoIsLoading = true
+        showInfo("Loading visible chunks…")
         mapView.refreshVisibleChunks()
     }
 
@@ -2355,5 +2417,18 @@ class MapViewerActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_WORLD_PATH = "world_path"
         private const val MENU_SAVE = 1
+    }
+}
+
+/** Runnable ordered by priority (lower first), then submission order. */
+private class PriorityTask(
+    private val priority: Float,
+    private val seq: Long,
+    private val body: () -> Unit
+) : Runnable, Comparable<PriorityTask> {
+    override fun run() { body() }
+    override fun compareTo(other: PriorityTask): Int {
+        val c = priority.compareTo(other.priority)
+        return if (c != 0) c else seq.compareTo(other.seq)
     }
 }

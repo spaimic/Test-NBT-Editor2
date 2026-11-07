@@ -95,17 +95,32 @@ class MapView(context: Context) : View(context) {
     fun currentLayerDepth(): Int = layerDepth
     fun loadedChunkGrids(): Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> = HashMap(chunks)
 
-    private fun invalidateAllChunkBitmaps() {
-        renderGeneration.incrementAndGet()
-        chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
-        chunkBitmaps.clear()
-        bitmapAccessOrder.clear()
-    }
+    private fun invalidateAllChunkBitmaps() = refreshAllChunkBitmaps()
+
+    fun hasLayerData(pos: Pair<Int, Int>): Boolean = chunkLayers.containsKey(pos)
+    fun currentZoom(): Float = zoom
+
+    private val maxLayerChunks = 2800
 
     fun setChunkLayerData(pos: Pair<Int, Int>, layers: Array<Array<LongArray>>) {
         chunkLayers[pos] = layers
-        chunkBitmaps.remove(pos)?.let { if (!it.isRecycled) it.recycle() }
-        bitmapAccessOrder.remove(pos)
+        // Layers only change what is drawn while a layer/Y view is active. In the
+        // normal surface view a late-arriving layer must not touch the tile at all.
+        if (layerModeActive()) {
+            chunkBitmaps.remove(pos)?.let { old ->
+                val prev = staleBitmaps.put(pos, old)
+                if (prev != null && prev !== old && !prev.isRecycled) prev.recycle()
+            }
+            bitmapAccessOrder.remove(pos)
+        }
+        if (chunkLayers.size > maxLayerChunks) {
+            val cx = cameraX / 16f
+            val cz = cameraZ / 16f
+            val far = chunkLayers.keys.sortedByDescending {
+                val dx = it.first - cx; val dz = it.second - cz; dx * dx + dz * dz
+            }
+            for (k in far.take(chunkLayers.size - maxLayerChunks + 200)) chunkLayers.remove(k)
+        }
         invalidate()
     }
     // Build 108: LevelDB loading state belongs to MapViewerActivity.
@@ -126,6 +141,8 @@ class MapView(context: Context) : View(context) {
     var showEntityIcons = true
         set(value) { field = value; invalidate() }
     var showTileEntityIcons = true
+        set(value) { field = value; invalidate() }
+    var dimensionLabel: String = ""
         set(value) { field = value; invalidate() }
     var locators: List<Locator> = emptyList()
         set(value) { field = value; invalidate() }
@@ -165,15 +182,18 @@ class MapView(context: Context) : View(context) {
     // measured MineTuner viewport on the target tablet: roughly 235x350 blocks
     // at the widest view and roughly 46x70 blocks at the closest view.
     private var zoom = 3.85f
-    private val minZoom = 3.75f
+    private val minZoom = 2f
     private val maxZoom = 32f
 
     // Build 111: use a 12x12 source-pixel footprint per world block. This keeps
     // the Blocktopograph-style visual detail while cutting per-chunk pixel work
     // by about 7.1x compared with the previous 32x32 renderer. Zoom changes only
     // the camera transform; the source resolution stays fixed at every zoom.
-    private val blockPixels = 12
-    private val chunkPixels = 16 * blockPixels
+    // Source resolution now depends on zoom tier: far zoom-outs show thousands of
+    // chunks, so their tiles use fewer pixels per block to keep memory bounded.
+    private fun tierFor(z: Float): Int = if (z < 3.2f) 4 else if (z < 6f) 8 else 12
+    private var blockPixels = tierFor(3.85f)
+    private val chunkPixels: Int get() = 16 * blockPixels
 
     // A bounded cache prevents a large world viewport from retaining hundreds
     // of 512x512 bitmaps at once. The underlying chunk data remains available,
@@ -261,6 +281,7 @@ class MapView(context: Context) : View(context) {
         chunkLayers.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
+        clearStaleBitmaps()
         invalidate()
     }
 
@@ -294,7 +315,12 @@ class MapView(context: Context) : View(context) {
         centered = true
     }
 
-    private fun requestVisible() {
+    private var lastMinCx = Int.MIN_VALUE
+    private var lastMaxCx = Int.MIN_VALUE
+    private var lastMinCz = Int.MIN_VALUE
+    private var lastMaxCz = Int.MIN_VALUE
+
+    private fun requestVisible(force: Boolean = false) {
         if (width <= 0 || height <= 0) return
         if (!centered) centerOnPreferred()
         val halfWorldW = width / zoom / 2f
@@ -306,6 +332,13 @@ class MapView(context: Context) : View(context) {
         val maxCx = floor((cameraX + halfWorldW) / 16f).toInt()
         val minCz = floor((cameraZ - halfWorldH) / 16f).toInt()
         val maxCz = floor((cameraZ + halfWorldH) / 16f).toInt()
+        // Panning inside the same set of chunks must not rebuild and re-scan the
+        // whole visible set on every touch event (thousands of chunks at 2x zoom).
+        if (!force && minCx == lastMinCx && maxCx == lastMaxCx && minCz == lastMinCz && maxCz == lastMaxCz) {
+            invalidate()
+            return
+        }
+        lastMinCx = minCx; lastMaxCx = maxCx; lastMinCz = minCz; lastMaxCz = maxCz
         val requested = HashSet<Pair<Int, Int>>()
         for (cx in minCx..maxCx) for (cz in minCz..maxCz) requested.add(cx to cz)
 
@@ -319,8 +352,30 @@ class MapView(context: Context) : View(context) {
     private fun screenZ(worldZ: Float): Float = height / 2f + (worldZ - cameraZ) * zoom
 
     private fun invalidateBitmapResolutionIfNeeded(oldZoom: Float, newZoom: Float) {
-        // Build 111: source resolution is fixed at 12x12 pixels per block for
-        // every zoom level. No regeneration is needed just because the camera zooms.
+        val tier = tierFor(newZoom)
+        if (tier != blockPixels) {
+            blockPixels = tier
+            refreshAllChunkBitmaps()
+        }
+    }
+
+    /** Tiles of the previous look stay on screen until their replacement has rendered. */
+    private val staleBitmaps = ConcurrentHashMap<Pair<Int, Int>, Bitmap>()
+
+    private fun refreshAllChunkBitmaps() {
+        renderGeneration.incrementAndGet()
+        for ((pos, bmp) in chunkBitmaps.entries.toList()) {
+            if (bmp.isRecycled) continue
+            val old = staleBitmaps.put(pos, bmp)
+            if (old != null && old !== bmp && !old.isRecycled) old.recycle()
+        }
+        chunkBitmaps.clear()
+        bitmapAccessOrder.clear()
+    }
+
+    private fun clearStaleBitmaps() {
+        staleBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
+        staleBitmaps.clear()
     }
 
     private fun touchBitmap(pos: Pair<Int, Int>) {
@@ -333,6 +388,16 @@ class MapView(context: Context) : View(context) {
      * and schedule it again, producing the Build 107/108 disappearing-chunk loop.
      */
     private fun trimOffscreenBitmaps() {
+        if (staleBitmaps.isNotEmpty()) {
+            val it = staleBitmaps.entries.iterator()
+            while (it.hasNext()) {
+                val e = it.next()
+                if (!visibleChunkPositions.contains(e.key)) {
+                    it.remove()
+                    if (!e.value.isRecycled) e.value.recycle()
+                }
+            }
+        }
         var offscreenCount = bitmapAccessOrder.keys.count { pos ->
             !visibleChunkPositions.contains(pos) &&
                 chunkBitmaps[pos]?.isRecycled == false
@@ -378,19 +443,11 @@ class MapView(context: Context) : View(context) {
         val pixels = IntArray(chunkPixels * chunkPixels) { Color.TRANSPARENT }
         val layers = chunkLayers[pos]
         fun infoAt(x: Int, z: Int): ColumnInfo? {
+            if (layers == null) return grid[x][z]
             val vy = viewY
-            if (vy != null && layers != null) {
-                for (packed in layers[x][z]) {
-                    val y = (packed and 0xffffL).toInt() - 32768
-                    if (y <= vy) return ColumnInfo((packed shr 16).toInt(), y)
-                }
-                return null
-            }
-            if (layerDepth == 0 || layers == null) return grid[x][z]
-            val packed = layers[x][z].getOrNull(layerDepth) ?: return null
-            val color = (packed shr 16).toInt()
-            val y = (packed and 0xffffL).toInt() - 32768
-            return ColumnInfo(color, y)
+            if (vy != null) return layerInfoAtY(layers[x][z], vy)
+            if (layerDepth == 0) return grid[x][z]
+            return layerInfoAtDepth(layers[x][z], layerDepth)
         }
         val westGrid = chunks[pos.first - 1 to pos.second]
         val eastGrid = chunks[pos.first + 1 to pos.second]
@@ -425,6 +482,42 @@ class MapView(context: Context) : View(context) {
         return bitmap
     }
 
+
+    private fun runTop(p: Long): Int = (p and 0xffffL).toInt() - 32768
+    private fun runColor(p: Long): Int = (p shr 16).toInt()
+
+    /** Highest block at or below [vy] in a run-length column (see ChunkScanner.buildLayerRuns). */
+    private fun layerInfoAtY(runs: LongArray, vy: Int): ColumnInfo? {
+        if (runs.isEmpty()) return null
+        var i = -1
+        var k = 0
+        while (k < runs.size && runTop(runs[k]) >= vy) { i = k; k++ }
+        if (i < 0) {
+            val c = runColor(runs[0])
+            return if (c != 0) ColumnInfo(c, runTop(runs[0])) else null
+        }
+        val c = runColor(runs[i])
+        if (c != 0) return ColumnInfo(c, vy)
+        val next = i + 1
+        if (next >= runs.size) return null
+        return ColumnInfo(runColor(runs[next]), runTop(runs[next]))
+    }
+
+    /** The [depth]-th non-air block counting down from the top of the column. */
+    private fun layerInfoAtDepth(runs: LongArray, depth: Int): ColumnInfo? {
+        var remaining = depth
+        for (k in runs.indices) {
+            val c = runColor(runs[k])
+            if (c == 0) continue
+            val top = runTop(runs[k])
+            val below = if (k + 1 < runs.size) runTop(runs[k + 1]) else -65
+            val len = top - below
+            if (remaining < len) return ColumnInfo(c, top - remaining)
+            remaining -= len
+        }
+        return null
+    }
+
     /** Schedule a render if the visible chunk has no ready bitmap. UI-thread safe. */
     private fun requestChunkBitmap(pos: Pair<Int, Int>, grid: Array<Array<ColumnInfo>>) {
         val existing = chunkBitmaps[pos]
@@ -448,6 +541,7 @@ class MapView(context: Context) : View(context) {
                 rendered = null
                 post {
                     if (generation == renderGeneration.get()) {
+                        staleBitmaps.remove(pos)?.let { if (!it.isRecycled) it.recycle() }
                         touchBitmap(pos)
                         invalidate()
                     }
@@ -503,7 +597,6 @@ class MapView(context: Context) : View(context) {
                 if (right < 0 || left > width || bottom < 0 || top > height) continue
 
                 val pos = cx to cz
-                visibleNow.add(pos)
                 val grid = chunks[pos]
                 if (grid != null) {
                     val bitmap = chunkBitmaps[pos]
@@ -512,7 +605,12 @@ class MapView(context: Context) : View(context) {
                         canvas.drawBitmap(bitmap, null, RectF(left, top, right, bottom), tilePaint)
                     } else {
                         requestChunkBitmap(pos, grid)
-                        canvas.drawRect(left, top, right, bottom, unloadedPaint)
+                        val stale = staleBitmaps[pos]
+                        if (stale != null && !stale.isRecycled) {
+                            canvas.drawBitmap(stale, null, RectF(left, top, right, bottom), tilePaint)
+                        } else {
+                            canvas.drawRect(left, top, right, bottom, unloadedPaint)
+                        }
                     }
                     // Chunk borders can be hidden from the Map Options drawer.
                     if (showGrid && zoom >= 6f) {
@@ -595,7 +693,8 @@ class MapView(context: Context) : View(context) {
         // A lightweight coordinate readout is useful even before tapping.
         val cx = floor(cameraX).toInt()
         val cz = floor(cameraZ).toInt()
-        canvas.drawText("X: $cx  Z: $cz   Zoom: ${"%.2f".format(zoom)}×", 20f, height - 24f, coordinatePaint)
+        val prefix = if (dimensionLabel.isEmpty()) "" else "$dimensionLabel • "
+        canvas.drawText("${prefix}X: $cx  Z: $cz   Zoom: ${"%.2f".format(zoom)}×", 20f, height - 24f, coordinatePaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -711,7 +810,7 @@ class MapView(context: Context) : View(context) {
         centered = true
         cameraX = x + 0.5f
         cameraZ = z + 0.5f
-        requestVisible()
+        requestVisible(force = true)
     }
 
     fun currentCameraBlockX(): Int = floor(cameraX).toInt()
@@ -737,7 +836,7 @@ class MapView(context: Context) : View(context) {
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
         bitmapAccessOrder.clear()
-        requestVisible()
+        requestVisible(force = true)
     }
 
     private fun handleTap(tapX: Float, tapY: Float) {
@@ -758,6 +857,7 @@ class MapView(context: Context) : View(context) {
         super.onDetachedFromWindow()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
+        clearStaleBitmaps()
         bitmapAccessOrder.clear()
     }
 }

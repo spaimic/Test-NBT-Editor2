@@ -114,13 +114,19 @@ object NetherRenderer {
             b = b.coerceIn(0, 255)
 
             // Blocktopograph-style points of interest. Highest worth wins.
-            for (y in 0 until HEIGHT) {
-                val name = blocks[x][z][y].substringAfter(':')
-                when (name) {
-                    "spawner" -> { r = 255; g = 255; b = 255 }
-                    "chest", "trapped_chest" -> if (worth < 90) { r = 240; g = 40; b = 170; worth = 90 }
-                    "nether_wart" -> if (worth < 80) { r = 120; g = 170; b = 120; worth = 80 }
-                    "portal" -> if (worth < 95) { r = 60; g = 0; b = 170; worth = 95 }
+            // Only the occupied part of the column is scanned, and block names are
+            // classified through a cache instead of allocating a substring per block.
+            val topY = heightMap[x][z]
+            var lastName: String? = null
+            for (y in 0..topY) {
+                val name = blocks[x][z][y]
+                if (name === lastName || name == AIR) continue
+                lastName = name
+                when (poiCode(name)) {
+                    1 -> { r = 255; g = 255; b = 255 }
+                    2 -> if (worth < 90) { r = 240; g = 40; b = 170; worth = 90 }
+                    3 -> if (worth < 80) { r = 120; g = 170; b = 120; worth = 80 }
+                    4 -> if (worth < 95) { r = 60; g = 0; b = 170; worth = 95 }
                 }
             }
 
@@ -130,7 +136,18 @@ object NetherRenderer {
         return grid
     }
 
-    private fun isAir(name: String): Boolean = name == AIR || name.substringAfter(':') == "air"
+    private val poiCache = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private fun poiCode(name: String): Int = poiCache.getOrPut(name) {
+        when (name.substringAfter(':')) {
+            "spawner" -> 1
+            "chest", "trapped_chest" -> 2
+            "nether_wart" -> 3
+            "portal" -> 4
+            else -> 0
+        }
+    }
+
+    private fun isAir(name: String): Boolean = name == AIR || (name.endsWith(":air") && name.substringAfter(':') == "air")
 
     private fun findAirUnder(blocks: Array<Array<Array<String>>>, x: Int, z: Int, startY: Int): Int {
         var y = startY.coerceAtMost(HEIGHT - 1)

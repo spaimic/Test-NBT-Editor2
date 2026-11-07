@@ -781,6 +781,85 @@ object ChunkScanner {
      * requested chunk. Entity/block-entity markers are intentionally deferred
      * until the global index is ready.
      */
+
+    // ---------------------------------------------------------------------
+    // Y-level layer data (run-length encoded)
+    //
+    // Each column is a LongArray of runs, top to bottom. A run is
+    //   (color shl 16) or (topY + 32768)
+    // and covers topY down to (next run's topY + 1). color == 0 marks an air run.
+    // The last run extends to the bottom of the world. Same-colored neighbors are
+    // merged, so a stone column is a handful of longs instead of ~100.
+    // ---------------------------------------------------------------------
+    private fun isLayerAir(name: String): Boolean =
+        name == "minecraft:air" || name == "air" || name == "minecraft:cave_air" || name == "minecraft:void_air"
+
+    fun buildLayerRuns(subchunks: List<Pair<Int, ByteArray>>, dimension: Int): Array<Array<LongArray>> {
+        val colorCache = HashMap<String, Int>()
+        fun colorOf(name: String): Int = colorCache.getOrPut(name) {
+            if (isLayerAir(name)) 0 else BlockColors.colorForDimension(name, dimension).let { if (it == 0) 1 else it }
+        }
+        val compact = HashMap<Int, SubChunkParser.CompactSubChunk>()
+        for ((subY, bytes) in subchunks) {
+            val c = SubChunkParser.parseCompact(bytes)
+            if (c != null) compact[subY] = c
+        }
+        if (compact.isEmpty()) return Array(16) { Array(16) { LongArray(0) } }
+        val topSub = compact.keys.maxOrNull()!!
+        val botSub = compact.keys.minOrNull()!!
+
+        var buf = Array(256) { LongArray(8) }
+        val sizes = IntArray(256)
+        val cur = IntArray(256) // current run color; start as air above the world
+        fun push(col: Int, color: Int, topY: Int) {
+            var a = buf[col]
+            if (sizes[col] == a.size) { a = a.copyOf(a.size * 2); buf[col] = a }
+            a[sizes[col]++] = (color.toLong() shl 16) or ((topY + 32768).toLong() and 0xffffL)
+            cur[col] = color
+        }
+
+        for (subY in topSub downTo botSub) {
+            val sc = compact[subY]
+            val baseY = subY * 16
+            if (sc == null) {
+                for (col in 0 until 256) if (cur[col] != 0) push(col, 0, baseY + 15)
+                continue
+            }
+            val layerColors = Array(sc.layers.size) { k ->
+                IntArray(sc.layers[k].palette.size) { colorOf(sc.layers[k].palette[it]) }
+            }
+            val single = sc.layers.size == 1
+            val l0 = sc.layers[0]
+            val pc0 = layerColors[0]
+            for (x in 0 until 16) for (z in 0 until 16) {
+                val col = (x shl 4) or z
+                for (y in 15 downTo 0) {
+                    val li = (x shl 8) or (z shl 4) or y
+                    var color: Int
+                    if (single) {
+                        color = pc0.getOrElse(l0.indexAt(li)) { 1 }
+                    } else {
+                        color = 0
+                        for (k in sc.layers.indices.reversed()) {
+                            val pc = layerColors[k]
+                            val c = pc.getOrElse(sc.layers[k].indexAt(li)) { 0 }
+                            if (c != 0) { color = c; break }
+                        }
+                    }
+                    if (color != cur[col]) push(col, color, baseY + y)
+                }
+            }
+        }
+        // Everything below the lowest stored subchunk is treated as air.
+        val lowest = botSub * 16 - 1
+        for (col in 0 until 256) if (cur[col] != 0) push(col, 0, lowest)
+
+        return Array(16) { x -> Array(16) { z ->
+            val col = (x shl 4) or z
+            buf[col].copyOf(sizes[col])
+        } }
+    }
+
     fun loadChunkDirect(
         bridge: LevelDbBridge,
         chunkX: Int,
@@ -789,10 +868,14 @@ object ChunkScanner {
         failureReasonCounts: MutableMap<String, Int> = HashMap(),
         failureReasonExamples: MutableMap<String, String> = HashMap(),
         dimension: Int = 0,
-        includeMarkers: Boolean = true
+        includeMarkers: Boolean = true,
+        onSubchunks: ((List<Pair<Int, ByteArray>>) -> Unit)? = null
     ): LoadedChunk? {
         val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
         if (subchunks.isEmpty()) return null
+        // Lets the caller reuse the raw bytes (e.g. to build Y-level layer data)
+        // without a second LevelDB read of the same chunk.
+        onSubchunks?.invoke(subchunks)
 
         // The Nether cannot use the Overworld/End "highest block" renderer. Its
         // roof is itself a solid bedrock surface, while the playable terrain is
@@ -939,12 +1022,16 @@ object ChunkScanner {
                 is SubChunkParser.ParseResult.Success -> {
                     hadSuccessfulSubchunk = true
                     val baseY = subY * 16
+                    var lastChecked: String? = null
                     for (x in 0 until 16) for (z in 0 until 16) for (innerY in 0 until 16) {
                         val worldY = baseY + innerY
                         if (worldY !in 0 until 256) continue
                         val name = parsed.blocks[x][z][innerY]
                         blocks[x][z][worldY] = name
-                        if (name != "minecraft:air" && !BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                        if (name !== lastChecked) {
+                            lastChecked = name
+                            if (name != "minecraft:air" && !BlockColors.isKnown(name)) unknownBlockNames.add(name)
+                        }
                     }
                 }
             }
