@@ -93,6 +93,7 @@ class MapView(context: Context) : View(context) {
     fun currentViewY(): Int? = viewY
     fun layerModeActive(): Boolean = layerDepth > 0 || viewY != null
     fun currentLayerDepth(): Int = layerDepth
+    fun loadedChunkGrids(): Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> = HashMap(chunks)
 
     private fun invalidateAllChunkBitmaps() {
         renderGeneration.incrementAndGet()
