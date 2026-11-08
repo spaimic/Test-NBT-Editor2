@@ -214,6 +214,7 @@ class MapViewerActivity : AppCompatActivity() {
         mapOptionsPanel.addView(mapActionRow(R.drawable.map, "Go to X / Z") { showGoToDialog() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.locator_6, "Locators") { showLocatorList() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "View at Y Level") { showYLevelDialog() })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "Loading Stats") { showLoadingStats() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.camera, "Take Entire Map Picture") { promptWholeMapPicture() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.search_diamond, "Find Diamonds Near Player") { findDiamondsNearPlayer() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.search_ancient_debris, "Find Ancient Debris Near Player") { findAncientDebrisNearPlayer() })
@@ -492,6 +493,78 @@ class MapViewerActivity : AppCompatActivity() {
         }
     }
 
+    private val markersRequested = HashSet<Pair<Int, Int>>() // UI thread only
+
+    // Loading diagnostics (Map Options -> Loading Stats).
+    private val statLoaded = java.util.concurrent.atomic.AtomicInteger()
+    private val statEmpty = java.util.concurrent.atomic.AtomicInteger()
+    private val statSkipped = java.util.concurrent.atomic.AtomicInteger()
+    private val statLoadNanos = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var statStartMs = 0L
+    @Volatile private var statLastMs = 0L
+
+    private fun resetLoadStats() {
+        statLoaded.set(0); statEmpty.set(0); statSkipped.set(0); statLoadNanos.set(0)
+        statStartMs = 0L; statLastMs = 0L
+        org.iq80.leveldb.table.Table.resetBlockCacheStats()
+    }
+
+    private fun showLoadingStats() {
+        val n = statLoaded.get()
+        val avgMs = if (n > 0) statLoadNanos.get() / n / 1_000_000.0 else 0.0
+        val seconds = if (statStartMs > 0L) maxOf(1L, statLastMs - statStartMs) / 1000.0 else 0.0
+        val perSecond = if (seconds > 0.0) n / seconds else 0.0
+        val cache = org.iq80.leveldb.table.Table.blockCacheStats()
+        val lookups = cache[0] + cache[1]
+        val hitRate = if (lookups > 0) 100.0 * cache[0] / lookups else 0.0
+        val rt = Runtime.getRuntime()
+        val usedMb = (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024)
+        val maxMb = rt.maxMemory() / (1024 * 1024)
+        val text = buildString {
+            append("Chunks loaded: $n  (empty: ${statEmpty.get()}, skipped off-screen: ${statSkipped.get()})\n")
+            append("Avg time per chunk (one worker): ${"%.2f".format(avgMs)} ms\n")
+            append("Throughput: ${"%.0f".format(perSecond)} chunks/s over ${"%.1f".format(seconds)} s\n")
+            append("Workers: $mapThreads, queued: ${mapExecutor.queue.size}, active: ${mapExecutor.activeCount}\n")
+            append("Chunks in memory: ${mapView.loadedChunkCount()}\n")
+            append("DB block cache: ${"%.1f".format(hitRate)}% hits (${cache[0]} / $lookups), ")
+            append("${cache[2] / (1024 * 1024)} of ${cache[3] / (1024 * 1024)} MB used\n")
+            append("App memory: $usedMb of $maxMb MB")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Loading stats")
+            .setMessage(text)
+            .setPositiveButton("Close", null)
+            .setNeutralButton("Reset") { _, _ -> resetLoadStats() }
+            .show()
+    }
+
+    private fun scheduleMarkerLoad(pos: Pair<Int, Int>, bridge: LevelDbBridge, dim: Int) {
+        if (!markersRequested.add(pos)) return
+        markerExecutor.execute {
+            try {
+                val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
+                    bridge, pos.first, pos.second, dim
+                )
+                runOnUiThread {
+                    if (currentDimension != dim) return@runOnUiThread
+                    synchronized(markerLock) {
+                        loadedEntityMarkers.addAll(markers.entityMarkers.map {
+                            MapView.MarkerDraw(it.worldX, it.worldZ,
+                                com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                        })
+                        loadedBlockEntityMarkers.addAll(markers.blockEntityMarkers.map {
+                            MapView.MarkerDraw(it.worldX, it.worldZ,
+                                com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                        })
+                    }
+                    scheduleMarkerPublish()
+                }
+            } catch (_: Throwable) {
+                runOnUiThread { markersRequested.remove(pos) }
+            }
+        }
+    }
+
     private fun scheduleMarkerPublish() {
         if (markerPublishPending) return
         markerPublishPending = true
@@ -520,11 +593,13 @@ class MapViewerActivity : AppCompatActivity() {
         val layerMode = mapView.layerModeActive()
         val todo = ArrayList<Pair<Int, Int>>()
         val needLayers = ArrayList<Pair<Int, Int>>()
+        val loadedVisible = ArrayList<Pair<Int, Int>>()
 
         synchronized(loadingChunks) {
             for (pos in positions) {
                 // Do not require a global chunk index here: visible chunks are queried directly from LevelDB.
                 if (loadedChunks.contains(pos)) {
+                    loadedVisible.add(pos)
                     if (layerMode) needLayers.add(pos)
                     continue
                 }
@@ -534,6 +609,9 @@ class MapViewerActivity : AppCompatActivity() {
             }
         }
         for (pos in needLayers) scheduleLayerBuild(pos, null, dimensionForRequest)
+        if (mapView.currentZoom() >= 3f) {
+            for (pos in loadedVisible) scheduleMarkerLoad(pos, bridge, dimensionForRequest)
+        }
         if (mapView.biomeMode) {
             for (pos in positions) mapView.gridAt(pos)?.let { scheduleBiomeLoad(pos, it, dimensionForRequest) }
         }
@@ -549,10 +627,12 @@ class MapViewerActivity : AppCompatActivity() {
     private fun loadOneChunk(pos: Pair<Int, Int>, bridge: LevelDbBridge, dim: Int) {
         // Skip work for chunks that are no longer on screen (fast panning, Go to X/Z jumps).
         if (currentDimension != dim || !wantedChunks.contains(pos)) {
+            statSkipped.incrementAndGet()
             synchronized(loadingChunks) { loadingChunks.remove(pos) }
             return
         }
         try {
+            val startNanos = System.nanoTime()
             val unknown = HashSet<String>()
             val reasons = HashMap<String, Int>()
             val examples = HashMap<String, String>()
@@ -576,6 +656,12 @@ class MapViewerActivity : AppCompatActivity() {
             }
             val prefetchRaw = if (loaded != null && layers == null) rawSubs else null
             val builtLayers = layers
+            val nowMs = System.currentTimeMillis()
+            statLoadNanos.addAndGet(System.nanoTime() - startNanos)
+            statLoaded.incrementAndGet()
+            if (loaded == null) statEmpty.incrementAndGet()
+            if (statStartMs == 0L) statStartMs = nowMs
+            statLastMs = nowMs
             runOnUiThread {
                 if (currentDimension != dim) {
                     synchronized(loadingChunks) { loadingChunks.remove(pos) }
@@ -601,25 +687,9 @@ class MapViewerActivity : AppCompatActivity() {
                     if (loadedBiomes != null) mapView.setChunkBiomes(pos, loadedBiomes)
                     else scheduleBiomeLoad(pos, loaded.grid, dim)
 
-                    markerExecutor.execute {
-                        val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
-                            bridge, pos.first, pos.second, dim
-                        )
-                        runOnUiThread {
-                            if (currentDimension != dim) return@runOnUiThread
-                            synchronized(markerLock) {
-                                loadedEntityMarkers.addAll(markers.entityMarkers.map {
-                                    MapView.MarkerDraw(it.worldX, it.worldZ,
-                                        com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
-                                })
-                                loadedBlockEntityMarkers.addAll(markers.blockEntityMarkers.map {
-                                    MapView.MarkerDraw(it.worldX, it.worldZ,
-                                        com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
-                                })
-                            }
-                            scheduleMarkerPublish()
-                        }
-                    }
+                    // Entity/tile-entity icons are only meaningful (and affordable) when zoomed in;
+                    // chunks loaded while zoomed far out get theirs when you zoom in.
+                    if (mapView.currentZoom() >= 3f) scheduleMarkerLoad(pos, bridge, dim)
                 }
             }
         } catch (e: Throwable) {
@@ -2167,6 +2237,7 @@ class MapViewerActivity : AppCompatActivity() {
             loadedChunks.clear()
             synchronized(layerRequested) { layerRequested.clear() }
             bgLayerQueue.clear()
+            markersRequested.clear()
             synchronized(biomeRequested) { biomeRequested.clear() }
             loadingChunks.clear()
         }
@@ -2767,6 +2838,7 @@ class MapViewerActivity : AppCompatActivity() {
             loadedChunks.clear()
             synchronized(layerRequested) { layerRequested.clear() }
             bgLayerQueue.clear()
+            markersRequested.clear()
             synchronized(biomeRequested) { biomeRequested.clear() }
             loadingChunks.clear()
         }

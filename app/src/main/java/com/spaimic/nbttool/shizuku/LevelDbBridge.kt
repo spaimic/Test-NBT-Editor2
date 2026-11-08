@@ -416,6 +416,8 @@ class LevelDbBridge private constructor(private val db: DB, val dbDir: File) {
                 // tables back, or Minecraft itself may fail to read data we wrote.
                 compressionType(CompressionType.NONE)
             }
+            // Blocks cached from a previously opened database must never be reused.
+            org.iq80.leveldb.table.Table.clearBlockCache()
             val db = Iq80DBFactory.factory.open(dbDir, options)
             return LevelDbBridge(db, dbDir)
         }

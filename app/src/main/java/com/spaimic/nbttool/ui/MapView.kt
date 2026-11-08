@@ -96,6 +96,7 @@ class MapView(context: Context) : View(context) {
     fun layerModeActive(): Boolean = layerDepth > 0 || viewY != null
     fun currentLayerDepth(): Int = layerDepth
     fun loadedChunkGrids(): Map<Pair<Int, Int>, Array<Array<ColumnInfo>>> = HashMap(chunks)
+    fun loadedChunkCount(): Int = chunks.size
 
     private fun invalidateAllChunkBitmaps() = refreshAllChunkBitmaps()
 
@@ -249,6 +250,13 @@ class MapView(context: Context) : View(context) {
     // Positions currently inside the viewport. Updated before drawing so visible
     // bitmaps are protected from eviction during the same frame.
     private var visibleChunkPositions: Set<Pair<Int, Int>> = emptySet()
+    private var cachedMinCx = Int.MIN_VALUE
+    private var cachedMaxCx = Int.MIN_VALUE
+    private var cachedMinCz = Int.MIN_VALUE
+    private var cachedMaxCz = Int.MIN_VALUE
+    private var cachedVisiblePairs: List<Pair<Int, Int>> = emptyList()
+    private var cachedVisibleSet: Set<Pair<Int, Int>> = emptySet()
+    private val tileRect = RectF()
     // Keep a modest number of recently used off-screen bitmaps in addition to all
     // visible bitmaps. This avoids unbounded memory use without evicting visible tiles.
     private val maxCachedOffscreenBitmaps = 24
@@ -655,60 +663,63 @@ class MapView(context: Context) : View(context) {
         // Protect the entire viewport BEFORE drawing. The previous Build 109
         // implementation updated this only after drawing, allowing trimOffscreenBitmaps()
         // to evict a bitmap that was about to be drawn.
-        val visibleNow = HashSet<Pair<Int, Int>>()
-        for (cx in minCx..maxCx) {
-            for (cz in minCz..maxCz) {
-                val left = screenX(cx * 16f)
-                val top = screenZ(cz * 16f)
-                val right = screenX((cx + 1) * 16f)
-                val bottom = screenZ((cz + 1) * 16f)
-                if (right < 0 || left > width || bottom < 0 || top > height) continue
-                visibleNow.add(cx to cz)
-            }
+        // The visible chunk positions only change when the visible rectangle does, so the
+        // Pair objects are built once per rectangle instead of on every frame (10k+ chunks
+        // are on screen at 1x). The rectangle is a slight superset of what is truly visible.
+        if (minCx != cachedMinCx || maxCx != cachedMaxCx || minCz != cachedMinCz || maxCz != cachedMaxCz) {
+            cachedMinCx = minCx; cachedMaxCx = maxCx; cachedMinCz = minCz; cachedMaxCz = maxCz
+            val list = ArrayList<Pair<Int, Int>>(maxOf(0, (maxCx - minCx + 1) * (maxCz - minCz + 1)))
+            for (cx in minCx..maxCx) for (cz in minCz..maxCz) list.add(cx to cz)
+            cachedVisiblePairs = list
+            cachedVisibleSet = HashSet(list)
         }
-        visibleChunkPositions = visibleNow
+        visibleChunkPositions = cachedVisibleSet
 
-        for (cx in minCx..maxCx) {
-            for (cz in minCz..maxCz) {
-                val left = screenX(cx * 16f)
-                val top = screenZ(cz * 16f)
-                val right = screenX((cx + 1) * 16f)
-                val bottom = screenZ((cz + 1) * 16f)
-                if (right < 0 || left > width || bottom < 0 || top > height) continue
+        val visiblePairs = cachedVisiblePairs
+        for (i in visiblePairs.indices) {
+            val pos = visiblePairs[i]
+            val cx = pos.first
+            val cz = pos.second
+            val left = screenX(cx * 16f)
+            val top = screenZ(cz * 16f)
+            val right = screenX((cx + 1) * 16f)
+            val bottom = screenZ((cz + 1) * 16f)
+            if (right < 0 || left > width || bottom < 0 || top > height) continue
 
-                if (slimeMode) {
-                    canvas.drawRect(left, top, right, bottom,
-                        if (SlimeChunks.isSlime(cx, cz)) slimePaint else slimeOffPaint)
-                    if (showGrid && zoom >= 6f) canvas.drawRect(left, top, right, bottom, slimeGridPaint)
-                    continue
-                }
-                val pos = cx to cz
-                val grid = chunks[pos]
-                if (grid != null) {
-                    val bitmap = chunkBitmaps[pos]
-                    if (bitmap != null && !bitmap.isRecycled) {
-                        touchBitmap(pos)
-                        canvas.drawBitmap(bitmap, null, RectF(left, top, right, bottom), tilePaint)
-                    } else {
-                        requestChunkBitmap(pos, grid)
-                        val stale = staleBitmaps[pos]
-                        if (stale != null && !stale.isRecycled) {
-                            canvas.drawBitmap(stale, null, RectF(left, top, right, bottom), tilePaint)
-                        } else {
-                            canvas.drawRect(left, top, right, bottom, unloadedPaint)
-                        }
-                    }
-                    // Chunk borders can be hidden from the Map Options drawer.
-                    if (showGrid && zoom >= 6f) {
-                        canvas.drawRect(left, top, right, bottom, gridPaint)
-                    }
+            if (slimeMode) {
+                canvas.drawRect(left, top, right, bottom,
+                    if (SlimeChunks.isSlime(cx, cz)) slimePaint else slimeOffPaint)
+                if (showGrid && zoom >= 6f) canvas.drawRect(left, top, right, bottom, slimeGridPaint)
+                continue
+            }
+            val grid = chunks[pos]
+            if (grid != null) {
+                val bitmap = chunkBitmaps[pos]
+                if (bitmap != null && !bitmap.isRecycled) {
+                    touchBitmap(pos)
+                    tileRect.set(left, top, right, bottom)
+                    canvas.drawBitmap(bitmap, null, tileRect, tilePaint)
                 } else {
+                    requestChunkBitmap(pos, grid)
                     val stale = staleBitmaps[pos]
                     if (stale != null && !stale.isRecycled) {
-                        canvas.drawBitmap(stale, null, RectF(left, top, right, bottom), tilePaint)
+                        tileRect.set(left, top, right, bottom)
+                        canvas.drawBitmap(stale, null, tileRect, tilePaint)
                     } else {
                         canvas.drawRect(left, top, right, bottom, unloadedPaint)
                     }
+                }
+                // Chunk borders can be hidden from the Map Options drawer.
+                if (showGrid && zoom >= 6f) {
+                    canvas.drawRect(left, top, right, bottom, gridPaint)
+                }
+            } else {
+                val stale = staleBitmaps[pos]
+                if (stale != null && !stale.isRecycled) {
+                    tileRect.set(left, top, right, bottom)
+                    canvas.drawBitmap(stale, null, tileRect, tilePaint)
+                } else {
+                    canvas.drawRect(left, top, right, bottom, unloadedPaint)
                 }
             }
         }

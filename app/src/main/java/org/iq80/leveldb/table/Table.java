@@ -30,6 +30,8 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.util.Comparator;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -37,6 +39,30 @@ import static java.util.Objects.requireNonNull;
 public abstract class Table
         implements SeekingIterable<Slice, Slice>
 {
+    // Decompressed-block cache shared by all tables (see BlockCache).
+    private static final BlockCache BLOCK_CACHE = new BlockCache(
+            Math.max(24L << 20, Math.min(64L << 20, Runtime.getRuntime().maxMemory() / 8)));
+    private static final ConcurrentHashMap<String, Long> TABLE_IDS = new ConcurrentHashMap<String, Long>();
+    private static final AtomicLong NEXT_TABLE_ID = new AtomicLong();
+
+    /** "hits misses sizeBytes maxBytes" for the block cache (diagnostics). */
+    public static long[] blockCacheStats()
+    {
+        return new long[] {BLOCK_CACHE.hits.get(), BLOCK_CACHE.misses.get(), BLOCK_CACHE.sizeBytes(), BLOCK_CACHE.maxBytes()};
+    }
+
+    public static void resetBlockCacheStats()
+    {
+        BLOCK_CACHE.resetStats();
+    }
+
+    /** Drops every cached block (called whenever a database is opened). */
+    public static void clearBlockCache()
+    {
+        BLOCK_CACHE.clear();
+    }
+
+    private final long tableId;
     protected final String name;
     protected final FileChannel fileChannel;
     protected final Comparator<Slice> comparator;
@@ -54,6 +80,16 @@ public abstract class Table
         requireNonNull(comparator, "comparator is null");
 
         this.name = name;
+        // The id covers path + size + modification time, so a file that was replaced (for
+        // example by restoring a backup) is never confused with the old file of the same name.
+        String idKey = name + '|' + size + '|' + new java.io.File(name).lastModified();
+        Long id = TABLE_IDS.get(idKey);
+        if (id == null) {
+            Long fresh = NEXT_TABLE_ID.incrementAndGet();
+            Long prev = TABLE_IDS.putIfAbsent(idKey, fresh);
+            id = prev != null ? prev : fresh;
+        }
+        this.tableId = id;
         this.fileChannel = fileChannel;
         this.verifyChecksums = verifyChecksums;
         this.comparator = comparator;
@@ -75,13 +111,18 @@ public abstract class Table
     public Block openBlock(Slice blockEntry)
     {
         BlockHandle blockHandle = BlockHandle.readBlockHandle(blockEntry.input());
-        Block dataBlock;
+        long cacheKey = (tableId << 40) | (blockHandle.getOffset() & 0xFFFFFFFFFFL);
+        Block dataBlock = BLOCK_CACHE.get(cacheKey);
+        if (dataBlock != null) {
+            return dataBlock;
+        }
         try {
             dataBlock = readBlock(blockHandle);
         }
         catch (IOException e) {
             throw Throwables.propagate(e);
         }
+        BLOCK_CACHE.put(cacheKey, dataBlock);
         return dataBlock;
     }
 
