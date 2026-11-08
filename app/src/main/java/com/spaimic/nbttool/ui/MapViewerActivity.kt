@@ -278,8 +278,9 @@ class MapViewerActivity : AppCompatActivity() {
     private val loadingChunks = HashSet<Pair<Int, Int>>()
     // Nearest-to-camera chunks first. Tasks re-check the wanted set when they start,
     // so chunks that scrolled away (or were jumped away from) are skipped, not decoded.
+    private val mapThreads = Runtime.getRuntime().availableProcessors().coerceIn(4, 8)
     private val mapExecutor = java.util.concurrent.ThreadPoolExecutor(
-        6, 6, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        mapThreads, mapThreads, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
         java.util.concurrent.PriorityBlockingQueue<Runnable>()
     )
     // Marker reads can be slower than terrain decoding; keep them off the terrain
@@ -399,13 +400,44 @@ class MapViewerActivity : AppCompatActivity() {
         return dx * dx + dz * dz
     }
 
+    private val bgLayerQueue =
+        java.util.concurrent.ConcurrentLinkedQueue<Triple<Pair<Int, Int>, List<Pair<Int, ByteArray>>?, Int>>()
+    private var bgPollerRunning = false
+    private val bgPoller = object : Runnable {
+        override fun run() {
+            val idle = synchronized(loadingChunks) { loadingChunks.isEmpty() }
+            if (idle) {
+                var released = 0
+                while (released < 64) {
+                    val t = bgLayerQueue.poll() ?: break
+                    scheduleLayerBuild(t.first, t.second, t.third)
+                    released++
+                }
+            }
+            if (bgLayerQueue.isEmpty()) bgPollerRunning = false else mapView.postDelayed(this, 250)
+        }
+    }
+    private fun startBackgroundPoller() {
+        if (bgPollerRunning) return
+        bgPollerRunning = true
+        mapView.postDelayed(bgPoller, 250)
+    }
+
     /**
      * Builds the compact Y-level data for one chunk on a background thread. [raw] is the
      * subchunk bytes already read for the surface pass (no second LevelDB read); when it is
      * null the chunk is read again.
      */
-    private fun scheduleLayerBuild(pos: Pair<Int, Int>, raw: List<Pair<Int, ByteArray>>?, dim: Int) {
+    private fun scheduleLayerBuild(
+        pos: Pair<Int, Int>, raw: List<Pair<Int, ByteArray>>?, dim: Int, background: Boolean = false
+    ) {
         if (mapView.hasLayerData(pos)) return
+        if (background) {
+            // Quiet prefetch: queued until the visible surface tiles have finished loading.
+            bgLayerQueue.add(Triple(pos, raw, dim))
+            startBackgroundPoller()
+            return
+        }
         synchronized(layerRequested) { if (!layerRequested.add(pos)) return }
         layerExecutor.execute(PriorityTask(distanceToCamera(pos), taskSeq.incrementAndGet()) {
             try {
@@ -528,7 +560,10 @@ class MapViewerActivity : AppCompatActivity() {
             // Viewport loading deliberately uses direct LevelDB seeks.
             val loaded = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkDirect(
                 bridge, pos.first, pos.second, unknown, reasons, examples, dim,
-                includeMarkers = false, onSubchunks = { raw = it }
+                includeMarkers = false, onSubchunks = { raw = it },
+                // Surface view: read only the subchunks near each column's recorded surface
+                // (like Blocktopograph). Layer/Y view needs every subchunk, so it uses the full read.
+                fastSurface = !mapView.layerModeActive()
             )
             // In Y/layer view build the layers in the same pass and publish them together
             // with the surface tile, so the chunk never flashes its surface first.
@@ -559,10 +594,12 @@ class MapViewerActivity : AppCompatActivity() {
                     mapView.setChunkData(mapOf(pos to loaded.grid))
                     // Surface view: decode Y-level data quietly in the background so the
                     // first Y switch is instant. Skipped when zoomed far out (memory).
-                    if (builtLayers == null && prefetchRaw != null && mapView.currentZoom() >= 3f) {
-                        scheduleLayerBuild(pos, prefetchRaw, dim)
+                    if (builtLayers == null && mapView.currentZoom() >= 3f) {
+                        scheduleLayerBuild(pos, prefetchRaw, dim, background = true)
                     }
-                    scheduleBiomeLoad(pos, loaded.grid, dim)
+                    val loadedBiomes = loaded.biomeIds
+                    if (loadedBiomes != null) mapView.setChunkBiomes(pos, loadedBiomes)
+                    else scheduleBiomeLoad(pos, loaded.grid, dim)
 
                     markerExecutor.execute {
                         val markers = com.spaimic.nbttool.chunk.ChunkScanner.loadChunkMarkers(
@@ -1155,6 +1192,8 @@ class MapViewerActivity : AppCompatActivity() {
                     Toast.makeText(this, "Block is already $newName", Toast.LENGTH_SHORT).show()
                 } else {
                     val finalName = newName
+                    val columnSnapshot = HashMap(column)
+                    columnSnapshot[yy] = finalName
                     Thread({
                         try {
                             val sy = Math.floorDiv(yy, 16)
@@ -1163,9 +1202,41 @@ class MapViewerActivity : AppCompatActivity() {
                             val updated = com.spaimic.nbttool.chunk.SubChunkEditor.replaceBlock(
                                 base, lx, lz, Math.floorMod(yy, 16), finalName
                             )
-                            bridge.writeBatch(
-                                listOf(com.spaimic.nbttool.chunk.ChunkKeys.subChunkKey(chunkX, chunkZ, sy, dim) to updated)
-                            )
+                            val writes = ArrayList<Pair<ByteArray, ByteArray>>()
+                            writes.add(com.spaimic.nbttool.chunk.ChunkKeys.subChunkKey(chunkX, chunkZ, sy, dim) to updated)
+
+                            // Keep the chunk's stored height map in step with the edit (the map's fast
+                            // loader reads it to know where the surface is). Overworld values are stored
+                            // as little-endian (firstAirY + 64).
+                            if (dim == 0) {
+                                val dataKey = com.spaimic.nbttool.chunk.ChunkKeys.data3DKey(chunkX, chunkZ, dim)
+                                val raw3d = bridge.read(dataKey)
+                                if (raw3d != null && raw3d.size >= 512) {
+                                    val off = ((lz shl 4) or lx) shl 1
+                                    val stored = (raw3d[off].toInt() and 0xFF) or ((raw3d[off + 1].toInt() and 0xFF) shl 8)
+                                    val hm = stored.toShort().toInt() - 64
+                                    var newHm = hm
+                                    val becomesAir = isAirBlockName(finalName)
+                                    if (!becomesAir && yy >= hm) {
+                                        newHm = yy + 1
+                                    } else if (becomesAir && yy == hm - 1) {
+                                        newHm = -64
+                                        var h = yy - 1
+                                        while (h >= minY) {
+                                            if (!isAirBlockName(columnSnapshot[h] ?: "minecraft:air")) { newHm = h + 1; break }
+                                            h--
+                                        }
+                                    }
+                                    if (newHm != hm) {
+                                        val copy = raw3d.copyOf()
+                                        val v = (newHm + 64) and 0xFFFF
+                                        copy[off] = (v and 0xFF).toByte()
+                                        copy[off + 1] = ((v shr 8) and 0xFF).toByte()
+                                        writes.add(dataKey to copy)
+                                    }
+                                }
+                            }
+                            bridge.writeBatch(writes)
                             subs[sy] = updated
                             runOnUiThread {
                                 reloadColumn()
@@ -2095,6 +2166,7 @@ class MapViewerActivity : AppCompatActivity() {
         synchronized(loadingChunks) {
             loadedChunks.clear()
             synchronized(layerRequested) { layerRequested.clear() }
+            bgLayerQueue.clear()
             synchronized(biomeRequested) { biomeRequested.clear() }
             loadingChunks.clear()
         }
@@ -2694,6 +2766,7 @@ class MapViewerActivity : AppCompatActivity() {
         synchronized(loadingChunks) {
             loadedChunks.clear()
             synchronized(layerRequested) { layerRequested.clear() }
+            bgLayerQueue.clear()
             synchronized(biomeRequested) { biomeRequested.clear() }
             loadingChunks.clear()
         }

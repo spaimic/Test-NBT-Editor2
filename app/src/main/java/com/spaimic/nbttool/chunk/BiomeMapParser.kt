@@ -11,10 +11,28 @@ import java.io.IOException
  * this parser keeps the decoded data deliberately small.
  */
 object BiomeMapParser {
-    data class Result(val layers: Array<IntArray?>)
+    /**
+     * The 24 biome layers of a chunk, expanded lazily: only the layers that are actually
+     * looked up are turned into 4096-entry arrays (the map normally needs one or two).
+     */
+    class LazyLayers internal constructor(private val sections: List<Section?>) {
+        private val cache = arrayOfNulls<IntArray>(24)
+        private val expanded = java.util.IdentityHashMap<Section, IntArray>()
+        val indices: IntRange get() = 0 until 24
+        operator fun get(layer: Int): IntArray? {
+            if (layer !in 0 until 24) return null
+            cache[layer]?.let { return it }
+            val s = sectionAt(sections, layer) ?: return null
+            val arr = expanded.getOrPut(s) { expand(s) }
+            cache[layer] = arr
+            return arr
+        }
+    }
+
+    data class Result(val layers: LazyLayers)
 
     /** One decoded biome storage: bits per entry, packed words and the palette of biome ids. */
-    private class Section(val bits: Int, val words: IntArray, val palette: IntArray)
+    internal class Section(val bits: Int, val words: IntArray, val palette: IntArray)
 
     /**
      * Decodes every biome storage that follows the 512-byte heightmap.
@@ -94,13 +112,7 @@ object BiomeMapParser {
 
     fun parse(raw: ByteArray): Result? {
         val sections = sectionsFor(raw) ?: return null
-        val expanded = java.util.IdentityHashMap<Section, IntArray>()
-        val layers = arrayOfNulls<IntArray>(24)
-        for (layer in 0 until 24) {
-            val s = sectionAt(sections, layer) ?: continue
-            layers[layer] = expanded.getOrPut(s) { expand(s) }
-        }
-        return Result(layers)
+        return Result(LazyLayers(sections))
     }
 
     /**

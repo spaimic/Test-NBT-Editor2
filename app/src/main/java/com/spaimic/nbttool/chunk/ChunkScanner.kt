@@ -380,7 +380,9 @@ object ChunkScanner {
     data class LoadedChunk(
         val grid: Array<Array<ColumnInfo>>,
         val entityMarkers: List<EntityMarker>,
-        val blockEntityMarkers: List<BlockEntityMarker>
+        val blockEntityMarkers: List<BlockEntityMarker>,
+        /** Surface biome per column (index z*16+x) when it was read together with the chunk. */
+        val biomeIds: ShortArray? = null
     )
 
     data class LoadedMarkers(
@@ -870,6 +872,10 @@ object ChunkScanner {
         grid: Array<Array<ColumnInfo>>
     ): ShortArray? {
         val raw = bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, dimension)) ?: return null
+        return biomeIdsFromRaw(raw, dimension, grid)
+    }
+
+    private fun biomeIdsFromRaw(raw: ByteArray, dimension: Int, grid: Array<Array<ColumnInfo>>): ShortArray? {
         if (raw.size <= 512) return null
         // BiomeMapParser addresses biome storages from the Overworld minimum subchunk (-4);
         // the Nether and End start at subchunk 0.
@@ -897,8 +903,19 @@ object ChunkScanner {
         failureReasonExamples: MutableMap<String, String> = HashMap(),
         dimension: Int = 0,
         includeMarkers: Boolean = true,
-        onSubchunks: ((List<Pair<Int, ByteArray>>) -> Unit)? = null
+        onSubchunks: ((List<Pair<Int, ByteArray>>) -> Unit)? = null,
+        /** Overworld only: read just the subchunks near each column's recorded surface. */
+        fastSurface: Boolean = false
     ): LoadedChunk? {
+        if (fastSurface && dimension == 0) {
+            val fast = try {
+                loadOverworldChunkFast(
+                    bridge, chunkX, chunkZ, unknownBlockNames,
+                    failureReasonCounts, failureReasonExamples, includeMarkers
+                )
+            } catch (_: Throwable) { null }
+            if (fast != null) return fast
+        }
         val subchunks = bridge.readSubchunks(chunkX, chunkZ, dimension)
         if (subchunks.isEmpty()) return null
         // Lets the caller reuse the raw bytes (e.g. to build Y-level layer data)
@@ -913,23 +930,53 @@ object ChunkScanner {
             return loadNetherChunkDirect(bridge, chunkX, chunkZ, subchunks, unknownBlockNames, failureReasonCounts, failureReasonExamples, includeMarkers)
         }
 
+        val raw3d = try { bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, dimension)) } catch (_: Exception) { null }
+        val biomeData = try { raw3d?.let { BiomeMapParser.parse(it) } } catch (_: Exception) { null }
+        val subchunkByY = subchunks.associate { it.first to it.second }
+        val grid = scanOverworldSurface(
+            { subchunkByY[it] }, null, biomeData, dimension,
+            unknownBlockNames, failureReasonCounts, failureReasonExamples
+        ) ?: return null
+        val ids = raw3d?.let { try { biomeIdsFromRaw(it, dimension, grid) } catch (_: Throwable) { null } }
+        return finishLoadedChunk(bridge, chunkX, chunkZ, dimension, grid, includeMarkers, ids)
+    }
+
+    /**
+     * Finds the surface block of each of the 256 columns (Overworld/End logic).
+     * [fetch] returns the raw subchunk for a subchunk Y, or null when it does not exist.
+     * [columnTopSub] (index z*16+x) optionally limits how high each column is searched.
+     */
+    private fun scanOverworldSurface(
+        fetch: (Int) -> ByteArray?,
+        columnTopSub: IntArray?,
+        biomeData: BiomeMapParser.Result?,
+        dimension: Int,
+        unknownBlockNames: MutableSet<String>,
+        failureReasonCounts: MutableMap<String, Int>,
+        failureReasonExamples: MutableMap<String, String>
+    ): Array<Array<ColumnInfo>>? {
         val grid = Array(16) { Array(16) { ColumnInfo(BlockColors.fallbackUnparsed, 0) } }
         val found = Array(16) { BooleanArray(16) }
         val fallback = Array(16) { arrayOfNulls<ColumnInfo>(16) }
         var remaining = 256
         var hadSuccessfulSubchunk = false
-        val biomeData = try {
-            bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, dimension))?.let { BiomeMapParser.parse(it) }
-        } catch (_: Exception) { null }
 
         // Surface scan is deliberately exhaustive: Bedrock Overworld build height is
         // Y=-64..320 (20 subchunks, -4..19). Missing subchunks are treated as air,
         // while existing subchunks are scanned from the highest Y downward. The
         // first non-air, non-transparent block in each column is the surface.
-        val subchunkByY = subchunks.associate { it.first to it.second }
         for (subY in 19 downTo -4) {
             if (remaining == 0) break
-            val bytes = subchunkByY[subY] ?: continue
+            if (columnTopSub != null) {
+                // Fast path: skip subchunks above every still-unresolved column's recorded
+                // surface (plus one subchunk of margin), so they are never even read.
+                var needed = false
+                scan@ for (zz in 0 until 16) for (xx in 0 until 16) {
+                    if (!found[xx][zz] && columnTopSub[(zz shl 4) or xx] >= subY) { needed = true; break@scan }
+                }
+                if (!needed) continue
+            }
+            val bytes = fetch(subY) ?: continue
             when (val parsed = SubChunkParser.parse(bytes)) {
                 is SubChunkParser.ParseResult.Failure -> {
                     failureReasonCounts[parsed.reason] = (failureReasonCounts[parsed.reason] ?: 0) + 1
@@ -979,7 +1026,18 @@ object ChunkScanner {
             }
         }
         if (!hadSuccessfulSubchunk) return null
+        return grid
+    }
 
+    private fun finishLoadedChunk(
+        bridge: LevelDbBridge,
+        chunkX: Int,
+        chunkZ: Int,
+        dimension: Int,
+        grid: Array<Array<ColumnInfo>>,
+        includeMarkers: Boolean,
+        biomeIds: ShortArray?
+    ): LoadedChunk {
         // Marker reads are optional because they are much more expensive than
         // terrain decoding. Build 111 loads terrain first and can add markers
         // asynchronously after the map becomes visible.
@@ -1020,7 +1078,42 @@ object ChunkScanner {
         }
 
         MapShading.apply(grid)
-        return LoadedChunk(grid, entityMarkers, blockMarkers)
+        return LoadedChunk(grid, entityMarkers, blockMarkers, biomeIds)
+    }
+
+    /**
+     * Fast Overworld surface load, the way Blocktopograph does it: read the chunk's Data3D
+     * record (height map + biomes) and then fetch only the subchunks that can hold a
+     * surface, one key at a time, instead of every subchunk of the chunk. Returns null when
+     * the height map is missing or incomplete so the caller can use the exhaustive path.
+     */
+    private fun loadOverworldChunkFast(
+        bridge: LevelDbBridge,
+        chunkX: Int,
+        chunkZ: Int,
+        unknownBlockNames: MutableSet<String>,
+        failureReasonCounts: MutableMap<String, Int>,
+        failureReasonExamples: MutableMap<String, String>,
+        includeMarkers: Boolean
+    ): LoadedChunk? {
+        val raw3d = bridge.read(ChunkKeys.data3DKey(chunkX, chunkZ, 0)) ?: return null
+        val heights = IntArray(256) { -64 }
+        if (!BiomeMapParser.heightMapFast(raw3d, heights)) return null
+        val columnTopSub = IntArray(256)
+        for (c in 0 until 256) {
+            val h = heights[c]
+            // -64 is Bedrock's "unknown" height: the top of this column is not recorded.
+            if (h <= -64) return null
+            // h is the first air block above the surface block, so the surface block is h-1.
+            columnTopSub[c] = minOf(19, Math.floorDiv(h - 1, 16) + 1)
+        }
+        val biomeData = BiomeMapParser.parse(raw3d)
+        val grid = scanOverworldSurface(
+            { sy -> bridge.read(ChunkKeys.subChunkKey(chunkX, chunkZ, sy, 0)) },
+            columnTopSub, biomeData, 0,
+            unknownBlockNames, failureReasonCounts, failureReasonExamples
+        ) ?: return null
+        return finishLoadedChunk(bridge, chunkX, chunkZ, 0, grid, includeMarkers, biomeIdsFromRaw(raw3d, 0, grid))
     }
 
     private fun loadNetherChunkDirect(
