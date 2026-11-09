@@ -4,7 +4,7 @@ A Minecraft Bedrock Edition world and NBT editor for Android. It opens worlds
 through [Shizuku](https://shizuku.rikka.app/), so it can read and write the
 sandboxed `Android/data` world folders without root.
 
-Package: `com.spaimic.nbttool` · Current build: **251**
+Package: `com.spaimic.nbttool` · Current build: **252**
 
 > ⚠️ **Back up your worlds.** This app edits LevelDB data directly. Use the
 > built-in **Backup Worlds** feature before any edit, and avoid heavy bulk
@@ -35,6 +35,7 @@ home screen several times to enable it.
 - 🗒️ 🧪 Copy Chunk · 📝 🧪 Paste Chunk · 📋 Chunk Clipboard · 🗑️ 🧪 Delete Chunk
 - 🪟 Selection tool (up to 2048×2048)
   - 📷 Take a picture of the selected area
+  - 📦 Export the selected area as a .mcstructure file (up to 64×384×64, like a structure block)
   - 🗑️ 🧪 Delete the selected area
 
 **Viewers**

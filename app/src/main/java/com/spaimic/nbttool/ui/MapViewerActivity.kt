@@ -1355,6 +1355,7 @@ class MapViewerActivity : AppCompatActivity() {
         options.add("Terrain Editor")
         if (mapView.selection != null) {
             options.add("📸 Selection: Take Picture of Map")
+            options.add("📦 Selection: Export as .mcstructure")
             if (ExperimentMode.isEnabled(this)) {
                 options.add("🗑️ Selection: Delete Area")
             }
@@ -1393,6 +1394,7 @@ class MapViewerActivity : AppCompatActivity() {
                         startActivity(i)
                     }
                     "📸 Selection: Take Picture of Map" -> promptSelectionPicture()
+                    "📦 Selection: Export as .mcstructure" -> promptExportMcStructure()
                     "🗑️ Selection: Delete Area" -> promptDeleteSelection()
                     "❌ Clear Selection" -> mapView.clearSelection()
                 }
@@ -1920,6 +1922,159 @@ class MapViewerActivity : AppCompatActivity() {
             }
         }
         throw java.io.IOException("Could not save PNG to Download or Pictures", lastError)
+    }
+
+    // ------------------------------------------------------------------
+    // Selection -> .mcstructure export (limited to 64 x 384 x 64, like a structure block)
+    // ------------------------------------------------------------------
+
+    private fun promptExportMcStructure() {
+        val s = mapView.selection ?: return
+        val dim = selectedDbDimension()
+        if (s.width > com.spaimic.nbttool.chunk.McStructureExporter.MAX_X ||
+            s.height > com.spaimic.nbttool.chunk.McStructureExporter.MAX_Z
+        ) {
+            AlertDialog.Builder(this)
+                .setTitle("Selection too large")
+                .setMessage(
+                    "The selection is ${s.width} × ${s.height} blocks (X × Z). A .mcstructure can hold at most " +
+                        "64 × 384 × 64 blocks (X × Y × Z), just like a structure block in the game, so resize " +
+                        "the selection to 64 × 64 or smaller and try again."
+                )
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val worldMinY = if (dim == 0) -64 else 0
+        val worldMaxY = when (dim) { 0 -> 319; 1 -> 127; else -> 255 }
+        val nameInput = EditText(this).apply {
+            hint = "File name"
+            setSingleLine()
+            setText("structure")
+        }
+        val yMin = numberInput("Lowest Y", worldMinY)
+        val yMax = numberInput("Highest Y", worldMaxY)
+        val includeBe = CheckBox(this).apply {
+            text = "Include block entities (chests, signs, …)"
+            isChecked = true
+        }
+        val info = TextView(this).apply {
+            text = "Area: ${s.width} × ${s.height} blocks (X × Z)\nX ${s.minX}..${s.maxX}, Z ${s.minZ}..${s.maxZ}\n" +
+                "Mobs and dropped items are not exported."
+            setPadding(0, 0, 0, dp(8))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(info)
+            addView(nameInput, LinearLayout.LayoutParams(-1, -2))
+            addView(yMin, LinearLayout.LayoutParams(-1, -2))
+            addView(yMax, LinearLayout.LayoutParams(-1, -2))
+            addView(includeBe)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Export .mcstructure")
+            .setView(box)
+            .setPositiveButton("Export") { _, _ ->
+                val lo = yMin.text.toString().trim().toIntOrNull()
+                val hi = yMax.text.toString().trim().toIntOrNull()
+                if (lo == null || hi == null) {
+                    Toast.makeText(this, "Enter both Y values", Toast.LENGTH_SHORT).show()
+                } else {
+                    val y0 = minOf(lo, hi).coerceIn(worldMinY, worldMaxY)
+                    val y1 = maxOf(lo, hi).coerceIn(worldMinY, worldMaxY)
+                    var fileName = nameInput.text.toString().trim()
+                        .removeSuffix(".mcstructure")
+                        .replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                    if (fileName.isEmpty()) fileName = "structure"
+                    runMcStructureExport(s, dim, y0, y1, includeBe.isChecked, fileName)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runMcStructureExport(
+        s: com.spaimic.nbttool.selection.WorldSelection,
+        dim: Int, y0: Int, y1: Int, includeBlockEntities: Boolean, fileName: String
+    ) {
+        val bridge = LevelDbSession.bridge ?: return
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle("Exporting…")
+            .setMessage("Reading chunks…")
+            .setCancelable(false)
+            .create()
+        progressDialog.show()
+        Thread({
+            try {
+                val result = com.spaimic.nbttool.chunk.McStructureExporter.export(
+                    com.spaimic.nbttool.chunk.KeyReader { bridge.read(it) },
+                    dim, s.minX, s.maxX, s.minZ, s.maxZ, y0, y1, includeBlockEntities
+                ) { done, total ->
+                    runOnUiThread { progressDialog.setMessage("Reading chunks $done / $total") }
+                }
+                val saved = saveBytesToDownloads("$fileName.mcstructure", "application/octet-stream", result.bytes)
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    AlertDialog.Builder(this)
+                        .setTitle("Export complete")
+                        .setMessage(
+                            "Saved $saved\n\n" +
+                                "Size: ${result.sizeX} × ${result.sizeY} × ${result.sizeZ} (X × Y × Z)\n" +
+                                "Non-air blocks: ${result.nonAirBlocks}\n" +
+                                "Block types: ${result.paletteSize}\n" +
+                                "Block entities: ${result.blockEntities}" +
+                                if (result.skippedSubchunks > 0) "\nSkipped ${result.skippedSubchunks} unreadable subchunk(s) (exported as air)." else ""
+                        )
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    progressDialog.dismiss()
+                    showErrorDialog(this, "Export failed", e)
+                }
+            }
+        }, "McStructureExport").start()
+    }
+
+    /** Saves bytes to the public Download folder (MediaStore on Android 10+). Returns a display path. */
+    private fun saveBytesToDownloads(displayName: String, mime: String, bytes: ByteArray): String {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            val resolver = contentResolver
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw java.io.IOException("Unable to create the file in Download")
+            try {
+                val out = resolver.openOutputStream(uri)
+                    ?: throw java.io.IOException("Unable to open the output file")
+                out.use { it.write(bytes) }
+                val done = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+                if (resolver.update(uri, done, null, null) <= 0) {
+                    throw java.io.IOException("Unable to finalize the file")
+                }
+                return Environment.DIRECTORY_DOWNLOADS + "/" + displayName
+            } catch (t: Throwable) {
+                resolver.delete(uri, null, null)
+                throw t
+            }
+        }
+        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!dir.exists() && !dir.mkdirs()) throw java.io.IOException("Unable to create ${dir.absolutePath}")
+        val file = File(dir, displayName)
+        try {
+            file.writeBytes(bytes)
+        } catch (t: Throwable) {
+            try { file.delete() } catch (_: Throwable) {}
+            throw t
+        }
+        MediaScannerConnection.scanFile(this, arrayOf(file.absolutePath), arrayOf(mime), null)
+        return file.absolutePath
     }
 
     private fun promptDeleteSelection() {

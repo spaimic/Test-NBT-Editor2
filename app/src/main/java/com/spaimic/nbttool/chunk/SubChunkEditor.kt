@@ -8,11 +8,11 @@ import java.io.DataInputStream
 
 /** Safe-ish block-name editor for Bedrock subchunks. Existing palette compounds are preserved. */
 object SubChunkEditor {
-    private data class Layer(
+    internal data class Layer(
         val palette: MutableList<NbtTag.Compound>,
         val indices: IntArray
     )
-    private data class Decoded(val version: Int, val indexByte: Int?, val layers: MutableList<Layer>)
+    internal data class Decoded(val version: Int, val indexByte: Int?, val layers: MutableList<Layer>)
 
     fun replaceBlock(bytes: ByteArray, x: Int, z: Int, y: Int, newName: String): ByteArray {
         require(x in 0..15 && z in 0..15 && y in 0..15)
@@ -64,7 +64,7 @@ object SubChunkEditor {
         return palette.lastIndex
     }
 
-    private fun decode(bytes: ByteArray): Decoded {
+    internal fun decode(bytes: ByteArray): Decoded {
         val s = DataInputStream(ByteArrayInputStream(bytes))
         val version = s.readUnsignedByte()
         require(version == 8 || version == 9) { "Unsupported subchunk version $version" }
