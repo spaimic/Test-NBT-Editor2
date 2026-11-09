@@ -257,6 +257,110 @@ class MapView(context: Context) : View(context) {
     private var cachedVisiblePairs: List<Pair<Int, Int>> = emptyList()
     private var cachedVisibleSet: Set<Pair<Int, Int>> = emptySet()
     private val tileRect = RectF()
+
+    // ------------------------------------------------------------------
+    // Large composite tiles for far zoom (like Blocktopograph's 256px tiles).
+    // At 1x-3x thousands of 16x16-chunk tiles are on screen; drawing each as its own
+    // bitmap costs thousands of draw calls and GPU textures per frame. Instead the chunk
+    // tiles are copied (on a background thread) into 256px super-tiles, so a screen needs
+    // only a couple of hundred draws. Chunk tiles stay the source of truth.
+    // ------------------------------------------------------------------
+    private val megaBitmaps = ConcurrentHashMap<Long, Bitmap>()
+    private val megaDirty: MutableSet<Long> = ConcurrentHashMap.newKeySet()
+    private val megaExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "MapMegaTiles").apply { isDaemon = true; priority = Thread.NORM_PRIORITY - 1 }
+    }
+    private var megaComposeScheduled = false
+    private val megaPaint = Paint().apply { isFilterBitmap = true }
+    private var lastTrimMs = 0L
+
+    private fun megaKey(tx: Int, tz: Int): Long = (tx.toLong() shl 32) or (tz.toLong() and 0xffffffffL)
+    private fun megaChunks(): Int = 256 / (16 * blockPixels)
+
+    private fun markMegaDirty(pos: Pair<Int, Int>) {
+        if (blockPixels > 4) return
+        val s = megaChunks()
+        megaDirty.add(megaKey(Math.floorDiv(pos.first, s), Math.floorDiv(pos.second, s)))
+        if (!megaComposeScheduled) {
+            megaComposeScheduled = true
+            postDelayed({
+                megaComposeScheduled = false
+                composeDirtyMegas()
+            }, 120)
+        }
+    }
+
+    private fun composeDirtyMegas() {
+        if (megaDirty.isEmpty() || blockPixels > 4) return
+        val keys = ArrayList<Long>(megaDirty)
+        megaDirty.removeAll(keys.toSet())
+        val tier = blockPixels
+        val s = megaChunks()
+        megaExecutor.execute {
+            for (key in keys) {
+                if (tier != blockPixels) return@execute
+                try {
+                    composeMega(key, s, tier)
+                } catch (_: Throwable) {
+                    // Falls back to per-chunk drawing for this tile.
+                }
+            }
+        }
+    }
+
+    private fun composeMega(key: Long, s: Int, tier: Int) {
+        val tx = (key shr 32).toInt()
+        val tz = key.toInt()
+        // Skip tiles that have scrolled well away since they were marked.
+        if (tx < Math.floorDiv(cachedMinCx, s) - 1 || tx > Math.floorDiv(cachedMaxCx, s) + 1 ||
+            tz < Math.floorDiv(cachedMinCz, s) - 1 || tz > Math.floorDiv(cachedMaxCz, s) + 1) return
+        val chunkPx = 16 * tier
+        val size = s * chunkPx
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(BlockColors.fallbackUnloaded)
+        val dst = RectF()
+        for (dx in 0 until s) for (dz in 0 until s) {
+            val pos = (tx * s + dx) to (tz * s + dz)
+            val src = chunkBitmaps[pos] ?: staleBitmaps[pos] ?: continue
+            try {
+                if (src.isRecycled) continue
+                dst.set((dx * chunkPx).toFloat(), (dz * chunkPx).toFloat(),
+                    ((dx + 1) * chunkPx).toFloat(), ((dz + 1) * chunkPx).toFloat())
+                canvas.drawBitmap(src, null, dst, null)
+            } catch (_: Throwable) {
+                // A tile recycled underneath us: leave this chunk as the background color.
+            }
+        }
+        post {
+            if (tier == blockPixels) {
+                megaBitmaps.put(key, bmp)?.let { if (!it.isRecycled) it.recycle() }
+                invalidate()
+            } else {
+                bmp.recycle()
+            }
+        }
+    }
+
+    private fun clearMegas() {
+        megaDirty.clear()
+        val old = ArrayList(megaBitmaps.values)
+        megaBitmaps.clear()
+        old.forEach { if (!it.isRecycled) it.recycle() }
+    }
+
+    private fun trimMegas(minTx: Int, maxTx: Int, minTz: Int, maxTz: Int) {
+        val it = megaBitmaps.entries.iterator()
+        while (it.hasNext()) {
+            val e = it.next()
+            val tx = (e.key shr 32).toInt()
+            val tz = e.key.toInt()
+            if (tx < minTx - 1 || tx > maxTx + 1 || tz < minTz - 1 || tz > maxTz + 1) {
+                it.remove()
+                if (!e.value.isRecycled) e.value.recycle()
+            }
+        }
+    }
     // Keep a modest number of recently used off-screen bitmaps in addition to all
     // visible bitmaps. This avoids unbounded memory use without evicting visible tiles.
     private val maxCachedOffscreenBitmaps = 24
@@ -333,6 +437,7 @@ class MapView(context: Context) : View(context) {
         layerDepth = 0
         viewY = null
         chunkBiomes.clear()
+        clearMegas()
         chunks.clear()
         chunkLayers.clear()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
@@ -404,13 +509,27 @@ class MapView(context: Context) : View(context) {
         // memory and CPU stay bounded; the rest stay as empty tiles.
         val maxRequested = 6000
         val toRequest = if (requested.size > maxRequested) {
+            // Keep the nearest chunks without sorting boxed pairs (this runs every time the
+            // visible rectangle changes while panning): find the cut-off distance on a
+            // primitive array, then filter.
             val cxF = cameraX / 16f
             val czF = cameraZ / 16f
-            requested.sortedBy {
-                val dx = it.first - cxF
-                val dz = it.second - czF
-                dx * dx + dz * dz
-            }.take(maxRequested).toHashSet()
+            val dist = FloatArray(requested.size)
+            var di = 0
+            for (p in requested) {
+                val dx = p.first - cxF
+                val dz = p.second - czF
+                dist[di++] = dx * dx + dz * dz
+            }
+            dist.sort()
+            val cutoff = dist[maxRequested - 1]
+            val kept = HashSet<Pair<Int, Int>>(maxRequested * 2)
+            for (p in requested) {
+                val dx = p.first - cxF
+                val dz = p.second - czF
+                if (dx * dx + dz * dz <= cutoff) kept.add(p)
+            }
+            kept
         } else {
             requested
         }
@@ -428,6 +547,7 @@ class MapView(context: Context) : View(context) {
             if (prev != null && prev !== old && !prev.isRecycled) prev.recycle()
         }
         bitmapAccessOrder.remove(pos)
+        markMegaDirty(pos)
         requestVisible(force = true)
     }
 
@@ -438,6 +558,7 @@ class MapView(context: Context) : View(context) {
         val tier = tierFor(newZoom)
         if (tier != blockPixels) {
             blockPixels = tier
+            clearMegas()
             refreshAllChunkBitmaps()
         }
     }
@@ -481,6 +602,10 @@ class MapView(context: Context) : View(context) {
                 }
             }
         }
+        // Scanning every cached bitmap each frame is O(n) with thousands of tiles at 1x.
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastTrimMs < 400) return
+        lastTrimMs = nowMs
         var offscreenCount = bitmapAccessOrder.keys.count { pos ->
             !visibleChunkPositions.contains(pos) &&
                 chunkBitmaps[pos]?.isRecycled == false
@@ -631,6 +756,7 @@ class MapView(context: Context) : View(context) {
                     if (generation == renderGeneration.get()) {
                         staleBitmaps.remove(pos)?.let { if (!it.isRecycled) it.recycle() }
                         touchBitmap(pos)
+                        markMegaDirty(pos)
                         invalidate()
                     }
                 }
@@ -666,7 +792,9 @@ class MapView(context: Context) : View(context) {
         // The visible chunk positions only change when the visible rectangle does, so the
         // Pair objects are built once per rectangle instead of on every frame (10k+ chunks
         // are on screen at 1x). The rectangle is a slight superset of what is truly visible.
+        var rectChanged = false
         if (minCx != cachedMinCx || maxCx != cachedMaxCx || minCz != cachedMinCz || maxCz != cachedMaxCz) {
+            rectChanged = true
             cachedMinCx = minCx; cachedMaxCx = maxCx; cachedMinCz = minCz; cachedMaxCz = maxCz
             val list = ArrayList<Pair<Int, Int>>(maxOf(0, (maxCx - minCx + 1) * (maxCz - minCz + 1)))
             for (cx in minCx..maxCx) for (cz in minCz..maxCz) list.add(cx to cz)
@@ -675,11 +803,54 @@ class MapView(context: Context) : View(context) {
         }
         visibleChunkPositions = cachedVisibleSet
 
+        // Far zoom: draw large composite tiles instead of thousands of chunk tiles.
+        val megaMode = blockPixels <= 4 && !slimeMode
+        val megaS = if (megaMode) megaChunks() else 1
+        var tMinX = 0
+        var tMinZ = 0
+        var tRows = 1
+        var covered: BooleanArray? = null
+        if (megaMode) {
+            tMinX = Math.floorDiv(minCx, megaS)
+            val tMaxX = Math.floorDiv(maxCx, megaS)
+            tMinZ = Math.floorDiv(minCz, megaS)
+            val tMaxZ = Math.floorDiv(maxCz, megaS)
+            tRows = tMaxZ - tMinZ + 1
+            val flags = BooleanArray((tMaxX - tMinX + 1) * tRows)
+            for (tx in tMinX..tMaxX) for (tz in tMinZ..tMaxZ) {
+                val mb = megaBitmaps[megaKey(tx, tz)]
+                if (mb != null && !mb.isRecycled) {
+                    tileRect.set(
+                        screenX(tx * megaS * 16f), screenZ(tz * megaS * 16f),
+                        screenX((tx + 1) * megaS * 16f), screenZ((tz + 1) * megaS * 16f)
+                    )
+                    canvas.drawBitmap(mb, null, tileRect, megaPaint)
+                    flags[(tx - tMinX) * tRows + (tz - tMinZ)] = true
+                }
+            }
+            covered = flags
+            if (rectChanged) trimMegas(tMinX, tMaxX, tMinZ, tMaxZ)
+        }
+
         val visiblePairs = cachedVisiblePairs
         for (i in visiblePairs.indices) {
             val pos = visiblePairs[i]
             val cx = pos.first
             val cz = pos.second
+
+            // Chunks inside a drawn composite tile only need their own tile kept up to date.
+            if (covered != null &&
+                covered[(Math.floorDiv(cx, megaS) - tMinX) * tRows + (Math.floorDiv(cz, megaS) - tMinZ)]
+            ) {
+                val coveredGrid = chunks[pos]
+                if (coveredGrid != null) {
+                    val coveredBitmap = chunkBitmaps[pos]
+                    if (coveredBitmap == null || coveredBitmap.isRecycled) requestChunkBitmap(pos, coveredGrid)
+                    else if (rectChanged) touchBitmap(pos)
+                }
+                continue
+            }
+
             val left = screenX(cx * 16f)
             val top = screenZ(cz * 16f)
             val right = screenX((cx + 1) * 16f)
@@ -692,21 +863,22 @@ class MapView(context: Context) : View(context) {
                 if (showGrid && zoom >= 6f) canvas.drawRect(left, top, right, bottom, slimeGridPaint)
                 continue
             }
+            // Unloaded chunks need no draw call: the canvas was already cleared to the
+            // unloaded color, which saves thousands of rect draws at far zoom.
             val grid = chunks[pos]
             if (grid != null) {
                 val bitmap = chunkBitmaps[pos]
                 if (bitmap != null && !bitmap.isRecycled) {
-                    touchBitmap(pos)
+                    if (rectChanged) touchBitmap(pos)
                     tileRect.set(left, top, right, bottom)
                     canvas.drawBitmap(bitmap, null, tileRect, tilePaint)
+                    if (megaMode) markMegaDirty(pos)
                 } else {
                     requestChunkBitmap(pos, grid)
                     val stale = staleBitmaps[pos]
                     if (stale != null && !stale.isRecycled) {
                         tileRect.set(left, top, right, bottom)
                         canvas.drawBitmap(stale, null, tileRect, tilePaint)
-                    } else {
-                        canvas.drawRect(left, top, right, bottom, unloadedPaint)
                     }
                 }
                 // Chunk borders can be hidden from the Map Options drawer.
@@ -718,8 +890,6 @@ class MapView(context: Context) : View(context) {
                 if (stale != null && !stale.isRecycled) {
                     tileRect.set(left, top, right, bottom)
                     canvas.drawBitmap(stale, null, tileRect, tilePaint)
-                } else {
-                    canvas.drawRect(left, top, right, bottom, unloadedPaint)
                 }
             }
         }
@@ -994,6 +1164,8 @@ class MapView(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         renderGeneration.incrementAndGet()
         renderExecutor.shutdownNow()
+        megaExecutor.shutdownNow()
+        clearMegas()
         super.onDetachedFromWindow()
         chunkBitmaps.values.forEach { if (!it.isRecycled) it.recycle() }
         chunkBitmaps.clear()
