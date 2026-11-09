@@ -33,7 +33,17 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class MapView(context: Context) : View(context) {
 
-    data class MarkerDraw(val worldX: Int, val worldZ: Int, val iconRes: Int)
+    class MarkerDraw(
+        val worldX: Int, val worldZ: Int, val iconRes: Int,
+        val worldY: Int = 0,
+        /** 0 = entity, 1 = tile entity (block entity). */
+        val kind: Int = 0,
+        val label: String = "",
+        val actorKey: ByteArray? = null
+    )
+
+    /** Tapped marker icons (top-most first); only used below the per-block-grid zoom. */
+    var onMarkerTap: ((List<MarkerDraw>) -> Unit)? = null
 
     var onVisibleChunksChanged: ((Set<Pair<Int, Int>>) -> Unit)? = null
     var onTap: ((worldX: Int, worldY: Int, worldZ: Int) -> Unit)? = null
@@ -229,7 +239,7 @@ class MapView(context: Context) : View(context) {
     // at the widest view and roughly 46x70 blocks at the closest view.
     private var zoom = 3.85f
     private val minZoom = 1f
-    private val maxZoom = 38f
+    private val maxZoom = 42f
     /** From this zoom on every block gets its own grid cell (tap a cell to edit it). */
     private val blockGridZoom = 34f
 
@@ -1156,6 +1166,25 @@ class MapView(context: Context) : View(context) {
             tapX in (lx - 30f)..(lx + 30f) && tapY in (lz - 52f)..(lz + 8f)
         }
         if (hit != null && onLocatorTap != null) { onLocatorTap?.invoke(hit); return }
+        // Entity / tile-entity icons: tapping one opens its LevelDB record. At the per-block
+        // grid zoom the block dialog handles this instead.
+        if (onMarkerTap != null && zoom < blockGridZoom) {
+            val hits = ArrayList<MarkerDraw>()
+            fun collect(list: List<MarkerDraw>) {
+                for (m in list) {
+                    val sx = screenX(m.worldX + 0.5f)
+                    val sz = screenZ(m.worldZ + 0.5f)
+                    if (tapX in (sx - 22f)..(sx + 22f) && tapY in (sz - 38f)..(sz + 8f)) hits.add(m)
+                }
+            }
+            if (showTileEntityIcons) collect(blockEntityMarkers)
+            if (showEntityIcons) collect(entityMarkers)
+            if (hits.isNotEmpty()) {
+                // Entities are drawn last (on top), so list them first.
+                onMarkerTap?.invoke(hits.asReversed().take(12))
+                return
+            }
+        }
         val worldX = floor(cameraX + (tapX - width / 2f) / zoom).toInt()
         val worldZ = floor(cameraZ + (tapY - height / 2f) / zoom).toInt()
         onTap?.invoke(worldX, 0, worldZ)

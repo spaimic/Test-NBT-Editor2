@@ -4,7 +4,7 @@ A Minecraft Bedrock Edition world and NBT editor for Android. It opens worlds
 through [Shizuku](https://shizuku.rikka.app/), so it can read and write the
 sandboxed `Android/data` world folders without root.
 
-Package: `com.spaimic.nbttool` · Current build: **252**
+Package: `com.spaimic.nbttool` · Current build: **253**
 
 > ⚠️ **Back up your worlds.** This app edits LevelDB data directly. Use the
 > built-in **Backup Worlds** feature before any edit, and avoid heavy bulk
@@ -35,7 +35,7 @@ home screen several times to enable it.
 - 🗒️ 🧪 Copy Chunk · 📝 🧪 Paste Chunk · 📋 Chunk Clipboard · 🗑️ 🧪 Delete Chunk
 - 🪟 Selection tool (up to 2048×2048)
   - 📷 Take a picture of the selected area
-  - 📦 Export the selected area as a .mcstructure file (up to 64×384×64, like a structure block)
+  - 📦 Export the selected area as a .mcstructure file with blocks, block entities and entities (up to 64×384×64, like a structure block)
   - 🗑️ 🧪 Delete the selected area
 
 **Viewers**
@@ -47,7 +47,9 @@ home screen several times to enable it.
   - 🌿 Biome overlay: color the map by biome; the biome under the map centre is shown at the bottom, and tapping the map shows the biome there
   - 🟩 Slime chunk view (Overworld): slime chunks green, everything else black
   - 🧱 Block editor on the map: zoom to 34× or more for a per-block grid; tap a block to see/edit it (Y ±1 with hold-to-repeat, "Hide air blocks")
-  - 🔍 Zoom from 1× to 38×
+  - 🔍 Zoom from 1× to 42×
+  - 🏷️ Tap an entity or tile-entity icon to open its LevelDB record (at 34×+ the block dialog lists the ones on that block)
+  - ↶ Undo / redo for block edits made from the map
 - 🌍 3D Chunk Viewer across all dimensions (face culling + greedy meshing)
 - 📷 Take a picture of the entire map
 

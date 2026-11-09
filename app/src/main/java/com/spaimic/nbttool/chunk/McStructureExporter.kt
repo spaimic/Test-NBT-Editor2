@@ -41,13 +41,23 @@ object McStructureExporter {
         val nonAirBlocks: Int,
         val paletteSize: Int,
         val blockEntities: Int,
-        val skippedSubchunks: Int
+        val skippedSubchunks: Int,
+        val entities: Int = 0
     )
 
     private fun isAir(name: String?): Boolean =
         name == "minecraft:air" || name == "air" || name == "minecraft:cave_air" || name == "minecraft:void_air"
 
     private fun nameOf(c: NbtTag.Compound): String? = (c.entries["name"] as? NbtTag.Str)?.value
+
+    private fun numberOf(tag: NbtTag?): Double? = when (tag) {
+        is NbtTag.Float -> tag.value.toDouble()
+        is NbtTag.Double -> tag.value
+        is NbtTag.Int -> tag.value.toDouble()
+        is NbtTag.Long -> tag.value.toDouble()
+        is NbtTag.Short -> tag.value.toDouble()
+        else -> null
+    }
 
     private fun intOf(tag: NbtTag?): Int? = when (tag) {
         is NbtTag.Int -> tag.value
@@ -64,6 +74,7 @@ object McStructureExporter {
         minZ: Int, maxZ: Int,
         minY: Int, maxY: Int,
         includeBlockEntities: Boolean,
+        includeEntities: Boolean = false,
         progress: ((done: Int, total: Int) -> Unit)? = null
     ): ExportResult {
         val sizeX = maxX - minX + 1
@@ -96,6 +107,7 @@ object McStructureExporter {
         var skipped = 0
         var blockEntityCount = 0
         val positionData = LinkedHashMap<String, NbtTag>()
+        val exportedEntities = ArrayList<NbtTag>()
         var chunksDone = 0
 
         for (cx in minCx..maxCx) for (cz in minCz..maxCz) {
@@ -152,6 +164,29 @@ object McStructureExporter {
                     }
                 }
             }
+            if (includeEntities) {
+                // Actors are stored per chunk (digp -> actor ids -> actorprefix records). Their Pos is
+                // an absolute world position; the file's structure_world_origin lets the game (and this
+                // app's own placer) shift them to wherever the structure is loaded.
+                val digp = try { reader.read(EntityKeys.digpKey(cx, cz, dimension)) } catch (_: Throwable) { null }
+                if (digp != null) {
+                    for (actorId in EntityKeys.splitActorIds(digp)) {
+                        try {
+                            val raw = reader.read(EntityKeys.actorPrefixKey(actorId)) ?: continue
+                            val actor = NbtIO.readRootCompoundNoHeader(raw)
+                            val pos = actor.entries["Pos"] as? NbtTag.ListTag ?: continue
+                            val px = numberOf(pos.items.getOrNull(0)) ?: continue
+                            val py = numberOf(pos.items.getOrNull(1)) ?: continue
+                            val pz = numberOf(pos.items.getOrNull(2)) ?: continue
+                            if (px < minX || px >= maxX + 1.0 || py < minY || py >= maxY + 1.0 ||
+                                pz < minZ || pz >= maxZ + 1.0) continue
+                            exportedEntities.add(actor)
+                        } catch (_: Throwable) {
+                            // An unreadable actor record is skipped, not fatal.
+                        }
+                    }
+                }
+            }
             chunksDone++
             progress?.invoke(chunksDone, chunkCount)
         }
@@ -177,9 +212,11 @@ object McStructureExporter {
         }
 
         val bytes = write(
-            sizeX, sizeY, sizeZ, minX, minY, minZ, layer0, layer1, palette, positionData
+            sizeX, sizeY, sizeZ, minX, minY, minZ, layer0, layer1, palette, positionData, exportedEntities
         )
-        return ExportResult(bytes, sizeX, sizeY, sizeZ, nonAir, palette.size, blockEntityCount, skipped)
+        return ExportResult(
+            bytes, sizeX, sizeY, sizeZ, nonAir, palette.size, blockEntityCount, skipped, exportedEntities.size
+        )
     }
 
     private fun write(
@@ -187,7 +224,8 @@ object McStructureExporter {
         originX: Int, originY: Int, originZ: Int,
         layer0: IntArray, layer1: IntArray,
         palette: List<NbtTag.Compound>,
-        positionData: Map<String, NbtTag>
+        positionData: Map<String, NbtTag>,
+        entities: List<NbtTag>
     ): ByteArray {
         val total = layer0.size
         val out = ByteArrayOutputStream(total * 8 + 8192)
@@ -214,7 +252,9 @@ object McStructureExporter {
         u8(9); name("block_indices"); u8(9); i32(2)         // list of two lists
         u8(3); i32(total); intArray(layer0)
         u8(3); i32(total); intArray(layer1)
-        u8(9); name("entities"); u8(10); i32(0)             // entities are not exported
+        val entitiesTag = NbtTag.ListTag(10, ArrayList<NbtTag>(entities))
+        val eb = NbtIO.serializeTag(entitiesTag)            // type id + payload (no name)
+        u8(eb[0].toInt()); name("entities"); out.write(eb, 1, eb.size - 1)
         val paletteTag = NbtTag.Compound(
             linkedMapOf(
                 "default" to NbtTag.Compound(

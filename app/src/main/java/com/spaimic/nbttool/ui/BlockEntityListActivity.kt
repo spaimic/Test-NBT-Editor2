@@ -89,12 +89,34 @@ class BlockEntityListActivity : AppCompatActivity() {
                         showNoBlockEntitiesDialog()
                     } else {
                         refresh()
+                        openTargetIfRequested()
                     }
                 }
             } catch (e: Exception) {
                 runOnUiThread { showErrorDialog(this, "Failed to load block entities", e) }
             }
         }.start()
+    }
+
+    private var targetOpened = false
+
+    private fun openTargetIfRequested() {
+        if (targetOpened) return
+        targetOpened = true
+        if (!intent.hasExtra(EXTRA_TARGET_X)) return
+        val tx = intent.getIntExtra(EXTRA_TARGET_X, 0)
+        val ty = intent.getIntExtra(EXTRA_TARGET_Y, 0)
+        val tz = intent.getIntExtra(EXTRA_TARGET_Z, 0)
+        val index = BlockEntitySession.compounds.indexOfFirst { c ->
+            (c.entries["x"] as? NbtTag.Int)?.value == tx &&
+                (c.entries["y"] as? NbtTag.Int)?.value == ty &&
+                (c.entries["z"] as? NbtTag.Int)?.value == tz
+        }
+        if (index >= 0) {
+            val i = Intent(this, BlockEntityEditorActivity::class.java)
+            i.putExtra(BlockEntityEditorActivity.EXTRA_INDEX, index)
+            startActivity(i)
+        }
     }
 
     private fun refresh() {
@@ -184,6 +206,10 @@ class BlockEntityListActivity : AppCompatActivity() {
         const val EXTRA_CHUNK_X = "chunk_x"
         const val EXTRA_CHUNK_Z = "chunk_z"
         const val EXTRA_DIMENSION = "dimension"
+        /** Optional: open the block entity at this exact position straight away. */
+        const val EXTRA_TARGET_X = "target_x"
+        const val EXTRA_TARGET_Y = "target_y"
+        const val EXTRA_TARGET_Z = "target_z"
         private const val MENU_SAVE = 1
         private const val MENU_DELETE_KEY = 2
 

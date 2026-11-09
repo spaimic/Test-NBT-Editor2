@@ -214,6 +214,8 @@ class MapViewerActivity : AppCompatActivity() {
         mapOptionsPanel.addView(mapActionRow(R.drawable.map, "Go to X / Z") { showGoToDialog() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.locator_6, "Locators") { showLocatorList() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "View at Y Level") { showYLevelDialog() })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "Undo Block Edit") { applyBlockHistory(true) {} })
+        mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "Redo Block Edit") { applyBlockHistory(false) {} })
         mapOptionsPanel.addView(mapActionRow(R.drawable.grid, "Loading Stats") { showLoadingStats() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.camera, "Take Entire Map Picture") { promptWholeMapPicture() })
         mapOptionsPanel.addView(mapActionRow(R.drawable.search_diamond, "Find Diamonds Near Player") { findDiamondsNearPlayer() })
@@ -261,6 +263,7 @@ class MapViewerActivity : AppCompatActivity() {
             if (mapView.isBlockGridZoom()) showBlockDialog(x, z) else showChunkDialog(x, z)
         }
         mapView.onLocatorTap = { showLocatorInfo(it) }
+        mapView.onMarkerTap = { handleMarkerTap(it) }
         locatorsList.clear()
         locatorsList.addAll(Locators.load(this, worldDir.name))
         refreshLocatorsOnMap()
@@ -550,11 +553,13 @@ class MapViewerActivity : AppCompatActivity() {
                     synchronized(markerLock) {
                         loadedEntityMarkers.addAll(markers.entityMarkers.map {
                             MapView.MarkerDraw(it.worldX, it.worldZ,
-                                com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier))
+                                com.spaimic.nbttool.chunk.EntityIcons.iconFor(it.identifier),
+                                it.worldY, 0, it.identifier, it.actorKey)
                         })
                         loadedBlockEntityMarkers.addAll(markers.blockEntityMarkers.map {
                             MapView.MarkerDraw(it.worldX, it.worldZ,
-                                com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id))
+                                com.spaimic.nbttool.chunk.TileEntityIcons.iconFor(this, it.id),
+                                it.worldY, 1, it.id, null)
                         })
                     }
                     scheduleMarkerPublish()
@@ -1083,6 +1088,174 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------------
+    // Entity / tile-entity LevelDB keys
+    // ------------------------------------------------------------------
+
+    private class BlockTarget(
+        val label: String, val kind: Int, val x: Int, val y: Int, val z: Int,
+        val actorKey: ByteArray?, val identifier: String
+    )
+
+    private fun niceName(id: String): String =
+        id.substringAfter(':').replace('_', ' ').replaceFirstChar { it.uppercase() }
+
+    private fun posValue(tag: com.spaimic.nbttool.nbt.NbtTag?): Double? = when (tag) {
+        is com.spaimic.nbttool.nbt.NbtTag.Float -> tag.value.toDouble()
+        is com.spaimic.nbttool.nbt.NbtTag.Double -> tag.value
+        else -> null
+    }
+
+    private fun handleMarkerTap(hits: List<MapView.MarkerDraw>) {
+        if (hits.size == 1) { openMarker(hits[0]); return }
+        val labels = hits.map { m ->
+            (if (m.kind == 1) "Tile entity: " else "Entity: ") + niceName(m.label) +
+                " (${m.worldX}, ${m.worldY}, ${m.worldZ})"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Open which record?")
+            .setItems(labels) { _, which -> openMarker(hits[which]) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openMarker(m: MapView.MarkerDraw) {
+        if (m.kind == 1) openTileEntity(m.worldX, m.worldY, m.worldZ)
+        else m.actorKey?.let { openEntityKey(it, m.label) }
+    }
+
+    /** Opens the chunk's block-entity record and jumps straight to the entity at this position. */
+    private fun openTileEntity(x: Int, y: Int, z: Int) {
+        val i = Intent(this, BlockEntityListActivity::class.java)
+        i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_X, Math.floorDiv(x, 16))
+        i.putExtra(BlockEntityListActivity.EXTRA_CHUNK_Z, Math.floorDiv(z, 16))
+        i.putExtra(BlockEntityListActivity.EXTRA_DIMENSION, selectedDbDimension())
+        i.putExtra(BlockEntityListActivity.EXTRA_TARGET_X, x)
+        i.putExtra(BlockEntityListActivity.EXTRA_TARGET_Y, y)
+        i.putExtra(BlockEntityListActivity.EXTRA_TARGET_Z, z)
+        startActivity(i)
+    }
+
+    /** Opens an actor's own LevelDB record (actorprefix + id) in the key editor. */
+    private fun openEntityKey(key: ByteArray, identifier: String) {
+        val bridge = LevelDbSession.bridge ?: return
+        Thread {
+            try {
+                val bytes = bridge.read(key)
+                if (bytes == null) {
+                    runOnUiThread {
+                        Toast.makeText(this, "That entity is no longer in the database", Toast.LENGTH_SHORT).show()
+                    }
+                    return@Thread
+                }
+                val compound = NbtIO.readRootCompoundNoHeader(bytes)
+                val idHex = key.takeLast(8).joinToString("") { "%02x".format(it) }
+                val displayName = "entity:${identifier.substringAfter(':')}:$idHex"
+                LevelDbSession.keyBytesByName[displayName] = key
+                LevelDbSession.loadedEntries[displayName] = compound
+                runOnUiThread {
+                    val i = Intent(this, DbEntryEditorActivity::class.java)
+                    i.putExtra(DbEntryEditorActivity.EXTRA_DISPLAY_NAME, displayName)
+                    startActivity(i)
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { showErrorDialog(this, "Couldn't open the entity record", e) }
+            }
+        }.start()
+    }
+
+    private fun openBlockTarget(t: BlockTarget) {
+        if (t.kind == 1) openTileEntity(t.x, t.y, t.z) else t.actorKey?.let { openEntityKey(it, t.identifier) }
+    }
+
+    private fun chooseBlockTarget(targets: List<BlockTarget>) {
+        if (targets.size == 1) { openBlockTarget(targets[0]); return }
+        AlertDialog.Builder(this)
+            .setTitle("Open which record?")
+            .setItems(targets.map { it.label }.toTypedArray()) { _, which -> openBlockTarget(targets[which]) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // ------------------------------------------------------------------
+    // Undo / redo for block edits made from the map's block editor
+    // ------------------------------------------------------------------
+
+    private class BlockEditRecord(
+        val description: String,
+        val chunkX: Int, val chunkZ: Int,
+        val subKey: ByteArray, val oldSub: ByteArray?, val newSub: ByteArray,
+        val dataKey: ByteArray?, val oldData: ByteArray?, val newData: ByteArray?
+    )
+
+    private val blockUndo = ArrayList<BlockEditRecord>()
+    private val blockRedo = ArrayList<BlockEditRecord>()
+
+    private fun sameBytes(a: ByteArray?, b: ByteArray?): Boolean =
+        (a == null && b == null) || (a != null && b != null && a.contentEquals(b))
+
+    /** Undoes (or redoes) the most recent block edit; [after] runs on the UI thread when it is done. */
+    private fun applyBlockHistory(undo: Boolean, after: () -> Unit) {
+        val stack = if (undo) blockUndo else blockRedo
+        val rec = stack.lastOrNull()
+        if (rec == null) {
+            Toast.makeText(this, if (undo) "Nothing to undo" else "Nothing to redo", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val bridge = LevelDbSession.bridge ?: return
+        val verb = if (undo) "Undo" else "Redo"
+        fun performRestore() {
+            Thread({
+                try {
+                    val target = if (undo) rec.oldSub else rec.newSub
+                    val writes = ArrayList<Pair<ByteArray, ByteArray>>()
+                    if (target != null) writes.add(rec.subKey to target)
+                    if (rec.dataKey != null) {
+                        val d = if (undo) rec.oldData else rec.newData
+                        if (d != null) writes.add(rec.dataKey to d)
+                    }
+                    bridge.writeBatch(writes)
+                    if (target == null) bridge.delete(rec.subKey)
+                    runOnUiThread {
+                        stack.remove(rec)
+                        (if (undo) blockRedo else blockUndo).add(rec)
+                        reloadChunkOnMap(rec.chunkX, rec.chunkZ)
+                        Toast.makeText(this, "$verb: ${rec.description}", Toast.LENGTH_SHORT).show()
+                        after()
+                    }
+                } catch (e: Throwable) {
+                    runOnUiThread { showErrorDialog(this, "$verb failed", e) }
+                }
+            }, "BlockHistory").start()
+        }
+        Thread({
+            try {
+                // Make sure nothing else changed this subchunk since the edit; otherwise the
+                // restore would silently overwrite that other change.
+                val expected = if (undo) rec.newSub else rec.oldSub
+                val current = bridge.read(rec.subKey)
+                if (sameBytes(current, expected)) {
+                    performRestore()
+                } else {
+                    runOnUiThread {
+                        AlertDialog.Builder(this)
+                            .setTitle("$verb anyway?")
+                            .setMessage(
+                                "This 16-block section was changed by something else after the edit " +
+                                    "(\"${rec.description}\"). Continuing will overwrite those other changes in " +
+                                    "this section."
+                            )
+                            .setPositiveButton(verb) { _, _ -> performRestore() }
+                            .setNegativeButton("Cancel", null)
+                            .show()
+                    }
+                }
+            } catch (e: Throwable) {
+                runOnUiThread { showErrorDialog(this, "$verb failed", e) }
+            }
+        }, "BlockHistoryCheck").start()
+    }
+
+    // ------------------------------------------------------------------
     // Block editor: terrain editing straight from the 2D map (per-block grid zoom)
     // ------------------------------------------------------------------
 
@@ -1098,8 +1271,51 @@ class MapViewerActivity : AppCompatActivity() {
             try {
                 val subs = HashMap<Int, ByteArray>()
                 for ((sy, bytes) in bridge.readSubchunks(chunkX, chunkZ, dim)) subs[sy] = bytes
+
+                // Entities / tile entities standing on this block column (for the "key" button).
+                val targets = ArrayList<BlockTarget>()
+                try {
+                    val beRaw = bridge.read(com.spaimic.nbttool.chunk.ChunkKeys.blockEntityKey(chunkX, chunkZ, dim))
+                    if (beRaw != null) {
+                        for (c in NbtIO.readConcatenatedCompounds(beRaw)) {
+                            val bx = (c.entries["x"] as? com.spaimic.nbttool.nbt.NbtTag.Int)?.value ?: continue
+                            val by = (c.entries["y"] as? com.spaimic.nbttool.nbt.NbtTag.Int)?.value ?: continue
+                            val bz = (c.entries["z"] as? com.spaimic.nbttool.nbt.NbtTag.Int)?.value ?: continue
+                            if (bx != worldX || bz != worldZ) continue
+                            val id = (c.entries["id"] as? com.spaimic.nbttool.nbt.NbtTag.Str)?.value ?: "block_entity"
+                            targets.add(BlockTarget("Tile entity: ${niceName(id)} ($bx, $by, $bz)", 1, bx, by, bz, null, id))
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+                try {
+                    val digp = bridge.read(com.spaimic.nbttool.chunk.EntityKeys.digpKey(chunkX, chunkZ, dim))
+                    if (digp != null) {
+                        for (actorId in com.spaimic.nbttool.chunk.EntityKeys.splitActorIds(digp)) {
+                            try {
+                                val key = com.spaimic.nbttool.chunk.EntityKeys.actorPrefixKey(actorId)
+                                val raw = bridge.read(key) ?: continue
+                                val c = NbtIO.readRootCompoundNoHeader(raw)
+                                val id = (c.entries["identifier"] as? com.spaimic.nbttool.nbt.NbtTag.Str)?.value ?: continue
+                                val pos = c.entries["Pos"] as? com.spaimic.nbttool.nbt.NbtTag.ListTag ?: continue
+                                val px = posValue(pos.items.getOrNull(0)) ?: continue
+                                val py = posValue(pos.items.getOrNull(1)) ?: continue
+                                val pz = posValue(pos.items.getOrNull(2)) ?: continue
+                                if (Math.floor(px).toInt() != worldX || Math.floor(pz).toInt() != worldZ) continue
+                                targets.add(
+                                    BlockTarget(
+                                        "Entity: ${niceName(id)} (${"%.1f".format(px)}, ${"%.1f".format(py)}, ${"%.1f".format(pz)})",
+                                        0, worldX, Math.floor(py).toInt(), worldZ, key, id
+                                    )
+                                )
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
                 runOnUiThread {
-                    if (!isFinishing && !isDestroyed) openBlockDialog(bridge, dim, worldX, worldZ, subs)
+                    if (!isFinishing && !isDestroyed) openBlockDialog(bridge, dim, worldX, worldZ, subs, targets)
                 }
             } catch (e: Throwable) {
                 runOnUiThread {
@@ -1137,7 +1353,8 @@ class MapViewerActivity : AppCompatActivity() {
     }
 
     private fun openBlockDialog(
-        bridge: LevelDbBridge, dim: Int, worldX: Int, worldZ: Int, subs: HashMap<Int, ByteArray>
+        bridge: LevelDbBridge, dim: Int, worldX: Int, worldZ: Int, subs: HashMap<Int, ByteArray>,
+        targets: List<BlockTarget>
     ) {
         val chunkX = Math.floorDiv(worldX, 16)
         val chunkZ = Math.floorDiv(worldZ, 16)
@@ -1217,6 +1434,42 @@ class MapViewerActivity : AppCompatActivity() {
             }
         }
 
+        val undoBtn = Button(this).apply { text = "↶ Undo" }
+        val redoBtn = Button(this).apply { text = "↷ Redo" }
+        fun updateHistoryButtons() {
+            undoBtn.text = "↶ Undo (${blockUndo.size})"
+            undoBtn.isEnabled = blockUndo.isNotEmpty()
+            redoBtn.text = "↷ Redo (${blockRedo.size})"
+            redoBtn.isEnabled = blockRedo.isNotEmpty()
+        }
+        fun refreshFromDb() {
+            Thread({
+                try {
+                    val fresh = HashMap<Int, ByteArray>()
+                    for ((sy, bytes) in bridge.readSubchunks(chunkX, chunkZ, dim)) fresh[sy] = bytes
+                    runOnUiThread {
+                        subs.clear()
+                        subs.putAll(fresh)
+                        reloadColumn()
+                        refreshUi()
+                        updateHistoryButtons()
+                    }
+                } catch (_: Throwable) {
+                }
+            }, "BlockDialogRefresh").start()
+        }
+        undoBtn.setOnClickListener { applyBlockHistory(true) { refreshFromDb() } }
+        redoBtn.setOnClickListener { applyBlockHistory(false) { refreshFromDb() } }
+        val historyRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(undoBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(redoBtn, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val targetsBtn = if (targets.isNotEmpty()) Button(this).apply {
+            text = "Entities / tile entities here (${targets.size})"
+            setOnClickListener { chooseBlockTarget(targets) }
+        } else null
+
         val yRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -1232,8 +1485,11 @@ class MapViewerActivity : AppCompatActivity() {
             addView(TextView(context).apply { text = "Block name"; setPadding(0, dp(10), 0, 0) })
             addView(nameInput, LinearLayout.LayoutParams(-1, -2))
             addView(hideAir)
+            addView(historyRow, LinearLayout.LayoutParams(-1, -2))
+            targetsBtn?.let { addView(it, LinearLayout.LayoutParams(-1, -2)) }
         }
         refreshUi()
+        updateHistoryButtons()
 
         val dialog = AlertDialog.Builder(this)
             .setTitle("Block at X $worldX, Z $worldZ")
@@ -1262,11 +1518,13 @@ class MapViewerActivity : AppCompatActivity() {
                     Toast.makeText(this, "Block is already $newName", Toast.LENGTH_SHORT).show()
                 } else {
                     val finalName = newName
+                    val oldName = nameAt(yy)
                     val columnSnapshot = HashMap(column)
                     columnSnapshot[yy] = finalName
                     Thread({
                         try {
                             val sy = Math.floorDiv(yy, 16)
+                            val oldSub = subs[sy]
                             val base = subs[sy]?.copyOf()
                                 ?: com.spaimic.nbttool.chunk.SubChunkEditor.emptySubChunk(sy)
                             val updated = com.spaimic.nbttool.chunk.SubChunkEditor.replaceBlock(
@@ -1278,6 +1536,9 @@ class MapViewerActivity : AppCompatActivity() {
                             // Keep the chunk's stored height map in step with the edit (the map's fast
                             // loader reads it to know where the surface is). Overworld values are stored
                             // as little-endian (firstAirY + 64).
+                            var recDataKey: ByteArray? = null
+                            var recOldData: ByteArray? = null
+                            var recNewData: ByteArray? = null
                             if (dim == 0) {
                                 val dataKey = com.spaimic.nbttool.chunk.ChunkKeys.data3DKey(chunkX, chunkZ, dim)
                                 val raw3d = bridge.read(dataKey)
@@ -1303,12 +1564,25 @@ class MapViewerActivity : AppCompatActivity() {
                                         copy[off] = (v and 0xFF).toByte()
                                         copy[off + 1] = ((v shr 8) and 0xFF).toByte()
                                         writes.add(dataKey to copy)
+                                        recDataKey = dataKey
+                                        recOldData = raw3d
+                                        recNewData = copy
                                     }
                                 }
                             }
                             bridge.writeBatch(writes)
                             subs[sy] = updated
+                            val record = BlockEditRecord(
+                                "Y $yy: $oldName → $finalName at X $worldX, Z $worldZ",
+                                chunkX, chunkZ,
+                                com.spaimic.nbttool.chunk.ChunkKeys.subChunkKey(chunkX, chunkZ, sy, dim),
+                                oldSub, updated, recDataKey, recOldData, recNewData
+                            )
                             runOnUiThread {
+                                blockUndo.add(record)
+                                if (blockUndo.size > 200) blockUndo.removeAt(0)
+                                blockRedo.clear()
+                                updateHistoryButtons()
                                 reloadColumn()
                                 refreshUi()
                                 Toast.makeText(this, "Set Y $yy to $finalName", Toast.LENGTH_SHORT).show()
@@ -1958,9 +2232,12 @@ class MapViewerActivity : AppCompatActivity() {
             text = "Include block entities (chests, signs, …)"
             isChecked = true
         }
+        val includeEntities = CheckBox(this).apply {
+            text = "Include entities (mobs, items, armor stands, …)"
+            isChecked = true
+        }
         val info = TextView(this).apply {
-            text = "Area: ${s.width} × ${s.height} blocks (X × Z)\nX ${s.minX}..${s.maxX}, Z ${s.minZ}..${s.maxZ}\n" +
-                "Mobs and dropped items are not exported."
+            text = "Area: ${s.width} × ${s.height} blocks (X × Z)\nX ${s.minX}..${s.maxX}, Z ${s.minZ}..${s.maxZ}"
             setPadding(0, 0, 0, dp(8))
         }
         val box = LinearLayout(this).apply {
@@ -1971,6 +2248,7 @@ class MapViewerActivity : AppCompatActivity() {
             addView(yMin, LinearLayout.LayoutParams(-1, -2))
             addView(yMax, LinearLayout.LayoutParams(-1, -2))
             addView(includeBe)
+            addView(includeEntities)
         }
         AlertDialog.Builder(this)
             .setTitle("Export .mcstructure")
@@ -1987,7 +2265,7 @@ class MapViewerActivity : AppCompatActivity() {
                         .removeSuffix(".mcstructure")
                         .replace(Regex("[^A-Za-z0-9._ -]"), "_")
                     if (fileName.isEmpty()) fileName = "structure"
-                    runMcStructureExport(s, dim, y0, y1, includeBe.isChecked, fileName)
+                    runMcStructureExport(s, dim, y0, y1, includeBe.isChecked, includeEntities.isChecked, fileName)
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -1996,7 +2274,7 @@ class MapViewerActivity : AppCompatActivity() {
 
     private fun runMcStructureExport(
         s: com.spaimic.nbttool.selection.WorldSelection,
-        dim: Int, y0: Int, y1: Int, includeBlockEntities: Boolean, fileName: String
+        dim: Int, y0: Int, y1: Int, includeBlockEntities: Boolean, includeEntities: Boolean, fileName: String
     ) {
         val bridge = LevelDbSession.bridge ?: return
         val progressDialog = AlertDialog.Builder(this)
@@ -2009,7 +2287,7 @@ class MapViewerActivity : AppCompatActivity() {
             try {
                 val result = com.spaimic.nbttool.chunk.McStructureExporter.export(
                     com.spaimic.nbttool.chunk.KeyReader { bridge.read(it) },
-                    dim, s.minX, s.maxX, s.minZ, s.maxZ, y0, y1, includeBlockEntities
+                    dim, s.minX, s.maxX, s.minZ, s.maxZ, y0, y1, includeBlockEntities, includeEntities
                 ) { done, total ->
                     runOnUiThread { progressDialog.setMessage("Reading chunks $done / $total") }
                 }
@@ -2023,7 +2301,8 @@ class MapViewerActivity : AppCompatActivity() {
                                 "Size: ${result.sizeX} × ${result.sizeY} × ${result.sizeZ} (X × Y × Z)\n" +
                                 "Non-air blocks: ${result.nonAirBlocks}\n" +
                                 "Block types: ${result.paletteSize}\n" +
-                                "Block entities: ${result.blockEntities}" +
+                                "Block entities: ${result.blockEntities}\n" +
+                                "Entities: ${result.entities}" +
                                 if (result.skippedSubchunks > 0) "\nSkipped ${result.skippedSubchunks} unreadable subchunk(s) (exported as air)." else ""
                         )
                         .setPositiveButton("OK", null)

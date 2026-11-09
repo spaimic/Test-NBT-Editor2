@@ -9,7 +9,11 @@ import kotlin.math.abs
 data class ColumnInfo(val color: Int, val surfaceY: Int, val material: String = "")
 
 /** One entity's position + identifier, for drawing a marker on the map. */
-data class EntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val identifier: String)
+class EntityMarker(
+    val worldX: Int, val worldY: Int, val worldZ: Int, val identifier: String,
+    /** LevelDB key of this actor's record (actorprefix + id). */
+    val actorKey: ByteArray? = null
+)
 
 /** One block entity's position + id, for drawing a marker on the map. */
 data class BlockEntityMarker(val worldX: Int, val worldY: Int, val worldZ: Int, val id: String)
@@ -419,7 +423,13 @@ object ChunkScanner {
                         val px = (posTag.items.getOrNull(0) as? NbtTag.Float)?.value ?: continue
                         val py = (posTag.items.getOrNull(1) as? NbtTag.Float)?.value ?: continue
                         val pz = (posTag.items.getOrNull(2) as? NbtTag.Float)?.value ?: continue
-                        entityMarkers.add(EntityMarker(px.toInt(), py.toInt(), pz.toInt(), identifier))
+                        // floor, not toInt(): toInt() rounds negative coordinates the wrong way.
+                        entityMarkers.add(
+                            EntityMarker(
+                                Math.floor(px.toDouble()).toInt(), Math.floor(py.toDouble()).toInt(),
+                                Math.floor(pz.toDouble()).toInt(), identifier, EntityKeys.actorPrefixKey(actorId)
+                            )
+                        )
                     } catch (_: Exception) {}
                 }
             }
